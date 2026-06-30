@@ -50,6 +50,25 @@ for chunk in stream("基金 110011 近一个月最大回撤"):
 langgraph dev
 ```
 
+## API (Phase 2)
+
+启动后端 HTTP API：
+
+```bash
+cd /Users/leon/fund-agent
+.venv/bin/python -m uvicorn backend.api.app:app --reload --port 8000
+```
+
+Swagger UI：`http://localhost:8000/docs`
+主要路由：
+- `GET /api/funds/{code}` —— 基础信息
+- `GET /api/funds/{code}/nav` —— 最新净值
+- `GET /api/funds/{code}/nav-history?start=&end=` —— 净值历史
+- `GET /api/funds/{code}/metrics?period=1m` —— 阶段指标
+- `GET /api/watchlist` —— 自选池
+- `GET /api/market/latest` —— 主要指数
+- `GET /api/announcements` —— 公告占位
+
 ## Boundaries
 
 Information assistant only — no buy/sell advice, no return predictions, no trading.
