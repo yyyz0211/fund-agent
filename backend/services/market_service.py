@@ -33,3 +33,24 @@ def refresh_market(session=None) -> dict:
     finally:
         if owns:
             s.close()
+
+
+def get_indices(session=None) -> dict:
+    """从本地库读最新一个交易日的全部指数行。无数据返回可读 error dict。"""
+    s = session or get_session()
+    owns = session is None
+    try:
+        latest = s.scalar(select(MarketData.market_date)
+                          .order_by(MarketData.market_date.desc()))
+        if latest is None:
+            return {"error": "本地无市场数据，请先 refresh_market", "source": dc.SOURCE}
+        rows = s.scalars(select(MarketData)
+                         .where(MarketData.market_date == latest)
+                         .order_by(MarketData.symbol)).all()
+        indices = [{"symbol": r.symbol, "name": r.name, "close": r.close,
+                    "change_pct": r.change_pct, "market_date": r.market_date}
+                   for r in rows]
+        return {"indices": indices, "source": dc.SOURCE, "as_of": dc.today_str()}
+    finally:
+        if owns:
+            s.close()
