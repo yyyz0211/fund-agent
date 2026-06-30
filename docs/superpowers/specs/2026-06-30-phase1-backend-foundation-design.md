@@ -31,9 +31,10 @@ fund-agent/backend/
 ├── config/
 │   └── settings.py        # pydantic-settings，从 .env 读 DEEPSEEK_API_KEY 等
 ├── db/
-│   ├── models.py          # 四张表 schema
-│   ├── init_db.py         # 建库建表
-│   └── repository.py      # 数据库读写（含 watchlist CRUD）
+│   ├── models.py          # 四张表 SQLAlchemy 声明式 ORM 模型
+│   ├── session.py         # engine + SessionLocal（连接串集中管理，便于升级 PG）
+│   ├── init_db.py         # create_all 建表
+│   └── repository.py      # 基于 Session 的数据库读写（含 watchlist CRUD）
 ├── services/
 │   ├── data_collector.py  # AKShare 采集 + 重试 + 来源留痕
 │   ├── fund_service.py    # 基金信息/净值业务封装（tool-ready）
@@ -64,6 +65,8 @@ fund-agent/backend/
 
 ## 5. 数据库表（第一阶段四张）
 
+用 **SQLAlchemy 声明式 ORM** 定义。连接串集中在 `db/session.py`，第一阶段指向
+本地 SQLite（`sqlite:///backend/data/fund_agent.db`），升级 PostgreSQL 时只改此处。
 字段以方案文档为准，第一阶段建以下四张表：
 
 **funds**：`fund_code`(PK)、`fund_name`、`fund_type`、`manager`、`company`、`inception_date`、`risk_level`、`created_at`、`updated_at`
@@ -111,7 +114,7 @@ add_fund_to_watchlist("110011")        # 写入 watchlist
 ## 9. 测试策略
 
 - `test_metrics.py`：构造净值序列测指标（已知输入→已知输出），完全离线，本阶段质量核心
-- `test_repository.py`：临时 SQLite 测自选池 CRUD
+- `test_repository.py`：临时 SQLite 测自选池 CRUD（用内存库 `sqlite:///:memory:` 或临时文件，隔离每个测试）
 - AKShare 采集层不写联网单测；改提供 `scripts/smoke_fetch.py` 手动验证真实取数
 
 ## 10. 验收标准
@@ -124,5 +127,5 @@ add_fund_to_watchlist("110011")        # 写入 watchlist
 
 ## 11. 第一阶段依赖
 
-`langchain`、`langchain-openai`、`akshare`、`pandas`、`pydantic-settings`、`pytest`
-（SQLite 用 Python 标准库 `sqlite3`，第一阶段不引入 ORM）
+`langchain`、`langchain-openai`、`akshare`、`pandas`、`pydantic-settings`、`SQLAlchemy`、`pytest`
+（第一阶段用 SQLAlchemy ORM + SQLite；升级 PostgreSQL 时仅改 `db/session.py` 连接串）
