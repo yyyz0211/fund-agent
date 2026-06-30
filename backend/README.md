@@ -30,6 +30,19 @@ cp backend/.env.example backend/.env   # then put your DEEPSEEK_API_KEY in backe
 .venv/bin/python -m backend.scripts.smoke_fetch 110011
 ```
 
+## LangGraph QA flow (Phase 4)
+
+```python
+from backend.graph.qa_graph import ask, stream
+
+# 一次性问答
+print(ask("基金 110011 最新净值是多少?"))
+
+# 流式调试
+for chunk in stream("基金 110011 近一个月最大回撤"):
+    print(chunk)
+```
+
 ## LangGraph local server (optional)
 
 ```bash

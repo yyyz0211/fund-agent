@@ -1,52 +1,136 @@
-"""Deterministic compliance policy for the fund QA graph."""
-from dataclasses import dataclass
+"""确定性合规边界策略。
+
+前置拦截（`check_question`）：在问题进入 LLM 前识别高风险投资建议类请求。
+后置检查（`check_answer`）：在模型生成回答后，如果回答仍触及禁区，触发替换。
+
+模式均为纯字符串包含匹配，无外部依赖，完全离线。
+"""
+import re
 
 REFUSAL_MESSAGE = (
-    "我只能提供公开信息整理、历史数据分析和风险提示，不能提供买入、卖出、"
-    "持有、加仓、减仓、申购、赎回、基金推荐或收益预测建议。"
+    "抱歉，我无法回答此类问题。"
+    "作为基金信息助手，我仅提供历史数据整理与客观分析，"
+    "不提供买入、卖出、基金推荐、收益预测或任何投资建议。"
+    "投资有风险，决策需谨慎。"
 )
 
-_BLOCK_PATTERNS = (
-    "可以买",
-    "买入",
-    "买进",
-    "卖出",
-    "要不要卖",
-    "持有",
-    "加仓",
-    "减仓",
-    "申购",
-    "赎回",
-    "推荐",
-    "收益大概",
-    "收益多少",
-    "未来收益",
-    "下个月收益",
-    "预测收益",
-)
+# 问题前置拦截：命中任意模式即拦截，不进入 LLM。
+# 每条为 (pattern, 说明) 元组，匹配方式为 pattern in text.lower()。
+_QUESTION_PATTERNS: list[tuple[str, str]] = [
+    # 核心建议类
+    ("买", "涉及买入意图"),
+    ("卖", "涉及卖出意图"),
+    ("推荐", "涉及基金推荐"),
+    ("申购", "涉及申购意图"),
+    ("赎回", "涉及赎回意图"),
+    ("加仓", "涉及加仓建议"),
+    ("减仓", "涉及减仓建议"),
+    ("清仓", "涉及清仓建议"),
+    ("建仓", "涉及建仓建议"),
+    ("满仓", "涉及满仓建议"),
+    ("补仓", "涉及补仓建议"),
+    ("仓位", "涉及仓位建议"),
+    # 预测类
+    ("预测", "涉及收益或净值预测"),
+    ("预计", "涉及预测性判断"),
+    ("明天", "涉及短期预测"),
+    ("下周", "涉及短期预测"),
+    ("下个月", "涉及短期预测"),
+    ("未来", "涉及预测"),
+    ("收益预测", "涉及收益预测"),
+    ("净值预测", "涉及净值预测"),
+    ("涨跌预测", "涉及涨跌预测"),
+    # 决策建议类
+    ("现在应该", "涉及决策建议"),
+    ("现在该", "涉及决策建议"),
+    ("应该买", "涉及买建议"),
+    ("应该卖", "涉及卖建议"),
+    ("该买", "涉及买建议"),
+    ("该卖", "涉及卖建议"),
+    ("最佳买点", "涉及买点建议"),
+    ("最佳卖点", "涉及卖点建议"),
+    ("进场", "涉及进场建议"),
+    ("入场", "涉及入场建议"),
+    ("止损", "涉及止损建议"),
+    ("止盈", "涉及止盈建议"),
+    ("帮我买", "涉及代操作"),
+    ("帮我卖", "涉及代操作"),
+    ("帮我操作", "涉及代操作"),
+    ("帮我申购", "涉及代操作"),
+    ("帮我赎回", "涉及代操作"),
+    ("操作基金", "涉及基金操作"),
+    # 高收益承诺类
+    ("高收益基金", "涉及收益承诺"),
+    ("收益可达", "涉及收益承诺"),
+    ("年化收益", "涉及收益预测"),
+    ("持有多久能赚钱", "涉及收益承诺"),
+]
 
 
-@dataclass(frozen=True)
-class PolicyResult:
-    """Result of a deterministic policy check."""
-
-    allowed: bool
-    reason: str = ""
-
-
-def _normalize(text: str) -> str:
-    return "".join((text or "").lower().split())
+def _match_any(text: str, patterns: list[tuple[str, str]]) -> tuple[bool, str]:
+    lower = text.lower()
+    for pat, reason in patterns:
+        if pat in lower:
+            return True, reason
+    return False, ""
 
 
-def check_question(text: str) -> PolicyResult:
-    """Return whether a user question may proceed to the LLM/tool graph."""
-    normalized = _normalize(text)
-    for pattern in _BLOCK_PATTERNS:
-        if pattern in normalized:
-            return PolicyResult(False, f"blocked pattern: {pattern}")
-    return PolicyResult(True)
+def check_question(text: str) -> bool:
+    """判断问题是否可以通过。
+
+    返回 True  = 放行，进入 LLM + Tool 调用。
+    返回 False = 拦截，返回固定拒答，不调用任何 Tool。
+
+    合规策略前置：命中禁区模式的问题直接拦截，不浪费 LLM token。
+    """
+    blocked, _ = _match_any(text, _QUESTION_PATTERNS)
+    return not blocked
 
 
-def check_answer(text: str) -> str:
-    """Replace unsafe generated answers with the fixed refusal."""
-    return REFUSAL_MESSAGE if not check_question(text).allowed else text
+def check_answer(text: str) -> bool:
+    """判断 LLM 生成的回答是否合规。
+
+    返回 True  = 放行，直接返回。
+    返回 False = 回答触及禁区，应被替换为固定拒答文本。
+
+    合规策略后置：即使 LLM 生成了不当内容，最后一道检查兜底。
+    """
+    lower = text.lower()
+    # 不允许在回答中出现建议性语句
+    blocked_patterns: list[tuple[str, str]] = [
+        ("建议买入", "包含买入建议"),
+        ("建议卖出", "包含卖出建议"),
+        ("建议加仓", "包含加仓建议"),
+        ("建议减仓", "包含减仓建议"),
+        ("建议清仓", "包含清仓建议"),
+        ("建议申购", "包含申购建议"),
+        ("建议赎回", "包含赎回建议"),
+        ("建议您", "包含建议（第二人称）"),
+        ("建议持有", "包含持有建议"),
+        ("应该买入", "包含买入建议"),
+        ("应该卖出", "包含卖出建议"),
+        ("应该加仓", "包含加仓建议"),
+        ("可以买入", "包含买入建议"),
+        ("可以卖出", "包含卖出建议"),
+        ("可以满仓", "包含满仓建议"),
+        ("赶紧", "包含催促性建议"),
+        ("现在买入", "包含买入建议"),
+        ("现在卖出", "包含卖出建议"),
+        ("最佳买点", "包含买点建议"),
+        ("最佳卖点", "包含卖点建议"),
+        ("最佳选择", "包含决策性建议"),
+        ("明天净值", "包含净值预测"),
+        ("明天涨跌", "包含涨跌预测"),
+        ("净值会涨", "包含净值预测"),
+        ("净值会跌", "包含净值预测"),
+        ("收益可达", "包含收益承诺"),
+        ("收益预计", "包含收益预测"),
+        ("年化收益", "包含收益预测"),
+        ("一定涨", "包含预测"),
+        ("肯定涨", "包含预测"),
+        ("Guaranteed", "包含收益承诺（英文）"),
+        ("will rise", "包含涨跌预测（英文）"),
+        ("will fall", "包含涨跌预测（英文）"),
+    ]
+    blocked, _ = _match_any(text, blocked_patterns)
+    return not blocked

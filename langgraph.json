@@ -1,9 +1,6 @@
 {
-  "$schema": "https://langgra.ph/schema.json",
-  "dependencies": ["."],
+  "dependencies": ["./backend/graph"],
   "graphs": {
     "fund_agent": "./backend/graph/qa_graph.py:graph"
-  },
-  "env": "backend/.env",
-  "python_version": "3.11"
+  }
 }
