@@ -13,6 +13,8 @@
 import time
 from datetime import date
 
+import akshare as ak
+
 SOURCE = "akshare"
 
 
@@ -45,21 +47,22 @@ def with_retry(fn, *args, retries: int = 3, base_delay: float = 0.5,
 def fetch_fund_info(fund_code: str) -> dict:
     """拉取一只基金的基础信息(名称、类型、经理、基金公司)。
 
+    AKShare 1.18 已经把老的 `fund_individual_info_em` 移除了,改用雪球
+    的 `fund_individual_basic_info_xq` —— 字段最全,稳定,返回两列
+    DataFrame: `item` / `value`。
+
     成功:返回 `{fund_code, fund_name, fund_type, manager, company,
     source, as_of}`;失败:返回 `{error, source}`。
     """
     try:
-        import akshare as ak
-        df = with_retry(ak.fund_individual_info_em, fund_code)
-        # 新老版本的 AKShare 列名不同,两种方式都兼容一下
-        kv = dict(zip(df["item"], df["value"])) if "item" in df.columns \
-            else dict(zip(df.iloc[:, 0], df.iloc[:, 1]))
+        df = with_retry(ak.fund_individual_basic_info_xq, symbol=fund_code)
+        kv = dict(zip(df["item"], df["value"]))
         return {
             "fund_code": fund_code,
-            "fund_name": kv.get("基金简称") or kv.get("基金名称"),
+            "fund_name": kv.get("基金名称") or kv.get("基金简称"),
             "fund_type": kv.get("基金类型"),
             "manager": kv.get("基金经理"),
-            "company": kv.get("基金管理人") or kv.get("基金公司"),
+            "company": kv.get("基金公司"),
             "source": SOURCE,
             "as_of": today_str(),
         }
@@ -68,24 +71,29 @@ def fetch_fund_info(fund_code: str) -> dict:
 
 
 def fetch_fund_nav_history(fund_code: str) -> list[dict] | dict:
-    """拉取基金累计净值走势,返回按日期升序的列表。
+    """拉取基金净值走势,返回按日期升序的列表。
 
-    每行包含 `{nav_date, unit_nav, accumulated_nav, daily_return,
-    source, source_updated_at}`。`daily_return` 在本地计算
-    (因为 AKShare 给的累计净值,逐日涨跌幅由我们自己得出)。
-    `unit_nav` 在 AKShare 的累计净值走势接口里拿不到,先置 None。
+    AKShare 1.18 的 `fund_open_fund_info_em` 在 `indicator="累计净值走势"`
+    下只返回 `净值日期` / `累计净值` 两列,`单位净值走势` 才有
+    `单位净值` / `日增长率`。我们两次调用后按 `净值日期` 拼接,
+    把 `unit_nav` 填上;`daily_return` 在本地用累计净值算
+    (因为源接口的 `日增长率` 是字符串,本地算更稳)。
     """
     try:
-        import akshare as ak
-        df = with_retry(ak.fund_open_fund_info_em, fund_code, indicator="累计净值走势")
+        acc_df = with_retry(ak.fund_open_fund_info_em, fund_code,
+                            indicator="累计净值走势")
+        unit_df = with_retry(ak.fund_open_fund_info_em, fund_code,
+                             indicator="单位净值走势")
+        unit_by_date = dict(zip(unit_df["净值日期"], unit_df["单位净值"]))
         out = []
         prev = None
-        for _, r in df.iterrows():
+        for _, r in acc_df.iterrows():
             acc = float(r["累计净值"])
             dr = (acc / prev - 1) if prev not in (None, 0) else 0.0
             out.append({
                 "nav_date": str(r["净值日期"]),
-                "unit_nav": None,
+                "unit_nav": float(unit_by_date[str(r["净值日期"])])
+                            if str(r["净值日期"]) in unit_by_date else None,
                 "accumulated_nav": acc,
                 "daily_return": dr,
                 "source": SOURCE,
@@ -94,7 +102,8 @@ def fetch_fund_nav_history(fund_code: str) -> list[dict] | dict:
             prev = acc
         return out
     except Exception as e:  # noqa: BLE001
-        return {"error": f"fetch_fund_nav_history failed for {fund_code}: {e}", "source": SOURCE}
+        return {"error": f"fetch_fund_nav_history failed for {fund_code}: {e}",
+                "source": SOURCE}
 
 
 # 关注的指数代码 → (中文名, 类别)。股票 spot 接口一次返回所有指数,
