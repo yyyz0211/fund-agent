@@ -1,3 +1,7 @@
+"""市场数据领域服务。
+
+目前只有一个操作:刷新主要指数当日行情入本地库。
+"""
 from backend.db.session import get_session
 from backend.db.models import MarketData
 from backend.services import data_collector as dc
@@ -5,6 +9,11 @@ from sqlalchemy import select
 
 
 def refresh_market(session=None) -> dict:
+    """拉取主要指数当日行情,upsert 到 `market_data` 表。
+
+    去重以 `(symbol, market_date)` 为单位 —— 同一交易日重复调用
+    是 no-op。返回 `{inserted, source, as_of}` 或错误字典。
+    """
     s = session or get_session()
     owns = session is None
     try:

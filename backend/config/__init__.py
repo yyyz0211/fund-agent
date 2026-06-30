@@ -1,0 +1,1 @@
+"""应用配置(由 pydantic-settings 从环境变量加载)。"""
