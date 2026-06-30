@@ -1,7 +1,21 @@
 "use client";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Bot, Clock3, MessageSquareText, Send, Server, User } from "lucide-react";
+import {
+  Bot,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Clock3,
+  Database,
+  Loader2,
+  MessageSquareText,
+  Send,
+  Server,
+  User,
+} from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { PageHeader } from "@/components/PageHeader";
 import { StateBlock } from "@/components/StateBlock";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -10,11 +24,20 @@ import { Input } from "@/components/ui/input";
 import { LANGGRAPH_URL, getLangGraphClient, LANGGRAPH_ASSISTANT } from "@/lib/langgraph";
 import { formatDate } from "@/lib/format";
 
+interface ToolStep {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+  result?: string;
+  status: "pending" | "done" | "error";
+}
+
 interface UiMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
   ts: string;
+  toolSteps: ToolStep[];
 }
 
 const SUGGESTIONS = [
@@ -51,6 +74,7 @@ export default function QaPage({ searchParams }: { searchParams: { prefill?: str
       role: "user",
       content: question,
       ts: new Date().toISOString(),
+      toolSteps: [],
     };
     setHistory((h) => [...h, userMsg]);
     setInput("");
@@ -58,7 +82,13 @@ export default function QaPage({ searchParams }: { searchParams: { prefill?: str
     const assistantId = crypto.randomUUID();
     setHistory((h) => [
       ...h,
-      { id: assistantId, role: "assistant", content: "", ts: new Date().toISOString() },
+      {
+        id: assistantId,
+        role: "assistant",
+        content: "",
+        ts: new Date().toISOString(),
+        toolSteps: [],
+      },
     ]);
     try {
       const client = getLangGraphClient();
@@ -67,21 +97,70 @@ export default function QaPage({ searchParams }: { searchParams: { prefill?: str
         streamMode: "messages",
       });
       for await (const ev of stream) {
-        // event "messages/partial" 或 "values" 不同；messages 模式以 {type, content, ...} 形态返回
         const data: any = ev.data;
         const msg = Array.isArray(data) ? data[data.length - 1] : data;
-        if (msg && (msg.type === "ai" || msg.role === "assistant")) {
+        if (!msg) continue;
+
+        if ((msg.type === "ai" || msg.role === "assistant") && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
+          setHistory((h) =>
+            h.map((m) =>
+              m.id === assistantId
+                ? {
+                    ...m,
+                    toolSteps: [
+                      ...m.toolSteps,
+                      ...msg.tool_calls.map((tc: any) => ({
+                        id: tc.id,
+                        name: tc.name,
+                        args: tc.args ?? {},
+                        status: "pending" as const,
+                      })),
+                    ],
+                  }
+                : m,
+            ),
+          );
+        }
+
+        if (msg.type === "tool" && msg.tool_call_id) {
+          const resultText =
+            typeof msg.content === "string"
+              ? msg.content
+              : Array.isArray(msg.content)
+                ? msg.content
+                    .map((c: any) => (typeof c === "string" ? c : c.text ?? ""))
+                    .join("")
+                : JSON.stringify(msg.content ?? "");
+          setHistory((h) =>
+            h.map((m) =>
+              m.id === assistantId
+                ? {
+                    ...m,
+                    toolSteps: m.toolSteps.map((s) =>
+                      s.id === msg.tool_call_id
+                        ? { ...s, status: "done", result: resultText }
+                        : s,
+                    ),
+                  }
+                : m,
+            ),
+          );
+        }
+
+        if (msg.type === "ai" || msg.role === "assistant") {
           const chunk =
             typeof msg.content === "string"
               ? msg.content
               : Array.isArray(msg.content)
-              ? msg.content
-                  .map((c: any) => (typeof c === "string" ? c : c.text ?? ""))
-                  .join("")
-              : "";
-          setHistory((h) =>
-            h.map((m) => (m.id === assistantId ? { ...m, content: chunk } : m)),
-          );
+                ? msg.content
+                    .map((c: any) => (typeof c === "string" ? c : c.text ?? ""))
+                    .join("")
+                : "";
+          if (chunk) {
+            setHistory((h) =>
+              h.map((m) => (m.id === assistantId ? { ...m, content: chunk } : m)),
+            );
+          }
         }
       }
     } catch (e) {
@@ -226,6 +305,78 @@ export default function QaPage({ searchParams }: { searchParams: { prefill?: str
   );
 }
 
+function MarkdownBody({ content }: { content: string }) {
+  return (
+    <div className="md-body">
+      <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+    </div>
+  );
+}
+
+function ToolStepList({ steps }: { steps: ToolStep[] }) {
+  if (steps.length === 0) return null;
+  return (
+    <div className="mt-3 space-y-2 border-t border-gray-100 pt-3">
+      <div className="flex items-center gap-1.5 text-xs font-medium text-gray-500">
+        <Database className="h-3.5 w-3.5" />
+        数据来源 ({steps.length})
+      </div>
+      <ul className="space-y-1.5">
+        {steps.map((s) => (
+          <ToolStepItem key={s.id} step={s} />
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function ToolStepItem({ step }: { step: ToolStep }) {
+  const [open, setOpen] = useState(false);
+  const argsJson = JSON.stringify(step.args, null, 2);
+  return (
+    <li className="rounded-md border border-gray-200 bg-gray-50">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs text-gray-700 hover:bg-gray-100"
+      >
+        {open ? (
+          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-gray-400" />
+        ) : (
+          <ChevronRight className="h-3.5 w-3.5 shrink-0 text-gray-400" />
+        )}
+        {step.status === "pending" ? (
+          <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-gray-400" />
+        ) : (
+          <Check className="h-3.5 w-3.5 shrink-0 text-green-600" />
+        )}
+        <span className="font-mono font-medium text-gray-800">{step.name}</span>
+        <span className="ml-auto truncate font-mono text-[11px] text-gray-500">
+          {truncate(argsJson, 80)}
+        </span>
+      </button>
+      {open && (
+        <div className="space-y-2 border-t border-gray-200 bg-white p-2.5">
+          <div>
+            <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-gray-500">参数</div>
+            <pre className="overflow-x-auto rounded bg-gray-50 p-2 font-mono text-[11px] leading-5 text-gray-700">{argsJson}</pre>
+          </div>
+          {step.result !== undefined && (
+            <div>
+              <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-gray-500">返回</div>
+              <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded bg-gray-50 p-2 font-mono text-[11px] leading-5 text-gray-700">{truncate(step.result, 4000)}</pre>
+            </div>
+          )}
+        </div>
+      )}
+    </li>
+  );
+}
+
+function truncate(s: string, n: number): string {
+  return s.length > n ? s.slice(0, n) + "…" : s;
+}
+
 function ChatMessage({ message, streaming }: { message: UiMessage; streaming: boolean }) {
   const isUser = message.role === "user";
   const Icon = isUser ? User : Bot;
@@ -237,13 +388,26 @@ function ChatMessage({ message, streaming }: { message: UiMessage; streaming: bo
           <Icon className="h-4 w-4" />
         </span>
       )}
-      <div className={`max-w-[82%] rounded-lg px-4 py-3 text-sm shadow-sm ${isUser ? "bg-blue-600 text-white" : "border border-gray-200 bg-white text-gray-800"}`}>
+      <div
+        className={`max-w-[82%] rounded-lg px-4 py-3 text-sm shadow-sm ${
+          isUser
+            ? "bg-blue-600 text-white"
+            : "border border-gray-200 bg-white text-gray-800"
+        }`}
+      >
         <div className={`mb-1 text-xs ${isUser ? "text-blue-100" : "text-gray-500"}`}>
           {isUser ? "你" : "助手"} · {formatDate(message.ts)}
         </div>
-        <div className="whitespace-pre-wrap leading-6">
-          {message.content || (!isUser && streaming ? "▍" : "")}
+        <div className={isUser ? "whitespace-pre-wrap leading-6" : "leading-6"}>
+          {isUser ? (
+            <div className="whitespace-pre-wrap">{message.content}</div>
+          ) : message.content ? (
+            <MarkdownBody content={message.content} />
+          ) : streaming ? (
+            <span className="text-gray-400">▍</span>
+          ) : null}
         </div>
+        {!isUser && <ToolStepList steps={message.toolSteps} />}
       </div>
       {isUser && (
         <span className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-blue-700">
