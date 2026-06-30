@@ -1,12 +1,13 @@
-"""手动 smoke 测试:跑一遍 AKShare → DB → thin agent 的全链路。
+"""手动 smoke 测试:跑一遍 AKShare → DB → agent 的全链路。
 
 Phase 1 链路:refresh / latest / metrics / market / thin agent
 Phase 3 新增:basic_info / nav_history (全量+区间) / indices / watchlist CRUD
+Phase 4 新增:LangGraph QA flow
 
 用法:
     cd /Users/leon/fund-agent
-    python -m backend.scripts.smoke_fetch 110011
-需要 backend/.env 里有 DEEPSEEK_API_KEY(可选,无 key 时跳过第 9 步)。
+    .venv/bin/python -m backend.scripts.smoke_fetch 110011
+需要 backend/.env 里有 DEEPSEEK_API_KEY(可选,无 key 时跳过 agent 步骤)。
 """
 import os
 import sys
@@ -67,6 +68,13 @@ def main(fund_code: str) -> None:
     try:
         from backend.agent.thin_agent import ask
         print("   ", ask(f"基金 {fund_code} 最新净值是多少?近一个月最大回撤呢?"))
+    except RuntimeError as e:
+        print("    skipped:", e)
+
+    print("[14] LangGraph QA (skipped if no DEEPSEEK_API_KEY) ...")
+    try:
+        from backend.graph.qa_graph import ask as graph_ask
+        print("   ", graph_ask(f"基金 {fund_code} 最新净值是多少?近一个月最大回撤呢?"))
     except RuntimeError as e:
         print("    skipped:", e)
 

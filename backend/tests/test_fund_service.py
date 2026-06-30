@@ -44,6 +44,19 @@ def test_refresh_then_latest_and_metrics(session, monkeypatch):
     assert m["source"] == "akshare"
 
 
+def test_get_metrics_invalid_period_returns_error(session, monkeypatch):
+    navs = [{"nav_date": f"2026-06-{d:02d}", "unit_nav": None,
+             "accumulated_nav": 1.0 + d * 0.01, "daily_return": 0.0,
+             "source": "akshare", "source_updated_at": "2026-06-30"}
+            for d in range(1, 4)]
+    repo.upsert_navs(session, "110011", navs)
+
+    out = fs.get_metrics("110011", period="bad", session=session)
+
+    assert out["error"] == "unsupported period: bad"
+    assert out["source"] == "akshare"
+
+
 def test_refresh_propagates_collector_error(session, monkeypatch):
     monkeypatch.setattr(dc, "fetch_fund_info", lambda c: {
         "fund_code": c, "source": "akshare", "as_of": "2026-06-30"})

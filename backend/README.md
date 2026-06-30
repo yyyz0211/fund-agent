@@ -1,32 +1,40 @@
 # Fund Agent — Backend
 
-Deterministic fund-data backend with 11 LangChain tools (fund / market / watchlist) + thin DeepSeek agent slice.
+Deterministic fund-data backend with 11 LangChain tools (fund / market / watchlist), a
+Phase-1 thin DeepSeek agent slice, and a Phase-4 LangGraph QA flow.
 
 ## Setup
 
 ```bash
 cd /Users/leon/fund-agent
-python -m venv .venv && source .venv/bin/activate
-pip install -r backend/requirements.txt
+python3 -m venv .venv
+.venv/bin/python -m pip install -r backend/requirements.txt
 cp backend/.env.example backend/.env   # then put your DEEPSEEK_API_KEY in backend/.env
 ```
 
 ## Initialize the database
 
 ```bash
-python -m backend.db.init_db
+.venv/bin/python -m backend.db.init_db
 ```
 
 ## Run tests (offline)
 
 ```bash
-python -m pytest backend/tests -v
+.venv/bin/python -m pytest backend/tests -v
 ```
 
-## Manual smoke test (live AKShare + agent)
+## Manual smoke test (live AKShare + agents)
 
 ```bash
-python -m backend.scripts.smoke_fetch 110011
+.venv/bin/python -m backend.scripts.smoke_fetch 110011
+```
+
+## LangGraph local server (optional)
+
+```bash
+.venv/bin/python -m pip install "langgraph-cli[inmem]"
+langgraph dev
 ```
 
 ## Boundaries

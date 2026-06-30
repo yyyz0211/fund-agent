@@ -80,10 +80,14 @@ def get_metrics(fund_code: str, period: str = "1m", session=None) -> dict:
         if len(navs) < 2:
             return {"error": f"insufficient nav data for {fund_code}; call refresh_fund first",
                     "source": dc.SOURCE}
+        try:
+            period_ret = metrics.period_return(navs, period)
+        except ValueError as e:
+            return {"error": str(e), "source": dc.SOURCE}
         return {
             "fund_code": fund_code,
             "period": period,
-            "period_return": metrics.period_return(navs, period),
+            "period_return": period_ret,
             "cumulative_return": metrics.cumulative_return(navs),
             "max_drawdown": metrics.max_drawdown(navs),
             "volatility": metrics.volatility(navs),
