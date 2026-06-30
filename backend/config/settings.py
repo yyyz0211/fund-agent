@@ -1,23 +1,32 @@
 """应用配置(由 pydantic-settings 从环境变量加载)。
 
-字段值优先来自环境变量,其次是项目根目录的 `.env`。
+字段值优先来自进程环境变量,其次是 `backend/.env`。`env_file`
+路径基于本模块位置解析,不依赖 CWD —— 这样不管用户从哪个目录
+运行(项目根、`backend/`、`tests/`),都能找到正确的 `.env`。
+
 `get_settings()` 用 `lru_cache` 记忆化,保证每个进程只读一次环境 —
 测试可以在改 env 后清掉缓存重新读取。
 """
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# `env_file` 用绝对路径,锚定到本模块所在目录的上一级(即 backend/),
+# 保证 CWD 不会影响 `.env` 的查找。
+_ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 
 
 class Settings(BaseSettings):
     """后端运行时配置。
 
-    所有字段都允许通过环境变量覆盖。`env_file=".env"` 让本地开发
-    可以直接读 `.env`;生产环境应当由部署平台注入同名变量。
-    `extra="ignore"` 让无关环境变量不会破坏模型,便于将来扩展。
+    所有字段都允许通过环境变量覆盖。`extra="ignore"` 让无关环境变量
+    不会破坏模型,便于将来扩展。
     """
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=str(_ENV_FILE), env_file_encoding="utf-8", extra="ignore",
+    )
 
     # DeepSeek 兼容 OpenAI 接口,所以复用 langchain_openai.ChatOpenAI。
     # 这里允许 None,是为了让应用在没有 key 时也能正常启动(只读路径
