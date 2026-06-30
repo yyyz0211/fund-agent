@@ -1,6 +1,6 @@
-# Fund Agent — Backend (Phase 1)
+# Fund Agent — Backend
 
-Deterministic fund-data backend + thin LangChain/DeepSeek agent slice.
+Deterministic fund-data backend with 11 LangChain tools (fund / market / watchlist) + thin DeepSeek agent slice.
 
 ## Setup
 
