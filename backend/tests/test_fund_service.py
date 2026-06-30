@@ -5,6 +5,7 @@ import backend.db.models  # noqa: F401
 from sqlalchemy.orm import sessionmaker
 from backend.services import fund_service as fs
 from backend.services import data_collector as dc
+from backend.db import repository as repo
 
 
 @pytest.fixture()
@@ -50,3 +51,40 @@ def test_refresh_propagates_collector_error(session, monkeypatch):
                         lambda c: {"error": "boom", "source": "akshare"})
     out = fs.refresh_fund("110011", session=session)
     assert "error" in out
+
+
+def test_get_basic_info_no_data(session):
+    assert "error" in fs.get_basic_info("110011", session=session)
+
+
+def test_get_basic_info_returns_row(session):
+    repo.upsert_fund(session, {"fund_code": "110011", "fund_name": "FundA",
+                               "fund_type": "混合型", "manager": "X", "company": "Y"})
+    out = fs.get_basic_info("110011", session=session)
+    assert out["fund_name"] == "FundA"
+    assert out["source"] == "akshare"
+    assert "as_of" in out
+
+
+def test_get_nav_history_no_data(session):
+    assert "error" in fs.get_nav_history("110011", session=session)
+
+
+def test_get_nav_history_full_and_range(session):
+    rows = [{"nav_date": f"2026-06-{d:02d}", "unit_nav": None,
+             "accumulated_nav": 1.0 + d * 0.01, "daily_return": 0.0,
+             "source": "akshare", "source_updated_at": "2026-06-30"}
+            for d in range(1, 11)]
+    repo.upsert_navs(session, "110011", rows)
+
+    full = fs.get_nav_history("110011", session=session)
+    assert full["count"] == 10
+    assert full["navs"][0]["nav_date"] == "2026-06-01"
+    assert "accumulated_nav" in full["navs"][0]
+    assert full["source"] == "akshare"
+
+    ranged = fs.get_nav_history("110011", start_date="2026-06-03",
+                                end_date="2026-06-05", session=session)
+    assert [r["nav_date"] for r in ranged["navs"]] == \
+        ["2026-06-03", "2026-06-04", "2026-06-05"]
+    assert ranged["count"] == 3

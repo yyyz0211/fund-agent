@@ -93,3 +93,50 @@ def get_metrics(fund_code: str, period: str = "1m", session=None) -> dict:
     finally:
         if owns:
             s.close()
+
+
+def get_basic_info(fund_code: str, session=None) -> dict:
+    """从本地库读基金基础信息。无数据返回可读 error dict（提示先 refresh_fund）。"""
+    s = _with_session(session)
+    owns = session is None
+    try:
+        from backend.db.models import Fund
+        row = s.get(Fund, fund_code)
+        if row is None:
+            return {"error": f"本地无 {fund_code} 基础信息，请先 refresh_fund",
+                    "source": dc.SOURCE}
+        return {"fund_code": row.fund_code, "fund_name": row.fund_name,
+                "fund_type": row.fund_type, "manager": row.manager,
+                "company": row.company, "source": dc.SOURCE, "as_of": dc.today_str()}
+    finally:
+        if owns:
+            s.close()
+
+
+def get_nav_history(fund_code: str, start_date: str = "", end_date: str = "",
+                    session=None) -> dict:
+    """从本地库读带日期的净值序列，支持可选区间过滤（空字符串=不限）。
+
+    nav_date 为 YYYY-MM-DD 字符串，区间过滤用字符串比较。无数据返回 error dict。
+    """
+    s = _with_session(session)
+    owns = session is None
+    try:
+        from sqlalchemy import select
+        from backend.db.models import FundNav
+        stmt = select(FundNav).where(FundNav.fund_code == fund_code)
+        if start_date:
+            stmt = stmt.where(FundNav.nav_date >= start_date)
+        if end_date:
+            stmt = stmt.where(FundNav.nav_date <= end_date)
+        rows = s.scalars(stmt.order_by(FundNav.nav_date)).all()
+        if not rows:
+            return {"error": f"本地无 {fund_code} 净值数据，请先 refresh_fund",
+                    "source": dc.SOURCE}
+        navs = [{"nav_date": r.nav_date, "accumulated_nav": r.accumulated_nav,
+                 "daily_return": r.daily_return} for r in rows]
+        return {"fund_code": fund_code, "navs": navs, "count": len(navs),
+                "source": dc.SOURCE, "as_of": dc.today_str()}
+    finally:
+        if owns:
+            s.close()
