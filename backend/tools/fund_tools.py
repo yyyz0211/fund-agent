@@ -8,6 +8,8 @@ service,把返回字典直接交给 LangChain。LLM 不接触网络或数据库 
 from langchain_core.tools import tool
 
 from backend.services import fund_service as fs
+from backend.tools.watchlist_tools import WATCHLIST_TOOLS
+from backend.tools.market_tools import MARKET_TOOLS
 
 
 @tool
@@ -28,4 +30,31 @@ def calculate_fund_metrics(fund_code: str, period: str = "1m") -> dict:
     return fs.get_metrics(fund_code, period=period)
 
 
+@tool
+def get_fund_basic_info(fund_code: str) -> dict:
+    """获取基金基础信息:名称、类型、经理、公司(来自本地库,需先 refresh_fund)。"""
+    return fs.get_basic_info(fund_code)
+
+
+@tool
+def get_fund_nav_history(fund_code: str, start_date: str = "", end_date: str = "") -> dict:
+    """获取基金带日期的历史净值序列,支持可选区间(YYYY-MM-DD,空=不限)。
+
+    返回 {fund_code, navs:[{nav_date, accumulated_nav, daily_return}], count, source, as_of}。
+    """
+    return fs.get_nav_history(fund_code, start_date=start_date, end_date=end_date)
+
+
+@tool
+def refresh_fund(fund_code: str) -> dict:
+    """联网拉取一只基金的最新基础信息与净值并入本地库。返回 {fund_code, navs_inserted, source, as_of}。"""
+    return fs.refresh_fund(fund_code)
+
+
+# Phase-1 thin agent 兼容入口
 TOOLS = [get_latest_fund_nav, calculate_fund_metrics]
+
+FUND_TOOLS = [get_latest_fund_nav, calculate_fund_metrics,
+              get_fund_basic_info, get_fund_nav_history, refresh_fund]
+
+ALL_TOOLS = FUND_TOOLS + WATCHLIST_TOOLS + MARKET_TOOLS

@@ -57,3 +57,39 @@ def test_tool_lists_exposed(monkeypatch):
         "get_watchlist", "add_fund_to_watchlist",
         "remove_fund_from_watchlist", "update_fund_note"}
     assert {t.name for t in mt.MARKET_TOOLS} == {"get_market_indices", "refresh_market"}
+
+
+def test_fund_basic_info_tool(monkeypatch):
+    monkeypatch.setattr(fs, "get_basic_info",
+                        lambda code, session=None: {"fund_code": code, "fund_name": "FundA",
+                                                    "source": "akshare"})
+    out = fund_tools.get_fund_basic_info.invoke({"fund_code": "110011"})
+    assert out["fund_name"] == "FundA"
+
+
+def test_fund_nav_history_tool(monkeypatch):
+    monkeypatch.setattr(fs, "get_nav_history",
+                        lambda code, start_date="", end_date="", session=None: {
+                            "fund_code": code, "navs": [], "count": 0,
+                            "start": start_date, "end": end_date, "source": "akshare"})
+    out = fund_tools.get_fund_nav_history.invoke(
+        {"fund_code": "110011", "start_date": "2026-06-01", "end_date": "2026-06-30"})
+    assert out["start"] == "2026-06-01" and out["end"] == "2026-06-30"
+
+
+def test_refresh_fund_tool(monkeypatch):
+    monkeypatch.setattr(fs, "refresh_fund",
+                        lambda code, session=None: {"fund_code": code, "navs_inserted": 5,
+                                                    "source": "akshare"})
+    assert fund_tools.refresh_fund.invoke({"fund_code": "110011"})["navs_inserted"] == 5
+
+
+def test_all_tools_aggregate_has_11_unique():
+    names = [t.name for t in fund_tools.ALL_TOOLS]
+    assert len(names) == 11
+    assert len(set(names)) == 11  # no name collisions
+    assert set(names) == {
+        "get_latest_fund_nav", "calculate_fund_metrics", "get_fund_basic_info",
+        "get_fund_nav_history", "refresh_fund", "get_watchlist",
+        "add_fund_to_watchlist", "remove_fund_from_watchlist", "update_fund_note",
+        "get_market_indices", "refresh_market"}
