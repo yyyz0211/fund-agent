@@ -1,6 +1,7 @@
 import type {
   AnnouncementList, Fund, FundMetrics, MarketLatest,
   NavHistory, NavPoint, PortfolioPnl, ComparisonSeries,
+  FundTransaction, TransactionUpsertPayload,
   WatchlistPatchPayload, WatchlistRow, WatchlistUpsertPayload,
 } from "@/types/api";
 
@@ -66,6 +67,21 @@ export const api = {
     send<{ fund_code: string; removed: boolean }>(
       "DELETE",
       `/api/watchlist/${encodeURIComponent(fundCode)}`,
+    ),
+  watchlistTransactions: (fundCode: string) =>
+    get<FundTransaction[]>(
+      `/api/watchlist/${encodeURIComponent(fundCode)}/transactions`,
+    ),
+  watchlistAddTransaction: (fundCode: string, body: TransactionUpsertPayload) =>
+    send<{ transaction: FundTransaction; watchlist: WatchlistRow }>(
+      "POST",
+      `/api/watchlist/${encodeURIComponent(fundCode)}/transactions`,
+      body,
+    ),
+  watchlistRemoveTransaction: (fundCode: string, txId: number) =>
+    send<{ removed: boolean; transaction: FundTransaction; watchlist: WatchlistRow | null }>(
+      "DELETE",
+      `/api/watchlist/${encodeURIComponent(fundCode)}/transactions/${txId}`,
     ),
   marketLatest: () => get<MarketLatest>("/api/market/latest"),
   announcements: (fundCode = "", limit = 20) =>

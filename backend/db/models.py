@@ -38,6 +38,11 @@ class Watchlist(Base):
     `fund_code` 唯一 —— 一只基金在自选里最多出现一次。持有相关
     字段(cost_nav、holding_share …)都允许为空,以便"关注"行
     不必填写持仓信息。
+
+    `cost_nav_basis` 标记 `holding_share` / `cost_nav` 是不是由
+    `FundTransaction` 表重算而来 —— `"legacy"` 表示手工录入(老
+    行为),`"transactions"` 表示被交易表接管。前端据此切换"买入
+    日期" vs "首次建仓 + 加仓 N 笔"的展示文案。
     """
     __tablename__ = "watchlist"
     __table_args__ = (UniqueConstraint("fund_code", name="uq_watchlist_fund"),)
@@ -50,8 +55,35 @@ class Watchlist(Base):
     cost_nav: Mapped[float | None] = mapped_column(Float)
     buy_date: Mapped[str | None] = mapped_column(String)
     note: Mapped[str | None] = mapped_column(String)
+    cost_nav_basis: Mapped[str | None] = mapped_column(String, default="legacy")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class FundTransaction(Base):
+    """买入/加仓明细。
+
+    每条记录是一次买入行为;`holding_share` / `cost_nav` 在 service
+    层按 **加权平均** 公式重算回写到 `Watchlist` 表(详见
+    `services.transaction_service.recalc_holding`)。
+
+    `kind` 字段为后续减仓/分红预留,当前只接受 `"buy"`。
+    """
+    __tablename__ = "fund_transactions"
+    __table_args__ = (
+        UniqueConstraint("fund_code", "tx_date", "tx_seq", name="uq_tx_fund_date_seq"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    fund_code: Mapped[str] = mapped_column(String, index=True)
+    tx_date: Mapped[str] = mapped_column(String)
+    tx_seq: Mapped[int] = mapped_column(Integer, default=0)
+    kind: Mapped[str] = mapped_column(String, default="buy")
+    amount: Mapped[float] = mapped_column(Float)
+    nav: Mapped[float] = mapped_column(Float)
+    share: Mapped[float | None] = mapped_column(Float)
+    fee: Mapped[float | None] = mapped_column(Float)
+    note: Mapped[str | None] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
 class FundNav(Base):

@@ -6,7 +6,7 @@ import Link from "next/link";
 import { ArrowLeft, DownloadCloud, GitCompareArrows, MessageSquareText, Plus, Star } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { NavChart } from "@/components/NavChart";
+import { NavChart, PERIODS } from "@/components/NavChart";
 import { MetricCards } from "@/components/MetricCard";
 import { PageHeader, SectionHeader } from "@/components/PageHeader";
 import { HoldingCard } from "@/components/HoldingCard";
@@ -16,7 +16,6 @@ import { useToast } from "@/components/Toast";
 import { api } from "@/lib/api";
 import { formatPct, formatNav, formatDate } from "@/lib/format";
 
-const PERIODS = ["1w", "1m", "3m", "6m", "1y"] as const;
 const PERIOD_LABELS: Record<(typeof PERIODS)[number], string> = {
   "1w": "1周",
   "1m": "1月",
@@ -207,7 +206,7 @@ export default function FundDetail({ params }: { params: { code: string } }) {
 
       <section>
         <SectionHeader title="净值走势" description="累计净值历史曲线，按本地数据可用范围绘制。" />
-        <NavChart code={code} />
+        <NavChart code={code} period={period} />
       </section>
 
       <section>

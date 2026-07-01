@@ -154,7 +154,14 @@ function HoldingSummary({ row }: { row: WatchlistRow }) {
   if (row.holding_share != null) parts.push(`${row.holding_share.toFixed(2)} 份`);
   if (row.cost_nav != null) parts.push(`成本 ${row.cost_nav.toFixed(4)}`);
   if (parts.length === 0) return <span className="text-gray-500">已标记,待补字段</span>;
-  return <span className="text-xs">{parts.join(" · ")}</span>;
+  return (
+    <span className="text-xs">
+      {parts.join(" · ")}
+      {row.transaction_count != null && row.transaction_count > 0 && (
+        <span className="text-gray-400"> · 加仓 {row.transaction_count} 笔</span>
+      )}
+    </span>
+  );
 }
 
 /**

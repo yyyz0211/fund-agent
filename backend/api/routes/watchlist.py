@@ -21,6 +21,91 @@ from backend.services import watchlist_service as ws
 router = APIRouter(prefix="/api/watchlist", tags=["watchlist"])
 
 
+class TransactionUpsert(BaseModel):
+    """POST /api/watchlist/{code}/transactions 入参。
+
+    数值字段 `ge=0` 与 Watchlist 现有校验保持一致;`nav=0` 会导致
+    share 反算失败,route 层额外拦截。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    tx_date: str
+    amount: float = Field(ge=0)
+    nav: float = Field(ge=0)
+    fee: Optional[float] = Field(default=None, ge=0)
+    note: Optional[str] = Field(default=None, max_length=2000)
+    kind: Optional[str] = Field(default="buy")
+
+    @field_validator("tx_date")
+    @classmethod
+    def _validate_tx_date(cls, v: Optional[str]) -> Optional[str]:
+        if v in (None, ""):
+            raise ValueError("tx_date 不能为空")
+        try:
+            date.fromisoformat(v)
+        except ValueError as exc:
+            raise ValueError(f"tx_date must be ISO YYYY-MM-DD, got {v!r}") from exc
+        return v
+
+
+class TransactionDeleteResponse(BaseModel):
+    """DELETE 响应 —— 顺手把 recalc 后的 watchlist 也回传,前端无需
+    额外再发一次 PnL 请求即可更新持仓卡。"""
+
+    removed: bool
+    transaction: dict
+    watchlist: dict | None = None
+
+
+def _tx_payload(payload: TransactionUpsert) -> dict:
+    return {
+        "tx_date": payload.tx_date,
+        "amount": payload.amount,
+        "nav": payload.nav,
+        "fee": payload.fee,
+        "note": payload.note,
+        "kind": payload.kind or "buy",
+    }
+
+
+@router.get("/{fund_code}/transactions")
+def list_transactions(fund_code: str) -> list[dict]:
+    """列出一只基金的全部买入记录。基金不在自选里时返回空列表(不报错),
+    以便前端在新建自选后能直接查得到。"""
+    return ws.list_transactions(fund_code)
+
+
+@router.post("/{fund_code}/transactions", status_code=200)
+def add_transaction(fund_code: str, payload: TransactionUpsert) -> dict:
+    """新增一笔买入。`amount > 0` 且 `nav > 0` 都会在 Pydantic 层校验;
+    基金不在自选里 → 404。"""
+    if payload.amount == 0 or payload.nav == 0:
+        raise HTTPException(
+            status_code=422,
+            detail="amount 和 nav 必须都大于 0,否则无法反算份额",
+        )
+    result = ws.add_transaction(fund_code, _tx_payload(payload))
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"{fund_code} 不在自选池中")
+    return result
+
+
+@router.delete("/{fund_code}/transactions/{tx_id}")
+def delete_transaction(fund_code: str, tx_id: int) -> dict:
+    """按 id 删除一笔买入,删除后用剩余交易重算并回写 Watchlist。"""
+    result = ws.remove_transaction(tx_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"transaction {tx_id} 不存在")
+    # fund_code 路径参数做一道二次校验,防止误删其它基金行
+    if result["transaction"]["fund_code"] != fund_code:
+        raise HTTPException(
+            status_code=400,
+            detail=f"transaction {tx_id} 不属于 {fund_code}",
+        )
+    return result
+
+
 class WatchlistUpsert(BaseModel):
     """POST 入参。`fund_code` 必填,其它字段全部 Optional。
 
@@ -96,7 +181,25 @@ def _patch_payload(payload: WatchlistPatch) -> dict:
 
 @router.get("")
 def list_watchlist() -> list[dict]:
-    return ws.list_watchlist()
+    """列出全部自选行,每行附带 transaction_count(避免前端再发 N 次请求)。"""
+    from backend.db import repository as repo
+    from backend.db.session import get_session
+
+    rows = ws.list_watchlist()
+    if not rows:
+        return rows
+    # 一次性把每只基金的交易笔数取出来,避免 N+1
+    s = get_session()
+    try:
+        counts = {
+            code: repo.count_transactions(s, code)
+            for code in (r["fund_code"] for r in rows)
+        }
+    finally:
+        s.close()
+    for r in rows:
+        r["transaction_count"] = counts.get(r["fund_code"], 0)
+    return rows
 
 
 @router.post("", status_code=200)

@@ -1,21 +1,47 @@
 "use client";
+import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import {
+  CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
+} from "recharts";
 import { StateBlock } from "@/components/StateBlock";
 import { api } from "@/lib/api";
 import { formatNav } from "@/lib/format";
 
-export function NavChart({ code }: { code: string }) {
+/** Convert period shorthand to a cutoff date string (YYYY-MM-DD). */
+function periodToStart(period: (typeof PERIODS)[number]): string {
+  const now = new Date();
+  switch (period) {
+    case "1w": now.setDate(now.getDate() - 7); break;
+    case "1m": now.setMonth(now.getMonth() - 1); break;
+    case "3m": now.setMonth(now.getMonth() - 3); break;
+    case "6m": now.setMonth(now.getMonth() - 6); break;
+    case "1y": now.setFullYear(now.getFullYear() - 1); break;
+  }
+  return now.toISOString().slice(0, 10);
+}
+
+export const PERIODS = ["1w", "1m", "3m", "6m", "1y"] as const;
+export type Period = (typeof PERIODS)[number];
+
+export function NavChart({ code, period = "1m" }: { code: string; period?: Period }) {
+  const start = useMemo(() => periodToStart(period), [period]);
+
   const { data, isLoading, error } = useQuery({
-    queryKey: ["navHistory", code], queryFn: () => api.navHistory(code),
+    queryKey: ["navHistory", code, start],
+    queryFn: () => api.navHistory(code, start),
   });
-  if (isLoading) return <StateBlock title="加载净值走势" tone="loading">正在读取本地净值历史。</StateBlock>;
+
+  if (isLoading) return <StateBlock title="加载净值走势" tone="loading">正在读取 {period} 净值历史。</StateBlock>;
   if (error) return <StateBlock title="净值走势加载失败" tone="error">本地暂无净值历史，请先刷新基金数据。</StateBlock>;
+
   const points = (data!.navs ?? []).map((p) => ({
-    date: p.nav_date, nav: p.accumulated_nav,
+    date: p.nav_date,
+    nav: p.accumulated_nav,
   }));
+
   if (points.length === 0) {
-    return <StateBlock title="暂无净值走势">本地没有可绘制的净值历史。</StateBlock>;
+    return <StateBlock title="暂无净值走势">本地在 {period} 区间内无可用净值历史。</StateBlock>;
   }
 
   return (

@@ -10,9 +10,9 @@ service 既可以传入测试用的内存 Session,也可以传通过
   这样调用方可以直接 JSON 序列化。
 - 写路径都在内部自己 `session.commit()`,调用方不要重复提交。
 """
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 
-from backend.db.models import Fund, FundNav, Watchlist
+from backend.db.models import Fund, FundNav, FundTransaction, Watchlist
 
 
 def _watchlist_to_dict(w: Watchlist) -> dict:
@@ -31,6 +31,7 @@ def _watchlist_to_dict(w: Watchlist) -> dict:
         "cost_nav": w.cost_nav,
         "buy_date": w.buy_date,
         "note": w.note,
+        "cost_nav_basis": w.cost_nav_basis,
         "created_at": w.created_at.isoformat() if w.created_at else None,
         "updated_at": w.updated_at.isoformat() if w.updated_at else None,
     }
@@ -190,3 +191,151 @@ def get_accumulated_navs(session, fund_code: str) -> list[float]:
         .where(FundNav.fund_code == fund_code)
         .order_by(FundNav.nav_date)).all()
     return [float(x) for x in rows if x is not None]
+
+
+def _tx_to_dict(tx: FundTransaction) -> dict:
+    """FundTransaction ORM 行 → 可序列化 dict。"""
+    return {
+        "id": tx.id,
+        "fund_code": tx.fund_code,
+        "tx_date": tx.tx_date,
+        "tx_seq": tx.tx_seq,
+        "kind": tx.kind,
+        "amount": tx.amount,
+        "nav": tx.nav,
+        "share": tx.share,
+        "fee": tx.fee,
+        "note": tx.note,
+        "created_at": tx.created_at.isoformat() if tx.created_at else None,
+    }
+
+
+def list_transactions(session, fund_code: str) -> list[dict]:
+    """按 `fund_code` 列出全部买入/加仓记录,按日期+seq 升序。
+
+    同一天多笔买入用 `tx_seq` 区分顺序,而不是按 id —— 用户场景下
+    "先买的成本"应当排在前面,id 顺序可能与用户输入顺序不一致。
+    """
+    rows = session.scalars(
+        select(FundTransaction)
+        .where(FundTransaction.fund_code == fund_code)
+        .order_by(FundTransaction.tx_date, FundTransaction.tx_seq, FundTransaction.id)
+    ).all()
+    return [_tx_to_dict(r) for r in rows]
+
+
+def count_transactions(session, fund_code: str) -> int:
+    """返回某只基金的交易笔数 —— 给列表/卡片 UI 展示用。"""
+    return int(session.scalar(
+        select(func.count())
+        .select_from(FundTransaction)
+        .where(FundTransaction.fund_code == fund_code)
+    ) or 0)
+
+
+def get_transaction(session, tx_id: int) -> FundTransaction | None:
+    """按 id 取单条交易。"""
+    return session.get(FundTransaction, tx_id)
+
+
+def delete_transaction(session, tx_id: int) -> dict | None:
+    """删除一条交易,返回被删的 dict(用于告知前端它原本是哪只基金);
+    不存在返回 None —— 调用方据此发 404。
+    """
+    tx = session.get(FundTransaction, tx_id)
+    if tx is None:
+        return None
+    snapshot = _tx_to_dict(tx)
+    session.delete(tx)
+    session.commit()
+    return snapshot
+
+
+def _tx_to_dict(tx: FundTransaction) -> dict:
+    """FundTransaction 的序列化函数。"""
+    return {
+        "id": tx.id,
+        "fund_code": tx.fund_code,
+        "tx_date": tx.tx_date,
+        "tx_seq": tx.tx_seq,
+        "kind": tx.kind,
+        "amount": tx.amount,
+        "nav": tx.nav,
+        "share": tx.share,
+        "fee": tx.fee,
+        "note": tx.note,
+        "created_at": tx.created_at.isoformat() if tx.created_at else None,
+    }
+
+
+def list_transactions(session, fund_code: str) -> list[dict]:
+    """按 fund_code 列出所有交易,按日期早到晚、再按 seq 升序。"""
+    rows = session.scalars(
+        select(FundTransaction)
+        .where(FundTransaction.fund_code == fund_code)
+        .order_by(FundTransaction.tx_date, FundTransaction.tx_seq, FundTransaction.id)
+    ).all()
+    return [_tx_to_dict(t) for t in rows]
+
+
+def count_transactions(session, fund_code: str) -> int:
+    """单只基金的交易条数,供 watchlist 列表返回 `transaction_count` 用。"""
+    return session.scalar(
+        select(func.count())
+        .select_from(FundTransaction)
+        .where(FundTransaction.fund_code == fund_code)
+    ) or 0
+
+
+def get_transaction(session, tx_id: int) -> dict | None:
+    """按主键取单笔交易,不在则 None。"""
+    tx = session.get(FundTransaction, tx_id)
+    return _tx_to_dict(tx) if tx else None
+
+
+def next_tx_seq(session, fund_code: str, tx_date: str) -> int:
+    """同日下一笔的 seq:返回当前同日最大 seq + 1,默认 0。"""
+    current = session.scalar(
+        select(func.coalesce(func.max(FundTransaction.tx_seq), -1))
+        .where(FundTransaction.fund_code == fund_code)
+        .where(FundTransaction.tx_date == tx_date)
+    )
+    return int(current) + 1
+
+
+def add_transaction(session, fund_code: str, attrs: dict) -> dict:
+    """插入一笔交易并返回序列化结果。
+
+    `attrs` 允许的字段:`tx_date`、`amount`、`nav`、`fee`、`note`、
+    `kind`。`tx_seq` 自动取下一个可用序号;`share` 在本层按
+    `amount / nav` 算出,调用方不必传。
+    """
+    tx_seq = next_tx_seq(session, fund_code, attrs["tx_date"])
+    amount = float(attrs["amount"])
+    nav = float(attrs["nav"])
+    share = amount / nav if nav > 0 else None
+    tx = FundTransaction(
+        fund_code=fund_code,
+        tx_date=attrs["tx_date"],
+        tx_seq=tx_seq,
+        kind=attrs.get("kind", "buy"),
+        amount=amount,
+        nav=nav,
+        share=share,
+        fee=float(attrs["fee"]) if attrs.get("fee") is not None else None,
+        note=attrs.get("note"),
+    )
+    session.add(tx)
+    session.commit()
+    return _tx_to_dict(tx)
+
+
+def delete_transaction(session, tx_id: int) -> dict | None:
+    """按主键删除交易,返回删除前的序列化结果,不存在则 None。"""
+    tx = session.get(FundTransaction, tx_id)
+    if tx is None:
+        return None
+    snap = _tx_to_dict(tx)
+    session.delete(tx)
+    session.commit()
+    return snap

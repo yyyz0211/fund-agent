@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from sqlalchemy import select
 
+from backend.db import repository as repo
 from backend.db.models import Fund, FundNav, Watchlist
 from backend.services import data_collector as dc
 
@@ -24,7 +25,8 @@ _REQUIRED_FIELDS = ("holding_share", "cost_nav")
 
 
 def _row_to_pnl_item(row: Watchlist, fund_name: str | None,
-                      current_nav: float, nav_date: str) -> dict:
+                      current_nav: float, nav_date: str,
+                      transaction_count: int) -> dict:
     """单行 -> 盈亏 dict。"""
     share = float(row.holding_share or 0.0)
     cost = float(row.cost_nav or 0.0)
@@ -46,6 +48,8 @@ def _row_to_pnl_item(row: Watchlist, fund_name: str | None,
         "market_value": round(market_value, 4),
         "pnl_abs": round(pnl_abs, 4),
         "pnl_pct": round(pnl_pct, 6) if pnl_pct is not None else None,
+        "cost_nav_basis": row.cost_nav_basis or "legacy",
+        "transaction_count": transaction_count,
     }
 
 
@@ -84,10 +88,11 @@ def calculate_pnl(
         items: list[dict] = []
         skipped: list[dict] = []
 
-        # 一次性把当前会用到 fund_name / 最新 NAV 拉出来,避免 N+1。
+        # 一次性把当前会用到 fund_name / 最新 NAV / 交易笔数 拉出来,避免 N+1。
         codes = [r.fund_code for r in rows]
         names: dict[str, str | None] = {}
         latest: dict[str, tuple[float, str]] = {}
+        tx_counts: dict[str, int] = {}
         if codes:
             name_rows = s.scalars(select(Fund).where(Fund.fund_code.in_(codes))).all()
             names = {f.fund_code: f.fund_name for f in name_rows}
@@ -101,6 +106,9 @@ def calculate_pnl(
                 ).first()
                 if nav_row is not None and nav_row.accumulated_nav is not None:
                     latest[code] = (float(nav_row.accumulated_nav), str(nav_row.nav_date))
+
+            # 交易笔数(供 HoldingCard 展示"加仓 N 笔"用)
+            tx_counts = {code: repo.count_transactions(s, code) for code in codes}
 
         for r in rows:
             if r.holding_share is None or r.cost_nav is None:
@@ -129,6 +137,7 @@ def calculate_pnl(
             current_nav, nav_date = latest[r.fund_code]
             items.append(_row_to_pnl_item(
                 r, names.get(r.fund_code), current_nav, nav_date,
+                tx_counts.get(r.fund_code, 0),
             ))
 
         # 聚合

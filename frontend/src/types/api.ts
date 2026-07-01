@@ -45,8 +45,33 @@ export interface WatchlistRow {
   holding_share: number | null;
   cost_nav: number | null;
   buy_date: string | null;
+  cost_nav_basis: "legacy" | "transactions" | null;
+  transaction_count?: number;
   created_at?: string | null;
   updated_at?: string | null;
+}
+
+export interface FundTransaction {
+  id: number;
+  fund_code: string;
+  tx_date: string;
+  tx_seq: number;
+  kind: "buy" | string;
+  amount: number;
+  nav: number;
+  share: number | null;
+  fee: number | null;
+  note: string | null;
+  created_at: string;
+}
+
+export interface TransactionUpsertPayload {
+  tx_date: string;
+  amount: number;
+  nav: number;
+  fee?: number | null;
+  note?: string | null;
+  kind?: string;
 }
 
 export interface WatchlistUpsertPayload {
@@ -97,6 +122,8 @@ export interface PnlItem {
   market_value: number;
   pnl_abs: number;
   pnl_pct: number | null;
+  cost_nav_basis?: "legacy" | "transactions";
+  transaction_count?: number;
 }
 
 export interface PnlTotals {

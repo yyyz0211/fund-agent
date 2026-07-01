@@ -104,3 +104,60 @@ def update(fund_code: str, patch: dict, session=None) -> dict | None:
     finally:
         if owns:
             s.close()
+
+
+def list_transactions(fund_code: str, session=None) -> list[dict]:
+    """列出一只基金的全部买入/加仓记录(按日期+seq 升序)。"""
+    s = _with_session(session)
+    owns = session is None
+    try:
+        return repo.list_transactions(s, fund_code)
+    finally:
+        if owns:
+            s.close()
+
+
+def add_transaction(fund_code: str, attrs: dict, session=None) -> dict | None:
+    """新增一笔买入记录,落库后自动重算并回写 Watchlist。
+
+    返回 {"transaction": <新交易 dict>, "watchlist": <重算后的行>};
+    基金不在自选池中返回 None —— 调用方发 404。
+    """
+    s = _with_session(session)
+    owns = session is None
+    try:
+        tx = repo.add_transaction(s, fund_code, attrs or {})
+        wl = _recalc(s, fund_code)
+        if wl is None:
+            return None
+        return {"transaction": tx, "watchlist": wl}
+    finally:
+        if owns:
+            s.close()
+
+
+def remove_transaction(tx_id: int, session=None) -> dict | None:
+    """按 `tx_id` 删除一笔交易,删除后用剩余交易重算并回写 Watchlist。
+
+    返回 {"removed": True, "transaction": <原交易摘要>, "watchlist": <新行>}
+    或 None(交易不存在)。注意这里需要从被删交易拿到 fund_code,因
+    为 delete 后 SQLAlchemy 实例已 expire。
+    """
+    s = _with_session(session)
+    owns = session is None
+    try:
+        snapshot = repo.delete_transaction(s, tx_id)
+        if snapshot is None:
+            return None
+        fund_code = snapshot["fund_code"]
+        wl = _recalc(s, fund_code)
+        return {"removed": True, "transaction": snapshot, "watchlist": wl}
+    finally:
+        if owns:
+            s.close()
+
+
+def _recalc(s, fund_code: str) -> dict | None:
+    """薄包装:在当前 session 上调 transaction_service.recalc_holding。"""
+    from backend.services.transaction_service import recalc_holding
+    return recalc_holding(fund_code, session=s)

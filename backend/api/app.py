@@ -25,6 +25,18 @@ app.add_middleware(
 )
 
 
+@app.on_event("startup")
+def _ensure_schema() -> None:
+    """进程启动时把 ORM 表建齐 + 给老表补列。
+
+    生产级项目会用 alembic,本项目当前没引入迁移工具,这里
+    `init_db` 自带"反射 → 缺列 ALTER"逻辑,幂等可重复跑。
+    """
+    from backend.db.init_db import init_db
+
+    init_db()
+
+
 @app.get("/api/health")
 def health() -> dict:
     return {"status": "ok"}

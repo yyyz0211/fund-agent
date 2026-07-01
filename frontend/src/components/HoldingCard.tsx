@@ -47,6 +47,10 @@ export function HoldingCard({ fundCode }: { fundCode: string }) {
   const isProfit = (item.pnl_abs ?? 0) >= 0;
   const accent = isProfit ? "text-emerald-700" : "text-rose-700";
   const accentBg = isProfit ? "bg-emerald-50" : "bg-rose-50";
+  // 交易表驱动:用 item.buy_date(已 recalc 成最早一笔) + 笔数提示;
+  // 老数据(legacy):保持单行"买入日期"。
+  const isTxBasis = (item.cost_nav_basis ?? "legacy") === "transactions";
+  const txCount = item.transaction_count ?? 0;
 
   return (
     <Card className="p-6">
@@ -64,7 +68,18 @@ export function HoldingCard({ fundCode }: { fundCode: string }) {
           <Stat label="成本 NAV" value={formatNav(item.cost_nav)} />
           <Stat label="最新 NAV" value={formatNav(item.current_nav)} />
           <Stat label="持仓份额" value={item.holding_share.toLocaleString()} />
-          <Stat label="买入日期" value={item.buy_date ? formatDate(item.buy_date) : "—"} />
+          <Stat
+            label={isTxBasis ? "建仓" : "买入日期"}
+            value={
+              isTxBasis
+                ? item.buy_date
+                  ? `首次建仓 ${formatDate(item.buy_date)} · 加仓 ${txCount} 笔`
+                  : `加仓 ${txCount} 笔`
+                : item.buy_date
+                  ? formatDate(item.buy_date)
+                  : "—"
+            }
+          />
         </div>
 
         <div className={`mt-5 rounded-lg ${accentBg} p-4`}>
