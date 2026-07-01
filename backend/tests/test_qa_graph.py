@@ -8,6 +8,7 @@ from unittest.mock import patch, MagicMock
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 from langgraph.errors import GraphRecursionError
 
+import backend.graph.qa_graph as qa_graph_module
 from backend.graph.policy import REFUSAL_MESSAGE
 from backend.graph.qa_graph import (
     _build_graph,
@@ -36,6 +37,20 @@ def _make_fake_model(responses: list[AIMessage]):
 
 
 # ─── Tests ───────────────────────────────────────────────────────────────────
+
+class TestServerExport:
+    """LangGraph Server 加载入口契约。"""
+
+    def test_public_graph_export_has_no_custom_checkpointer(self):
+        """langgraph dev 自带 persistence,导出的 graph 不能绑定 MemorySaver。"""
+        assert getattr(qa_graph_module.graph, "checkpointer", None) is None
+
+    def test_local_graph_singleton_keeps_memory_saver_for_ask(self):
+        """本地 ask/stream 仍使用内部 checkpointer 维持同 thread 多轮历史。"""
+        qa_graph_module.reset_graph()
+        local_graph = qa_graph_module._get_graph()
+        assert getattr(local_graph, "checkpointer", None) is not None
+
 
 class TestAskFinalAnswer:
     """ask() 返回最终 AI 回答文本。"""

@@ -25,7 +25,12 @@ import { StateBlock } from "@/components/StateBlock";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { LANGGRAPH_URL, getLangGraphClient, LANGGRAPH_ASSISTANT } from "@/lib/langgraph";
+import {
+  LANGGRAPH_URL,
+  getLangGraphClient,
+  LANGGRAPH_ASSISTANT,
+  ensureLangGraphThread,
+} from "@/lib/langgraph";
 import { formatDate } from "@/lib/format";
 import {
   type QaToolStep as ToolStep,
@@ -226,6 +231,7 @@ export default function QaPage({ searchParams }: { searchParams: { prefill?: str
     updateThreadHistory(activeId, (h) => [...h, userMsg, assistantMsg]);
     try {
       const client = getLangGraphClient();
+      await ensureLangGraphThread(activeId);
       // streamMode: "messages" — 每条 token-level 事件 data 是 [msg],
       // 我们保留这种结构因为它能拿到 AI 文本的流式 chunk。
       // 工具结果去重在 UI 层做(`status === 'done'` 时不再覆盖),

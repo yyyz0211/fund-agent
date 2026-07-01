@@ -15,6 +15,7 @@ dist/
 
 # LangGraph dev tooling (ephemeral ops pickle + api dir)
 .langgraph_api/
+.history/
 *.pckl
 
 # Data & secrets

@@ -200,7 +200,9 @@ def reset_graph():
 
 # ─── Public API ───────────────────────────────────────────────────────────────
 
-graph = _get_graph()
+# LangGraph Server 会自动注入自己的 persistence/checkpointer。导出的 graph
+# 不能绑定进程内 MemorySaver,否则新版 langgraph dev 会拒绝加载。
+graph = _build_graph(checkpointer=None)
 
 
 # 每次提问允许的最大"tools → llm → tools"循环轮数。
@@ -262,7 +264,7 @@ def ask(question: str, *, thread_id: str | None = None, config: dict | None = No
     """
     run_config = _make_run_config(thread_id, config)
     try:
-        result = graph.invoke(
+        result = _get_graph().invoke(
             {"messages": [HumanMessage(content=question)]},
             config=run_config,
         )
@@ -295,7 +297,7 @@ def stream(
     """
     run_config = _make_run_config(thread_id, config)
     try:
-        for chunk in graph.stream(
+        for chunk in _get_graph().stream(
             {"messages": [HumanMessage(content=question)]},
             config=run_config,
         ):
