@@ -47,7 +47,12 @@ def get_fund_nav_history(fund_code: str, start_date: str = "", end_date: str = "
 
 @tool
 def refresh_fund(fund_code: str) -> dict:
-    """联网拉取一只基金的最新基础信息与净值并入本地库。返回 {fund_code, navs_inserted, source, as_of}。"""
+    """联网拉取一只基金的最新基础信息与净值并入本地库。
+
+    返回 `{fund_code, navs_inserted, already_up_to_date, source, as_of}`。
+    当 `already_up_to_date=True` 时表示本地已是最新,不应再次调用本工具 —
+    应切换到 `get_latest_fund_nav` / `get_fund_nav_history` 读取已有数据。
+    """
     return fs.refresh_fund(fund_code)
 
 

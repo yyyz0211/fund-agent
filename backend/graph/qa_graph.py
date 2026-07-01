@@ -24,6 +24,7 @@ from backend.tools.fund_tools import ALL_TOOLS
 # ─── Graph state ──────────────────────────────────────────────────────────────
 
 from langgraph.graph import MessagesState
+from langgraph.errors import GraphRecursionError
 
 # Alias for test and external use
 QAState = MessagesState
@@ -163,21 +164,54 @@ def _get_graph():
 graph = _get_graph()
 
 
+# 每次提问允许的最大"tools → llm → tools"循环轮数。
+# 一轮 = 一次工具调用 + 一次 LLM 总结。超过则抛 GraphRecursionError,
+# 由上层 / 前端用兜底消息承接。默认值偏低是有意为之:正常问题
+# 1-2 轮就结束,8 轮已经非常宽裕;>8 几乎肯定是 LLM 卡死重试。
+DEFAULT_RECURSION_LIMIT = 8
+
+
+def _with_recursion_limit(config: dict | None) -> dict:
+    """把 `recursion_limit` 合入用户传入的 config,缺省用 `DEFAULT_RECURSION_LIMIT`。
+
+    下限保护:如果调用方显式传了一个小于 `MIN_RECURSION_LIMIT` 的值,
+    提高到下限 —— 防止误把上限设成 1 导致所有问题都立刻 GraphRecursionError。
+    """
+    base = dict(config) if config else {}
+    base.setdefault("recursion_limit", DEFAULT_RECURSION_LIMIT)
+    if base["recursion_limit"] < MIN_RECURSION_LIMIT:
+        base["recursion_limit"] = MIN_RECURSION_LIMIT
+    return base
+
+
+# 最小有效 recursion_limit:低于 3 会破坏正常 tool_call 流程(至少
+# tool → llm → tool 一次往返)。测试可用更大值放宽。
+MIN_RECURSION_LIMIT = 3
+
+
 def ask(question: str, *, config: dict | None = None) -> str:
     """本地一次性问答入口。
 
     参数:
         question: 用户提问（中文）。
-        config: 可选，LangGraph ConfigurableField（如 thread_id）。
+        config: 可选,LangGraph ConfigurableField(如 thread_id)与
+                `recursion_limit`(默认 `DEFAULT_RECURSION_LIMIT`)。
 
     返回:
         graph 最终输出的 AI 回答文本（不含 tool_calls）。
         触发合规边界时返回固定拒答文本。
+        命中工具调用次数上限时,降级返回一条说明消息,不抛异常给调用方。
     """
-    result = graph.invoke(
-        {"messages": [HumanMessage(content=question)]},
-        config=(dict(config) if config else None),
-    )
+    try:
+        result = graph.invoke(
+            {"messages": [HumanMessage(content=question)]},
+            config=_with_recursion_limit(config),
+        )
+    except GraphRecursionError:
+        return (
+            "本轮触达最大工具调用轮数,可能是数据获取循环。"
+            "请换一种问法,例如直接给出基金代码和指标。"
+        )
     last = result["messages"][-1]
     return last.content if hasattr(last, "content") else str(last)
 
@@ -189,9 +223,17 @@ def stream(question: str, *, config: dict | None = None) -> Iterator[dict]:
         Iterator[dict]，每个 chunk 为 LangGraph stream 输出的一层状态，
         结构为 {"messages": [...], ...}。
         chunks 按 LangGraph 内部节点顺序产出。
+        命中工具调用次数上限时,产出最后一个 AIMessage 兜底 chunk,
+        不让迭代器直接抛 GraphRecursionError 中断调用方。
     """
-    for chunk in graph.stream(
-        {"messages": [HumanMessage(content=question)]},
-        config=(dict(config) if config else None),
-    ):
-        yield chunk
+    try:
+        for chunk in graph.stream(
+            {"messages": [HumanMessage(content=question)]},
+            config=_with_recursion_limit(config),
+        ):
+            yield chunk
+    except GraphRecursionError:
+        yield {"messages": [AIMessage(content=(
+            "本轮触达最大工具调用轮数,可能是数据获取循环。"
+            "请换一种问法,例如直接给出基金代码和指标。"
+        ))]}

@@ -92,6 +92,11 @@ export default function QaPage({ searchParams }: { searchParams: { prefill?: str
     ]);
     try {
       const client = getLangGraphClient();
+      // streamMode: "messages" — 每条 token-level 事件 data 是 [msg],
+      // 我们保留这种结构因为它能拿到 AI 文本的流式 chunk。
+      // 工具结果去重在 UI 层做(`status === 'done'` 时不再覆盖),
+      // 因为 LangGraph 在某些情况下(例如中断/恢复/Checkpoint 重新)
+      // 会回放同一条 ToolMessage,不能依赖 SDK 层只 emit 一次。
       const stream = client.runs.stream(null, LANGGRAPH_ASSISTANT, {
         input: { messages: [{ role: "human", content: question }] },
         streamMode: "messages",
@@ -132,18 +137,21 @@ export default function QaPage({ searchParams }: { searchParams: { prefill?: str
                     .join("")
                 : JSON.stringify(msg.content ?? "");
           setHistory((h) =>
-            h.map((m) =>
-              m.id === assistantId
-                ? {
-                    ...m,
-                    toolSteps: m.toolSteps.map((s) =>
-                      s.id === msg.tool_call_id
-                        ? { ...s, status: "done", result: resultText }
-                        : s,
-                    ),
-                  }
-                : m,
-            ),
+            h.map((m) => {
+              if (m.id !== assistantId) return m;
+              // 工具结果去重:同 tool_call_id 已经 done 的不再覆盖,
+              // 避免 LangGraph 在回放 ToolMessage 时重复 push 给 UI。
+              const step = m.toolSteps.find((s) => s.id === msg.tool_call_id);
+              if (step && step.status === "done") return m;
+              return {
+                ...m,
+                toolSteps: m.toolSteps.map((s) =>
+                  s.id === msg.tool_call_id
+                    ? { ...s, status: "done", result: resultText }
+                    : s,
+                ),
+              };
+            }),
           );
         }
 

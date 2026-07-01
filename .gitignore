@@ -11,6 +11,11 @@ node_modules/
 .next/
 out/
 dist/
+*.tsbuildinfo
+
+# LangGraph dev tooling (ephemeral ops pickle + api dir)
+.langgraph_api/
+*.pckl
 
 # Data & secrets
 *.db

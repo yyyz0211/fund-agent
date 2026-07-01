@@ -22,6 +22,14 @@ def refresh_fund(fund_code: str, session=None) -> dict:
 
     流程:fetch_fund_info → upsert_fund → fetch_fund_nav_history →
     upsert_navs。任一 fetch 失败,直接返回它的错误字典(不下半段)。
+
+    返回字段:
+      - `already_up_to_date`:True 表示本地已是最新,LLM 不必再调
+        本工具。这是为了避免 `navs_inserted=0` 被模型误解为"上次
+        没拉成功"而触发重复调用 —— 这是 graph 里"同一只 fund
+        被刷 N 次"循环的主要诱因。
+      - `navs_inserted`:本次实际新增的 NAV 行数,与旧字段名保持
+        向下兼容。
     """
     s = _with_session(session)
     owns = session is None
@@ -35,8 +43,13 @@ def refresh_fund(fund_code: str, session=None) -> dict:
         if isinstance(navs, dict) and "error" in navs:
             return navs
         inserted = repo.upsert_navs(s, fund_code, navs)
-        return {"fund_code": fund_code, "navs_inserted": inserted,
-                "source": dc.SOURCE, "as_of": dc.today_str()}
+        return {
+            "fund_code": fund_code,
+            "navs_inserted": inserted,
+            "already_up_to_date": inserted == 0,
+            "source": dc.SOURCE,
+            "as_of": dc.today_str(),
+        }
     finally:
         if owns:
             s.close()

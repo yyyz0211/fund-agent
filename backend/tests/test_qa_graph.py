@@ -6,9 +6,14 @@
 import pytest
 from unittest.mock import patch, MagicMock
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
+from langgraph.errors import GraphRecursionError
 
 from backend.graph.policy import REFUSAL_MESSAGE
-from backend.graph.qa_graph import _build_graph
+from backend.graph.qa_graph import (
+    _build_graph,
+    DEFAULT_RECURSION_LIMIT,
+    ask as qa_ask,
+)
 
 
 def _make_fake_model(responses: list[AIMessage]):
@@ -201,3 +206,56 @@ class TestToolCallLoop:
         assert isinstance(messages[-1], AIMessage)
         assert "1.234" in messages[-1].content
         assert "2026-06-30" in messages[-1].content
+
+
+class TestRecursionLimit:
+    """recursion_limit 兜底:防止 LLM 陷入"工具-重试"死循环。
+
+    真实场景:LuLM 看到 `refresh_fund` 返回 `navs_inserted=0` 时,有
+    概率把它当成"上次没真入库",从而反复刷同一只基金。我们加上限保证
+    不会无止境烧 token / network,触发时降级返回说明而不是崩溃。
+    """
+
+    def test_default_recursion_limit_is_reasonable(self):
+        """默认值设得过小(<3)会破坏正常 tool_call 流程,过大(>20)失意义。"""
+        assert 3 <= DEFAULT_RECURSION_LIMIT <= 20
+
+    def test_ask_handles_recursion_limit_with_fallback_text(self):
+        """ask() 在触发 `recursion_limit` 时降级返回说明,而不是抛异常。"""
+        # 模拟连续 20 次 tool_call 的 fake model(超过任何合理上限)。
+        fake_model = _make_fake_model([
+            AIMessage(tool_calls=[{
+                "name": "refresh_fund",
+                "args": {"fund_code": "110011"},
+                "id": f"call_{i}",
+            }], content="")
+            for i in range(20)
+        ])
+
+        class StubToolNode:
+            def __init__(self):
+                self.calls = 0
+
+            def invoke(self, state):
+                self.calls += 1
+                return {"messages": [ToolMessage(
+                    content='{"fund_code":"110011","navs_inserted":0,"already_up_to_date":true,"source":"akshare","as_of":"2026-06-30"}',
+                    name="refresh_fund",
+                    tool_call_id=f"call_{self.calls - 1}",
+                )]}
+
+            __call__ = invoke
+
+        stub = StubToolNode()
+        with patch("backend.graph.qa_graph.build_model", return_value=fake_model), \
+             patch("backend.graph.qa_graph._get_tool_node", return_value=stub):
+            # 需要重置单例,因为 ask() 会复用已编译的 graph,
+            # 而单例已经注入了真 ALL_TOOLS。
+            qa_ask._graph = None  # type: ignore[attr-defined]
+            output = qa_ask("110011 最新净值")
+
+        assert isinstance(output, str)
+        # 应是降级说明,而不是 LLM 的"?"。
+        assert "最大工具调用轮数" in output or "数据获取循环" in output
+        # 调用次数在允许范围内被截断,而不是跑满 20 次。
+        assert stub.calls <= DEFAULT_RECURSION_LIMIT + 2  # tools+llm 各走一次,±容差
