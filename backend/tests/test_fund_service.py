@@ -66,6 +66,53 @@ def test_refresh_propagates_collector_error(session, monkeypatch):
     assert "error" in out
 
 
+def test_refresh_continues_when_fund_info_fails(session, monkeypatch):
+    """2026-07 行为:fund_info 失败不阻断,NAV 仍然入库并返回。
+
+    场景:雪球蛋卷 API 100% 拒绝时(返回 "版本过低"),仍能从东财
+    拉到 NAV 历史。旧行为是 info 失败直接 return,用户连 NAV 都
+    拿不到 —— 改后 info 失败只放进 `fund_info_warn` 字段,NAV 写入
+    库且返回值 success。
+    """
+    navs = [{"nav_date": f"2026-06-{d:02d}", "unit_nav": None,
+             "accumulated_nav": 1.0 + d * 0.01, "daily_return": 0.0,
+             "source": "akshare", "source_updated_at": "2026-06-30"}
+            for d in range(1, 6)]
+    monkeypatch.setattr(dc, "fetch_fund_nav_history", lambda c: navs)
+    monkeypatch.setattr(dc, "fetch_fund_info",
+                        lambda c: {"error": "fetch_fund_info failed for 022084: 'data'",
+                                   "source": "akshare"})
+
+    out = fs.refresh_fund("022084", session=session)
+
+    assert "error" not in out
+    assert out["navs_inserted"] == 5
+    assert out["fund_info_warn"] is not None
+    assert "'data'" in out["fund_info_warn"]
+    # NAV 已入库
+    latest = fs.get_latest_nav("022084", session=session)
+    assert latest["accumulated_nav"] == pytest.approx(1.05)
+
+
+def test_refresh_fund_info_success_has_no_warn(session, monkeypatch):
+    """正常情况:fund_info 也成功 → fund_info_warn 字段为 None。"""
+    monkeypatch.setattr(dc, "fetch_fund_info", lambda c: {
+        "fund_code": c, "fund_name": "FundA", "fund_type": "混合型",
+        "manager": "X", "company": "Y", "source": "akshare", "as_of": "2026-06-30"})
+    navs = [{"nav_date": "2026-06-01", "unit_nav": None,
+             "accumulated_nav": 1.0, "daily_return": 0.0,
+             "source": "akshare", "source_updated_at": "2026-06-30"}]
+    monkeypatch.setattr(dc, "fetch_fund_nav_history", lambda c: navs)
+
+    out = fs.refresh_fund("110011", session=session)
+
+    assert out["navs_inserted"] == 1
+    assert out["fund_info_warn"] is None
+    # 基础信息入库
+    info = fs.get_basic_info("110011", session=session)
+    assert info["fund_name"] == "FundA"
+
+
 def test_get_basic_info_no_data(session):
     assert "error" in fs.get_basic_info("110011", session=session)
 

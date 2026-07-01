@@ -1,14 +1,15 @@
 "use client";
 import type { ReactNode } from "react";
 import { useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
-import { ArrowLeft, MessageSquareText, Plus, Star } from "lucide-react";
+import { ArrowLeft, DownloadCloud, GitCompareArrows, MessageSquareText, Plus, Star } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { NavChart } from "@/components/NavChart";
 import { MetricCards } from "@/components/MetricCard";
 import { PageHeader, SectionHeader } from "@/components/PageHeader";
+import { HoldingCard } from "@/components/HoldingCard";
 import { StateBlock } from "@/components/StateBlock";
 import { WatchlistDrawer } from "@/components/WatchlistDrawer";
 import { useToast } from "@/components/Toast";
@@ -41,6 +42,34 @@ export default function FundDetail({ params }: { params: { code: string } }) {
   const watchlistQuery = useQuery({ queryKey: ["watchlist"], queryFn: api.watchlist });
   const inWatchlist = (watchlistQuery.data ?? []).find((r) => r.fund_code === code);
   const fundName = fund.data?.fund_name ?? code;
+
+  // 当本地无 Fund 数据时,提供"立即拉取"按钮 —— 用户从自选池进来
+  // 但还没 refresh_fund 过,详情页会 404。点按钮调 POST /api/funds/{code}/refresh,
+  // 成功后 invalidate 所有相关 query(基础信息/净值/历史/指标/持仓卡)。
+  const refreshFund = useMutation({
+    mutationFn: () => api.refreshFund(code),
+    onSuccess: (res) => {
+      qc.invalidateQueries({ queryKey: ["fund", code] });
+      qc.invalidateQueries({ queryKey: ["nav", code] });
+      qc.invalidateQueries({ queryKey: ["navHistory", code] });
+      qc.invalidateQueries({ queryKey: ["metrics", code] });
+      qc.invalidateQueries({ queryKey: ["portfolioPnl", [code]] });
+      if (res.already_up_to_date) {
+        toast.push(`${code} 本地已是最新`, "success");
+      } else {
+        const base = `已拉取 ${code},新增 ${res.navs_inserted} 条净值`;
+        // 雪球蛋卷 API 现在 100% 拒服,fund_name/manager 等可能拉不到;
+        // 提示用户知道"基础信息不全"但 NAV 可用。
+        const note = res.fund_info_warn
+          ? `${base}(基础信息暂未拉取)`
+          : base;
+        toast.push(note, res.fund_info_warn ? "info" : "success");
+      }
+    },
+    onError: (err) => {
+      toast.push(`拉取失败：${String(err)}`, "error");
+    },
+  });
 
   async function removeFromWatchlist() {
     if (typeof window !== "undefined") {
@@ -91,6 +120,12 @@ export default function FundDetail({ params }: { params: { code: string } }) {
                 向助手提问
               </Button>
             </Link>
+            <Link href={`/compare?codes=${encodeURIComponent(code)}`}>
+              <Button variant="outline">
+                <GitCompareArrows className="mr-2 h-4 w-4" />
+                对比
+              </Button>
+            </Link>
           </>
         }
       />
@@ -104,7 +139,22 @@ export default function FundDetail({ params }: { params: { code: string } }) {
             {fund.isLoading ? (
               <StateBlock title="加载基金信息" tone="loading">正在读取本地基金基础资料。</StateBlock>
             ) : fund.error ? (
-              <StateBlock title="基金信息加载失败" tone="error">本地没有该基金的基础信息。</StateBlock>
+              <div className="space-y-3">
+                <StateBlock title="本地暂无该基金数据" tone="error">
+                  <span>
+                    代码 {code} 不在本地库中{inWatchlist ? "(已在自选池)" : ""}。
+                    点击下方按钮立即联网拉取基础信息与历史净值,完成后此页会自动刷新。
+                  </span>
+                </StateBlock>
+                <Button
+                  type="button"
+                  disabled={refreshFund.isPending}
+                  onClick={() => refreshFund.mutate()}
+                >
+                  <DownloadCloud className="mr-2 h-4 w-4" />
+                  {refreshFund.isPending ? "拉取中..." : `立即拉取 ${code} 数据`}
+                </Button>
+              </div>
             ) : (
               <dl className="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
                 <InfoItem label="基金类型">{fund.data?.fund_type ?? "--"}</InfoItem>
@@ -143,6 +193,8 @@ export default function FundDetail({ params }: { params: { code: string } }) {
           </CardContent>
         </Card>
       </section>
+
+      <HoldingCard fundCode={code} />
 
       <section>
         <SectionHeader title="净值走势" description="累计净值历史曲线，按本地数据可用范围绘制。" />

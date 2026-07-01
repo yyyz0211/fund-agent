@@ -1,7 +1,7 @@
 import type {
   AnnouncementList, Fund, FundMetrics, MarketLatest,
-  NavHistory, NavPoint, WatchlistPatchPayload, WatchlistRow,
-  WatchlistUpsertPayload,
+  NavHistory, NavPoint, PortfolioPnl, ComparisonSeries,
+  WatchlistPatchPayload, WatchlistRow, WatchlistUpsertPayload,
 } from "@/types/api";
 
 const BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
@@ -48,6 +48,15 @@ export const api = {
     get<NavHistory>(`/api/funds/${code}/nav-history`, { start, end }),
   metrics: (code: string, period = "1m") =>
     get<FundMetrics>(`/api/funds/${code}/metrics`, { period }),
+  refreshFund: (code: string) =>
+    send<{
+      fund_code: string;
+      navs_inserted: number;
+      already_up_to_date: boolean;
+      fund_info_warn?: string | null;
+      source: string;
+      as_of: string;
+    }>("POST", `/api/funds/${encodeURIComponent(code)}/refresh`),
   watchlist: () => get<WatchlistRow[]>("/api/watchlist"),
   watchlistAdd: (payload: WatchlistUpsertPayload) =>
     send<WatchlistRow>("POST", "/api/watchlist", payload),
@@ -61,4 +70,18 @@ export const api = {
   marketLatest: () => get<MarketLatest>("/api/market/latest"),
   announcements: (fundCode = "", limit = 20) =>
     get<AnnouncementList>("/api/announcements", { fund_code: fundCode, limit }),
+  portfolioPnl: (codes: string[] = []) =>
+    get<PortfolioPnl>("/api/portfolio/pnl", { codes: codes.join(",") }),
+  portfolioCompare: (codes: string[], start = "", end = "") =>
+    get<{
+      as_of: string;
+      start: string;
+      end: string;
+      series: (ComparisonSeries & { fund_name: string | null })[];
+      source: string;
+    }>("/api/portfolio/compare", {
+      codes: codes.join(","),
+      start,
+      end,
+    }),
 };

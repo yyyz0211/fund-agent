@@ -84,12 +84,13 @@ def test_refresh_fund_tool(monkeypatch):
     assert fund_tools.refresh_fund.invoke({"fund_code": "110011"})["navs_inserted"] == 5
 
 
-def test_all_tools_aggregate_has_11_unique():
+def test_all_tools_aggregate_has_unique_set():
+    # 12:5 fund + 4 watchlist + 2 market + 1 pnl
     names = [t.name for t in fund_tools.ALL_TOOLS]
-    assert len(names) == 11
-    assert len(set(names)) == 11  # no name collisions
+    assert len(names) == len(set(names))  # no name collisions
     assert set(names) == {
         "get_latest_fund_nav", "calculate_fund_metrics", "get_fund_basic_info",
         "get_fund_nav_history", "refresh_fund", "get_watchlist",
         "add_fund_to_watchlist", "remove_fund_from_watchlist", "update_fund_note",
-        "get_market_indices", "refresh_market"}
+        "get_market_indices", "refresh_market", "calculate_holding_pnl",
+    }

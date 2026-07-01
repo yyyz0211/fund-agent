@@ -10,16 +10,22 @@ class _FakeAkshare:
     """极简 AKShare 替身,只暴露 `data_collector` 用到的接口。"""
 
     def __init__(self, info_df: pd.DataFrame, nav_df: pd.DataFrame,
-                 unit_df: pd.DataFrame, market_df: pd.DataFrame):
+                 unit_df: pd.DataFrame, market_df: pd.DataFrame,
+                 ths_df: pd.DataFrame | None = None):
         self._info_df = info_df
         self._nav_df = nav_df
         self._unit_df = unit_df
         self._market_df = market_df
+        self._ths_df = ths_df if ths_df is not None else pd.DataFrame()
         self.calls = []
 
     def fund_individual_basic_info_xq(self, symbol: str) -> pd.DataFrame:
-        self.calls.append(("info", symbol))
+        self.calls.append(("info_xq", symbol))
         return self._info_df
+
+    def fund_info_ths(self, symbol: str) -> pd.DataFrame:
+        self.calls.append(("info_ths", symbol))
+        return self._ths_df
 
     def fund_open_fund_info_em(self, fund: str, indicator: str) -> pd.DataFrame:
         self.calls.append(("nav", fund, indicator))
@@ -86,6 +92,58 @@ def test_fetch_fund_info_parses_xueqiu(monkeypatch):
     assert out["manager"] == "张坤 彭珂"
     assert out["company"] == "易方达基金管理有限公司"
     assert "error" not in out
+
+
+def test_fetch_fund_info_falls_back_to_ths_when_xueqiu_fails(monkeypatch):
+    """2026-07:雪球蛋卷 API 拒服时,fetch_fund_info 应 fallback 到
+    `ak.fund_info_ths`(同花顺),提取基金简称/投资类型/基金经理/基金管理人。
+
+    这里用 FakeAkshare 让 `fund_individual_basic_info_xq` 抛 KeyError('data')
+    模拟雪球拒服,`fund_info_ths` 返回 022084 实测的 18 行 `(字段,值)` 数据。
+    `fetch_fund_info` 不再返回 error,而是返回 4 个字段都填好的 dict。
+    """
+
+    class _BrokenXq:
+        def fund_individual_basic_info_xq(self, symbol: str) -> pd.DataFrame:
+            raise KeyError("'data'")  # 模拟雪球"版本过低"异常
+
+        def fund_info_ths(self, symbol: str) -> pd.DataFrame:
+            return pd.DataFrame({
+                "字段": ["基金简称", "投资类型", "基金经理", "基金管理人"],
+                "值": ["华安中证有色金属矿业主题ETF发起式联接C",
+                       "指数型",
+                       "王超,许之彦",
+                       "华安基金管理有限公司"],
+            })
+
+    monkeypatch.setattr(dc, "ak", _BrokenXq())
+
+    out = dc.fetch_fund_info("022084")
+    assert "error" not in out, f"expected success via ths fallback, got {out}"
+    assert out["fund_code"] == "022084"
+    assert out["fund_name"] == "华安中证有色金属矿业主题ETF发起式联接C"
+    assert out["fund_type"] == "指数型"
+    assert out["manager"] == "王超,许之彦"
+    assert out["company"] == "华安基金管理有限公司"
+    assert out["source"] == dc.SOURCE
+
+
+def test_fetch_fund_info_returns_error_when_both_sources_fail(monkeypatch):
+    """两个数据源都失败时,仍按既有契约返回 `{error, source}` —— 上层
+    (refresh_fund) 据此把错误放进 `fund_info_warn`,不阻断 NAV 入库。"""
+    class _BothBroken:
+        def fund_individual_basic_info_xq(self, symbol: str) -> pd.DataFrame:
+            raise KeyError("'data'")
+
+        def fund_info_ths(self, symbol: str) -> pd.DataFrame:
+            raise RuntimeError("ths timeout")
+
+    monkeypatch.setattr(dc, "ak", _BothBroken())
+
+    out = dc.fetch_fund_info("022084")
+    assert "error" in out
+    assert "thp" in out["source"] or "akshare" in out["source"]
+    assert out["source"] == dc.SOURCE
 
 
 def test_fetch_fund_nav_history_joins_unit_and_accumulated(monkeypatch):

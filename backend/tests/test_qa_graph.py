@@ -12,7 +12,9 @@ from backend.graph.policy import REFUSAL_MESSAGE
 from backend.graph.qa_graph import (
     _build_graph,
     DEFAULT_RECURSION_LIMIT,
+    _make_run_config,
     ask as qa_ask,
+    reset_graph,
 )
 
 
@@ -259,3 +261,130 @@ class TestRecursionLimit:
         assert "最大工具调用轮数" in output or "数据获取循环" in output
         # 调用次数在允许范围内被截断,而不是跑满 20 次。
         assert stub.calls <= DEFAULT_RECURSION_LIMIT + 2  # tools+llm 各走一次,±容差
+
+
+class TestThreadCheckpoint:
+    """多轮对话上下文:同 thread_id 累加 messages,LLM 看到历史。
+
+    重点验证:
+      - 同一 thread_id 的两次 ask() 拿到同一个 checkpointer;
+      - 第二次 LLM 调用时 messages 已包含第一次的 HumanMessage + AIMessage;
+      - 不同 thread_id 互相隔离。
+    """
+
+    def test_make_run_config_injects_thread_id(self):
+        """_make_run_config 把 thread_id 拼到 configurable + recursion_limit 缺省。"""
+        cfg = _make_run_config("abc", None)
+        assert cfg["configurable"]["thread_id"] == "abc"
+        assert cfg["recursion_limit"] == DEFAULT_RECURSION_LIMIT
+
+    def test_make_run_config_auto_thread_id_when_none(self):
+        """thread_id 传 None 时自动用 uuid4 兜底,行为不退化。"""
+        cfg = _make_run_config(None, None)
+        assert isinstance(cfg["configurable"]["thread_id"], str)
+        assert len(cfg["configurable"]["thread_id"]) > 0
+
+    def test_make_run_config_existing_configurable_wins(self):
+        """config 里已有 configurable 时保留其它 key,只覆盖 thread_id 缺省值。"""
+        cfg = _make_run_config("xyz", {"configurable": {"user_id": "u1"}})
+        assert cfg["configurable"]["thread_id"] == "xyz"
+        assert cfg["configurable"]["user_id"] == "u1"
+
+    def test_two_ask_calls_share_thread_history(self):
+        """同 thread_id 两次 ask(),第二次 LLM 看到第一次的 HumanMessage。"""
+        seen_calls: list[list[str]] = []
+
+        class InspectingFakeModel:
+            """fake model,记录每次 invoke 时看到的 user content 列表。"""
+
+            def __init__(self):
+                self.turn = 0
+                self.bound = MagicMock()
+
+                def _invoke(messages, *a, **k):
+                    user_contents = [
+                        m.content for m in messages
+                        if isinstance(m, HumanMessage)
+                    ]
+                    seen_calls.append(user_contents)
+                    self.turn += 1
+                    if self.turn == 1:
+                        return AIMessage(content="好的,这是一只指数基金。")
+                    # 第二轮:确认看到了上轮历史,直接拼回答。
+                    prev = user_contents[-2] if len(user_contents) >= 2 else "<none>"
+                    return AIMessage(content=f"上轮你问了:{prev}")
+
+                self.bound.invoke = _invoke
+                self.bound.ainvoke = _invoke
+
+            def bind_tools(self, tools):
+                return self.bound
+
+        fake = InspectingFakeModel()
+        with patch("backend.graph.qa_graph.build_model", return_value=fake):
+            reset_graph()
+            a1 = qa_ask("110011 是什么类型?", thread_id="t-1")
+            a2 = qa_ask("那它跟踪什么指数?", thread_id="t-1")
+
+        # 第二次 LLM 看到两个 user message(本轮 + 上轮)
+        assert len(seen_calls) == 2
+        assert seen_calls[0] == ["110011 是什么类型?"]
+        assert seen_calls[1] == ["110011 是什么类型?", "那它跟踪什么指数?"]
+        assert "110011 是什么类型?" in a2  # AI 在回答里 echo 了上轮内容
+
+    def test_different_thread_ids_isolated(self):
+        """不同 thread_id 的对话历史互相独立。"""
+        seen: list[list[str]] = []
+
+        class T:
+            turn = 0
+            bound = MagicMock()
+
+            def _invoke(messages, *a, **k):
+                seen.append([m.content for m in messages if isinstance(m, HumanMessage)])
+                T.turn += 1
+                return AIMessage(content=f"answer {T.turn}")
+
+            bound.invoke = _invoke
+            bound.ainvoke = _invoke
+
+            def bind_tools(self, _):
+                return self.bound
+
+        with patch("backend.graph.qa_graph.build_model", return_value=T()):
+            reset_graph()
+            qa_ask("hello A", thread_id="thread-A")
+            qa_ask("hello B", thread_id="thread-B")
+            qa_ask("hello A again", thread_id="thread-A")
+
+        # thread-A: 第一次 1 条 user,第二次应看到 2 条
+        # thread-B: 1 条 user
+        assert seen[0] == ["hello A"]
+        assert seen[1] == ["hello B"]
+        assert seen[2] == ["hello A", "hello A again"]
+
+    def test_ask_without_thread_id_does_not_share_history_with_subsequent_call(self):
+        """不传 thread_id 时,每次都生成新 uuid,等同于单轮(默认行为不变)。"""
+        seen: list[list[str]] = []
+
+        class T:
+            bound = MagicMock()
+
+            def _invoke(messages, *a, **k):
+                seen.append([m.content for m in messages if isinstance(m, HumanMessage)])
+                return AIMessage(content="x")
+
+            bound.invoke = _invoke
+            bound.ainvoke = _invoke
+
+            def bind_tools(self, _):
+                return self.bound
+
+        with patch("backend.graph.qa_graph.build_model", return_value=T()):
+            reset_graph()
+            qa_ask("first")
+            qa_ask("second")
+
+        # 每次都是新 thread,LLM 各只看到 1 条
+        assert seen[0] == ["first"]
+        assert seen[1] == ["second"]

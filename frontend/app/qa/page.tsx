@@ -1,6 +1,7 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
+import Link from "next/link";
 import {
   Bot,
   Check,
@@ -8,10 +9,13 @@ import {
   ChevronRight,
   Clock3,
   Database,
+  ExternalLink,
   Loader2,
   MessageSquareText,
+  Plus,
   Send,
   Server,
+  Trash2,
   User,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -23,21 +27,62 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { LANGGRAPH_URL, getLangGraphClient, LANGGRAPH_ASSISTANT } from "@/lib/langgraph";
 import { formatDate } from "@/lib/format";
+import {
+  type QaToolStep as ToolStep,
+  type QaUiMessage as UiMessage,
+  loadThreadHistory,
+  removeThreadHistory,
+  saveThreadHistory,
+} from "@/lib/qa-thread-store";
 
-interface ToolStep {
+interface ThreadMeta {
   id: string;
-  name: string;
-  args: Record<string, unknown>;
-  result?: string;
-  status: "pending" | "done" | "error";
+  title: string;
+  updatedAt: string;
 }
 
-interface UiMessage {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  ts: string;
-  toolSteps: ToolStep[];
+const THREADS_STORAGE_KEY = "qa_threads_v1";
+const ACTIVE_THREAD_KEY = "qa_active_thread_v1";
+
+// 已知带 fund_code 参数的工具 — 步骤上方会渲染"查看详情"链接。
+// 新增工具含 fund_code 时需要在这里加。
+const TOOLS_WITH_FUND_CODE = new Set([
+  "refresh_fund",
+  "get_fund_nav_history",
+  "get_latest_fund_nav",
+  "get_fund_basic_info",
+  "calculate_holding_pnl",
+]);
+
+function extractFundCode(args: Record<string, unknown>): string | null {
+  const raw = (args.fund_code ?? args.code) as unknown;
+  if (typeof raw === "string" && raw.length > 0) return raw;
+  return null;
+}
+
+function newThreadId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
+  return `t_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function loadThreads(): ThreadMeta[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(THREADS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (t: any) => t && typeof t.id === "string" && typeof t.title === "string",
+    );
+  } catch {
+    return [];
+  }
+}
+
+function saveThreads(threads: ThreadMeta[]): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(THREADS_STORAGE_KEY, JSON.stringify(threads));
 }
 
 const SUGGESTIONS = [
@@ -51,6 +96,90 @@ export default function QaPage({ searchParams }: { searchParams: { prefill?: str
   const [history, setHistory] = useState<UiMessage[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [threadId, setThreadId] = useState<string | null>(null);
+  const threadIdRef = useRef<string | null>(null);
+  const [threads, setThreads] = useState<ThreadMeta[]>([]);
+
+  const activateThread = useCallback((id: string | null, messages?: UiMessage[]) => {
+    threadIdRef.current = id;
+    setThreadId(id);
+    setHistory(id ? messages ?? loadThreadHistory(id) : []);
+    if (id) {
+      window.localStorage.setItem(ACTIVE_THREAD_KEY, id);
+    } else {
+      window.localStorage.removeItem(ACTIVE_THREAD_KEY);
+    }
+  }, []);
+
+  const updateThreadHistory = useCallback((id: string, updater: (history: UiMessage[]) => UiMessage[]) => {
+    const next = updater(loadThreadHistory(id));
+    saveThreadHistory(id, next);
+    if (threadIdRef.current === id) setHistory(next);
+    return next;
+  }, []);
+
+  // 启动时读 localStorage 的 threads + active
+  useEffect(() => {
+    const t = loadThreads();
+    setThreads(t);
+    const active = window.localStorage.getItem(ACTIVE_THREAD_KEY);
+    if (active && t.some((x) => x.id === active)) {
+      activateThread(active);
+    } else if (t.length > 0) {
+      // 兜底:用最近更新的一个
+      const sorted = [...t].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+      activateThread(sorted[0].id);
+    }
+  }, [activateThread]);
+
+  const upsertThread = useCallback(
+    (id: string, title: string) => {
+      setThreads((cur) => {
+        const now = new Date().toISOString();
+        const idx = cur.findIndex((t) => t.id === id);
+        let next: ThreadMeta[];
+        if (idx >= 0) {
+          next = cur.map((t) =>
+            t.id === id ? { ...t, title: title || t.title, updatedAt: now } : t,
+          );
+        } else {
+          next = [...cur, { id, title: title || "新对话", updatedAt: now }];
+        }
+        next.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+        saveThreads(next);
+        return next;
+      });
+    },
+    [],
+  );
+
+  function switchThread(id: string) {
+    activateThread(id);
+    setError(null);
+  }
+
+  function newThread() {
+    const id = newThreadId();
+    saveThreadHistory(id, []);
+    activateThread(id, []);
+    setError(null);
+    upsertThread(id, "新对话");
+  }
+
+  function deleteThread(id: string) {
+    const next = threads.filter((t) => t.id !== id);
+    setThreads(next);
+    saveThreads(next);
+    removeThreadHistory(id);
+    if (threadIdRef.current === id) {
+      const remaining = next;
+      if (remaining.length > 0) {
+        switchThread(remaining[0].id);
+      } else {
+        activateThread(null, []);
+      }
+    }
+  }
 
   const health = useQuery({
     queryKey: ["langgraph", "health"],
@@ -69,6 +198,14 @@ export default function QaPage({ searchParams }: { searchParams: { prefill?: str
     const question = input.trim();
     if (!question || streaming) return;
     setError(null);
+    // 第一次发问时若没有 thread 就建一个
+    let activeId = threadId;
+    if (!activeId) {
+      activeId = newThreadId();
+      saveThreadHistory(activeId, []);
+      activateThread(activeId, []);
+    }
+    upsertThread(activeId, question.slice(0, 24));
     const userMsg: UiMessage = {
       id: crypto.randomUUID(),
       role: "user",
@@ -76,20 +213,17 @@ export default function QaPage({ searchParams }: { searchParams: { prefill?: str
       ts: new Date().toISOString(),
       toolSteps: [],
     };
-    setHistory((h) => [...h, userMsg]);
     setInput("");
     setStreaming(true);
     const assistantId = crypto.randomUUID();
-    setHistory((h) => [
-      ...h,
-      {
-        id: assistantId,
-        role: "assistant",
-        content: "",
-        ts: new Date().toISOString(),
-        toolSteps: [],
-      },
-    ]);
+    const assistantMsg: UiMessage = {
+      id: assistantId,
+      role: "assistant",
+      content: "",
+      ts: new Date().toISOString(),
+      toolSteps: [],
+    };
+    updateThreadHistory(activeId, (h) => [...h, userMsg, assistantMsg]);
     try {
       const client = getLangGraphClient();
       // streamMode: "messages" — 每条 token-level 事件 data 是 [msg],
@@ -97,7 +231,8 @@ export default function QaPage({ searchParams }: { searchParams: { prefill?: str
       // 工具结果去重在 UI 层做(`status === 'done'` 时不再覆盖),
       // 因为 LangGraph 在某些情况下(例如中断/恢复/Checkpoint 重新)
       // 会回放同一条 ToolMessage,不能依赖 SDK 层只 emit 一次。
-      const stream = client.runs.stream(null, LANGGRAPH_ASSISTANT, {
+      // thread_id 透传,LangGraph server 用它做多轮上下文。
+      const stream = client.runs.stream(activeId, LANGGRAPH_ASSISTANT, {
         input: { messages: [{ role: "human", content: question }] },
         streamMode: "messages",
       });
@@ -107,19 +242,21 @@ export default function QaPage({ searchParams }: { searchParams: { prefill?: str
         if (!msg) continue;
 
         if ((msg.type === "ai" || msg.role === "assistant") && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
-          setHistory((h) =>
+          updateThreadHistory(activeId, (h) =>
             h.map((m) =>
               m.id === assistantId
                 ? {
                     ...m,
                     toolSteps: [
                       ...m.toolSteps,
-                      ...msg.tool_calls.map((tc: any) => ({
-                        id: tc.id,
-                        name: tc.name,
-                        args: tc.args ?? {},
-                        status: "pending" as const,
-                      })),
+                      ...msg.tool_calls
+                        .filter((tc: any) => !m.toolSteps.some((s) => s.id === tc.id))
+                        .map((tc: any) => ({
+                          id: tc.id,
+                          name: tc.name,
+                          args: tc.args ?? {},
+                          status: "pending" as const,
+                        })),
                     ],
                   }
                 : m,
@@ -136,7 +273,7 @@ export default function QaPage({ searchParams }: { searchParams: { prefill?: str
                     .map((c: any) => (typeof c === "string" ? c : c.text ?? ""))
                     .join("")
                 : JSON.stringify(msg.content ?? "");
-          setHistory((h) =>
+          updateThreadHistory(activeId, (h) =>
             h.map((m) => {
               if (m.id !== assistantId) return m;
               // 工具结果去重:同 tool_call_id 已经 done 的不再覆盖,
@@ -165,14 +302,18 @@ export default function QaPage({ searchParams }: { searchParams: { prefill?: str
                     .join("")
                 : "";
           if (chunk) {
-            setHistory((h) =>
+            updateThreadHistory(activeId, (h) =>
               h.map((m) => (m.id === assistantId ? { ...m, content: chunk } : m)),
             );
           }
         }
       }
     } catch (e) {
-      setError(`连接 LangGraph Server 失败：${String(e)}`);
+      const message = `连接 LangGraph Server 失败：${String(e)}`;
+      setError(message);
+      updateThreadHistory(activeId, (h) =>
+        h.map((m) => (m.id === assistantId ? { ...m, content: message } : m)),
+      );
     } finally {
       setStreaming(false);
     }
@@ -195,16 +336,22 @@ export default function QaPage({ searchParams }: { searchParams: { prefill?: str
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_320px]">
         <section className="min-w-0">
           <Card className="flex min-h-[560px] flex-col overflow-hidden p-0">
-            <CardHeader className="mb-0 border-b border-gray-200 p-4">
+            <CardHeader className="mb-0 flex-row items-center justify-between gap-3 border-b border-gray-200 p-4">
               <div className="flex items-center gap-3">
                 <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-50 text-blue-700">
                   <MessageSquareText className="h-5 w-5" />
                 </span>
                 <div>
-                  <CardTitle className="text-base">对话</CardTitle>
+                  <CardTitle className="text-base">
+                    {threads.find((t) => t.id === threadId)?.title ?? "新对话"}
+                  </CardTitle>
                   <p className="mt-1 text-xs text-gray-500">{statusText}</p>
                 </div>
               </div>
+              <Button variant="outline" size="sm" type="button" onClick={newThread}>
+                <Plus className="mr-1.5 h-3.5 w-3.5" />
+                新对话
+              </Button>
             </CardHeader>
 
             <CardContent className="flex flex-1 flex-col p-0">
@@ -264,6 +411,57 @@ export default function QaPage({ searchParams }: { searchParams: { prefill?: str
         <aside className="space-y-4">
           <Card className="p-5">
             <CardHeader>
+              <CardTitle className="text-base">对话列表</CardTitle>
+              <p className="mt-1 text-xs text-gray-500">
+                thread_id 由前端管理,LangGraph Server 用它维持多轮上下文。
+                重启服务或清缓存会清空。
+              </p>
+            </CardHeader>
+            <CardContent>
+              {threads.length === 0 ? (
+                <p className="rounded-lg bg-gray-50 p-3 text-xs text-gray-500">尚无对话,发个问题开始。</p>
+              ) : (
+                <ul className="space-y-1.5">
+                  {threads.map((t) => {
+                    const active = t.id === threadId;
+                    return (
+                      <li
+                        key={t.id}
+                        className={`group flex items-center gap-2 rounded-lg border px-3 py-2 text-sm ${
+                          active
+                            ? "border-blue-200 bg-blue-50 text-blue-800"
+                            : "border-gray-200 bg-white text-gray-700 hover:border-gray-300"
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => switchThread(t.id)}
+                          className="flex-1 truncate text-left"
+                          title={t.title}
+                        >
+                          {t.title}
+                        </button>
+                        <span className="text-[10px] text-gray-400">
+                          {formatDate(t.updatedAt).slice(5)}
+                        </span>
+                        <button
+                          type="button"
+                          aria-label="删除对话"
+                          onClick={() => deleteThread(t.id)}
+                          className="rounded p-1 text-gray-400 opacity-0 transition hover:bg-gray-100 hover:text-red-500 group-hover:opacity-100"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card className="p-5">
+            <CardHeader>
               <CardTitle className="text-base">服务状态</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
@@ -278,33 +476,6 @@ export default function QaPage({ searchParams }: { searchParams: { prefill?: str
                 本页使用 <code className="rounded bg-gray-100 px-1 py-0.5">{LANGGRAPH_ASSISTANT}</code> assistant，
                 地址来自 <code className="rounded bg-gray-100 px-1 py-0.5">NEXT_PUBLIC_LANGGRAPH_URL</code>。
               </p>
-            </CardContent>
-          </Card>
-
-          <Card className="p-5">
-            <CardHeader>
-              <CardTitle className="text-base">来源 / 数据日期</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-xs leading-5 text-gray-500">
-                回答应保留工具返回的 source 与 as_of。这里展示最近助手消息摘要，便于回看。
-              </p>
-              <ul className="mt-4 space-y-3 text-xs">
-                {history.filter((m) => m.role === "assistant" && m.content).length === 0 && (
-                  <li className="rounded-lg bg-gray-50 p-3 text-gray-500">暂无助手回答。</li>
-                )}
-                {history
-                  .filter((m) => m.role === "assistant" && m.content)
-                  .map((m) => (
-                    <li key={m.id} className="rounded-lg border border-gray-200 bg-white p-3">
-                      <div className="mb-1 flex items-center gap-1 text-gray-500">
-                        <Clock3 className="h-3.5 w-3.5" />
-                        {formatDate(m.ts)}
-                      </div>
-                      <p className="text-gray-700">{m.content.slice(0, 80)}{m.content.length > 80 ? "..." : ""}</p>
-                    </li>
-                  ))}
-              </ul>
             </CardContent>
           </Card>
         </aside>
@@ -341,6 +512,8 @@ function ToolStepList({ steps }: { steps: ToolStep[] }) {
 function ToolStepItem({ step }: { step: ToolStep }) {
   const [open, setOpen] = useState(false);
   const argsJson = JSON.stringify(step.args, null, 2);
+  const showLink = TOOLS_WITH_FUND_CODE.has(step.name);
+  const fundCode = showLink ? extractFundCode(step.args) : null;
   return (
     <li className="rounded-md border border-gray-200 bg-gray-50">
       <button
@@ -359,12 +532,26 @@ function ToolStepItem({ step }: { step: ToolStep }) {
           <Check className="h-3.5 w-3.5 shrink-0 text-green-600" />
         )}
         <span className="font-mono font-medium text-gray-800">{step.name}</span>
+        {fundCode && (
+          <span className="inline-flex items-center gap-1 rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 font-mono text-[10px] text-blue-700">
+            {fundCode}
+          </span>
+        )}
         <span className="ml-auto truncate font-mono text-[11px] text-gray-500">
           {truncate(argsJson, 80)}
         </span>
       </button>
       {open && (
         <div className="space-y-2 border-t border-gray-200 bg-white p-2.5">
+          {fundCode && (
+            <Link
+              href={`/funds/${encodeURIComponent(fundCode)}`}
+              className="inline-flex items-center gap-1.5 rounded-md border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700 transition hover:border-blue-300 hover:bg-blue-100"
+            >
+              <ExternalLink className="h-3.5 w-3.5" />
+              查看基金详情（{fundCode}）
+            </Link>
+          )}
           <div>
             <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-gray-500">参数</div>
             <pre className="overflow-x-auto rounded bg-gray-50 p-2 font-mono text-[11px] leading-5 text-gray-700">{argsJson}</pre>

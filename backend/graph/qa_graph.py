@@ -7,10 +7,18 @@ Graph 流程:
 - LLM: DeepSeek tool-calling model，绑定 ALL_TOOLS。
 - ToolNode: LangGraph 内置工具执行节点，自动处理 tool_calls → tool_results。
 - post_check: 后置合规检查，回答若含建议性内容，替换为固定拒答。
+
+多轮上下文:可选的 `MemorySaver` checkpointer 让同一个 `thread_id`
+的多次 `ask()` / `stream()` 调用把消息累加到同一段对话历史。生产侧
+(`langgraph dev` server) 在外部维护自己的 checkpointer,与本进程内
+单例互不影响 — 本模块的多轮支持主要服务于:
+  1. Phase-4 后端进程内调试入口(ask/stream);
+  2. 用 pytest 验证多轮 tool_call 行为时不需要起外部 server。
 """
 from __future__ import annotations
 
 from typing import Iterator
+from uuid import uuid4
 
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
@@ -25,6 +33,7 @@ from backend.tools.fund_tools import ALL_TOOLS
 
 from langgraph.graph import MessagesState
 from langgraph.errors import GraphRecursionError
+from langgraph.checkpoint.memory import MemorySaver
 
 # Alias for test and external use
 QAState = MessagesState
@@ -110,8 +119,14 @@ def _get_tool_node() -> ToolNode:
     return _tool_node_singleton
 
 
-def _build_graph():
-    """构造并编译 QA Graph（供测试注入 fake model）。"""
+def _build_graph(checkpointer=None):
+    """构造并编译 QA Graph（供测试注入 fake model）。
+
+    `checkpointer` 是 LangGraph `BaseCheckpointSaver` 实例;不传则编译出
+    的 graph 不带多轮能力(每次 invoke/stream 互相独立)。Phase-4 后端
+    默认传 `MemorySaver` 单例,生产端(langgraph dev server)用自己的持久
+    checkpointer。
+    """
     from langgraph.graph import StateGraph, MessagesState
     from langgraph.constants import END
     from langgraph.prebuilt import ToolNode
@@ -144,19 +159,43 @@ def _build_graph():
     builder.add_edge("tools", "llm")  # tools 完成后直接回 llm
     builder.add_edge("post_check", END)
 
-    return builder.compile()
+    return builder.compile(checkpointer=checkpointer)
 
 
 # ─── Compiled graph (singleton per process) ───────────────────────────────────
+
+# 进程级 MemorySaver 单例 —— 只要进程不重启,任何 thread_id 的检查点
+# 都在此 saver 里;多线程时 saver 内部用锁。
+_memory_saver: MemorySaver | None = None
+
+
+def _get_memory_saver() -> MemorySaver:
+    global _memory_saver
+    if _memory_saver is None:
+        _memory_saver = MemorySaver()
+    return _memory_saver
+
 
 _graph = None
 
 
 def _get_graph():
+    """取得带 checkpointer 的 QA Graph 单例。
+
+    首次访问时用 `MemorySaver` 编译;测试可通过 `reset_graph()` 注入
+    `checkpointer=None` 或别的 saver,实现 thread 隔离。
+    """
     global _graph
     if _graph is None:
-        _graph = _build_graph()
+        _graph = _build_graph(checkpointer=_get_memory_saver())
     return _graph
+
+
+def reset_graph():
+    """清空进程级 graph 与 checkpointer 单例(给测试用)。"""
+    global _graph, _memory_saver
+    _graph = None
+    _memory_saver = None
 
 
 # ─── Public API ───────────────────────────────────────────────────────────────
@@ -189,23 +228,43 @@ def _with_recursion_limit(config: dict | None) -> dict:
 MIN_RECURSION_LIMIT = 3
 
 
-def ask(question: str, *, config: dict | None = None) -> str:
+def _make_run_config(thread_id: str | None, base_config: dict | None) -> dict:
+    """拼装 invoke/stream 的 LangGraph config:thread_id + recursion_limit。
+
+    `thread_id` 不传时用 `uuid4()` 兜底,这样默认调用与改造前行为一致
+    (同进程同次 call,thread 唯一;但 ask() 完之后 thread 仍然留在
+    MemorySaver 里,后续带同一 thread_id 再问会续上)。
+    """
+    cfg = _with_recursion_limit(base_config)
+    configurable = dict(cfg.get("configurable", {}))
+    configurable.setdefault("thread_id", thread_id or uuid4().hex)
+    cfg["configurable"] = configurable
+    return cfg
+
+
+def ask(question: str, *, thread_id: str | None = None, config: dict | None = None) -> str:
     """本地一次性问答入口。
 
     参数:
         question: 用户提问（中文）。
+        thread_id: 可选,LangGraph checkpointer 的会话 ID。同一 thread_id
+                重复调用会把历史 messages 拼起来,LLM 看到完整对话。传
+                `None` 时每次都生成新 thread(单次对话语义不变)。
         config: 可选,LangGraph ConfigurableField(如 thread_id)与
                 `recursion_limit`(默认 `DEFAULT_RECURSION_LIMIT`)。
+                如果同时传 `thread_id` 和 `config["configurable"]["thread_id"]`,
+                以 `thread_id` 形参为准。
 
     返回:
         graph 最终输出的 AI 回答文本（不含 tool_calls）。
         触发合规边界时返回固定拒答文本。
         命中工具调用次数上限时,降级返回一条说明消息,不抛异常给调用方。
     """
+    run_config = _make_run_config(thread_id, config)
     try:
         result = graph.invoke(
             {"messages": [HumanMessage(content=question)]},
-            config=_with_recursion_limit(config),
+            config=run_config,
         )
     except GraphRecursionError:
         return (
@@ -216,8 +275,16 @@ def ask(question: str, *, config: dict | None = None) -> str:
     return last.content if hasattr(last, "content") else str(last)
 
 
-def stream(question: str, *, config: dict | None = None) -> Iterator[dict]:
+def stream(
+    question: str,
+    *,
+    thread_id: str | None = None,
+    config: dict | None = None,
+) -> Iterator[dict]:
     """本地流式调试入口。
+
+    参数:
+        question / thread_id / config: 语义同 `ask()`。
 
     返回:
         Iterator[dict]，每个 chunk 为 LangGraph stream 输出的一层状态，
@@ -226,10 +293,11 @@ def stream(question: str, *, config: dict | None = None) -> Iterator[dict]:
         命中工具调用次数上限时,产出最后一个 AIMessage 兜底 chunk,
         不让迭代器直接抛 GraphRecursionError 中断调用方。
     """
+    run_config = _make_run_config(thread_id, config)
     try:
         for chunk in graph.stream(
             {"messages": [HumanMessage(content=question)]},
-            config=_with_recursion_limit(config),
+            config=run_config,
         ):
             yield chunk
     except GraphRecursionError:

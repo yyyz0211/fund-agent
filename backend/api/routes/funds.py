@@ -64,9 +64,32 @@ def get_nav_history(code: str,
 
 @router.get("/{code}/metrics")
 def get_metrics(code: str,
-                period: str = Query(default="1m")):
+               period: str = Query(default="1m")):
     if period not in _PERIOD_ROWS:
         raise HTTPException(status_code=400, detail=f"unsupported period: {period}")
     body = fs.get_metrics(code, period=period)
     _http_from_service(body)
     return body
+
+
+@router.post("/{code}/refresh")
+def post_refresh(code: str):
+    """拉取一只基金的基础信息和净值并写入本地库。
+
+    用途:用户从自选池点击进入详情页,但本地还没 `refresh_fund` 过这只基金,
+    详情页 404。此时前端给个"立即拉取"按钮,触发本端点把数据补齐。
+
+    返回 `fs.refresh_fund(code)` 的原始 dict,字段含义:
+      - `fund_code`: 基金代码
+      - `navs_inserted`: 本次实际新增的 NAV 行数
+      - `already_up_to_date`: True 表示本地已是最新
+      - `source` / `as_of`: 数据来源与拉取日期
+
+    抓取失败(网络/AKShare 报错)时返回 502,detail 含原始 error 文本。
+    """
+    result = fs.refresh_fund(code)
+    if isinstance(result, dict) and "error" in result:
+        # 区分"本地无基础信息/净值" vs 上游抓取失败 — refresh 不存在基金代码时
+        # fetch_fund_info 会返回 error, 归 502(上游失败)。
+        raise HTTPException(status_code=502, detail=result["error"])
+    return result

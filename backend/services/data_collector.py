@@ -44,30 +44,59 @@ def with_retry(fn, *args, retries: int = 3, base_delay: float = 0.5,
     raise last
 
 
+def _parse_xq_fund_info(fund_code: str, df) -> dict:
+    """解析雪球基金基础信息 DataFrame。"""
+    kv = dict(zip(df["item"], df["value"]))
+    return {
+        "fund_code": fund_code,
+        "fund_name": kv.get("基金名称") or kv.get("基金简称"),
+        "fund_type": kv.get("基金类型"),
+        "manager": kv.get("基金经理"),
+        "company": kv.get("基金公司"),
+        "source": SOURCE,
+        "as_of": today_str(),
+    }
+
+
+def _parse_ths_fund_info(fund_code: str, df) -> dict:
+    """解析同花顺基金基础信息 DataFrame。"""
+    kv = dict(zip(df["字段"], df["值"]))
+    return {
+        "fund_code": fund_code,
+        "fund_name": kv.get("基金简称") or kv.get("基金名称"),
+        "fund_type": kv.get("投资类型") or kv.get("基金类型"),
+        "manager": kv.get("基金经理"),
+        "company": kv.get("基金管理人") or kv.get("基金公司"),
+        "source": SOURCE,
+        "as_of": today_str(),
+    }
+
+
 def fetch_fund_info(fund_code: str) -> dict:
     """拉取一只基金的基础信息(名称、类型、经理、基金公司)。
 
     AKShare 1.18 已经把老的 `fund_individual_info_em` 移除了,改用雪球
-    的 `fund_individual_basic_info_xq` —— 字段最全,稳定,返回两列
-    DataFrame: `item` / `value`。
+    的 `fund_individual_basic_info_xq`;当雪球拒服或列结构变化时,再 fallback
+    到同花顺 `fund_info_ths`。
 
     成功:返回 `{fund_code, fund_name, fund_type, manager, company,
     source, as_of}`;失败:返回 `{error, source}`。
     """
     try:
         df = with_retry(ak.fund_individual_basic_info_xq, symbol=fund_code)
-        kv = dict(zip(df["item"], df["value"]))
-        return {
-            "fund_code": fund_code,
-            "fund_name": kv.get("基金名称") or kv.get("基金简称"),
-            "fund_type": kv.get("基金类型"),
-            "manager": kv.get("基金经理"),
-            "company": kv.get("基金公司"),
-            "source": SOURCE,
-            "as_of": today_str(),
-        }
-    except Exception as e:  # noqa: BLE001
-        return {"error": f"fetch_fund_info failed for {fund_code}: {e}", "source": SOURCE}
+        return _parse_xq_fund_info(fund_code, df)
+    except Exception as xq_error:  # noqa: BLE001
+        try:
+            df = with_retry(ak.fund_info_ths, symbol=fund_code)
+            return _parse_ths_fund_info(fund_code, df)
+        except Exception as ths_error:  # noqa: BLE001
+            return {
+                "error": (
+                    f"fetch_fund_info failed for {fund_code}: "
+                    f"xq={xq_error}; ths={ths_error}"
+                ),
+                "source": SOURCE,
+            }
 
 
 def fetch_fund_nav_history(fund_code: str) -> list[dict] | dict:

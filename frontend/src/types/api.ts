@@ -82,3 +82,45 @@ export interface AnnouncementList {
   fund_code?: string;
   limit?: number;
 }
+
+export interface PnlItem {
+  fund_code: string;
+  fund_name: string | null;
+  is_focus: boolean;
+  buy_date: string | null;
+  cost_nav: number;
+  current_nav: number;
+  nav_date: string;
+  holding_share: number;
+  holding_amount: number | null;
+  invested: number;
+  market_value: number;
+  pnl_abs: number;
+  pnl_pct: number | null;
+}
+
+export interface PnlTotals {
+  invested: number;
+  market_value: number;
+  pnl_abs: number;
+  pnl_pct: number | null;
+  count: number;
+}
+
+export interface PnlSkipped {
+  fund_code: string;
+  reason: string;
+}
+
+export interface PortfolioPnl {
+  as_of: string;
+  source: string;
+  items: PnlItem[];
+  totals: PnlTotals;
+  skipped: PnlSkipped[];
+}
+
+export interface ComparisonSeries {
+  code: string;
+  points: { nav_date: string; accumulated_nav: number | null }[];
+}
