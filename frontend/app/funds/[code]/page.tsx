@@ -78,7 +78,16 @@ export default function FundDetail({ params }: { params: { code: string } }) {
     }
     try {
       await api.watchlistRemove(code);
+      // 与 `refreshFund` 对齐:除了更新自选池列表,本详情页用到的
+      // fund / nav / navHistory / metrics / portfolioPnl 缓存必须一并
+      // 失效 —— 后端 `remove_from_watchlist` 已经级联删 Fund 和 FundNav,
+      // 详情页留在 React Query 里的旧数据会显示"幽灵信息"。
       qc.invalidateQueries({ queryKey: ["watchlist"] });
+      qc.invalidateQueries({ queryKey: ["fund", code] });
+      qc.invalidateQueries({ queryKey: ["nav", code] });
+      qc.invalidateQueries({ queryKey: ["navHistory", code] });
+      qc.invalidateQueries({ queryKey: ["metrics", code] });
+      qc.invalidateQueries({ queryKey: ["portfolioPnl", [code]] });
       toast.push(`已从自选池移除 ${code}`, "success");
     } catch (err) {
       toast.push(`移除失败：${String(err)}`, "error");

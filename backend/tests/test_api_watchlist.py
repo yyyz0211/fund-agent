@@ -8,6 +8,7 @@ from backend.api.app import app
 from backend.db import session as db_session
 from backend.db.init_db import init_db
 import backend.db.models  # noqa: F401
+from backend.db.models import Fund, FundNav, MarketData, Watchlist
 from backend.db import repository as repo
 from backend.services import watchlist_service as ws
 
@@ -119,3 +120,60 @@ def test_delete_removes_row(session):
 def test_delete_404_when_absent(session):
     r = client.delete("/api/watchlist/999999")
     assert r.status_code == 404
+
+
+def test_delete_cascades_fund_and_nav(session):
+    """从自选里删一只基金时,同 `fund_code` 的 Fund 基础信息行 +
+    FundNav 净值快照都应一起删 —— 否则缓存数据就变成"幽灵数据"。
+
+    把这只基金入自选 + 预先塞 Fund/FundNav 模拟"已经缓存过"的状态,
+    然后 DELETE,验证三表联动:
+
+      Watchlist: 1 -> 0 (主路径)
+      Fund:      1 -> 0 (级联)
+      FundNav:   3 -> 0 (级联)
+      MarketData: 1 -> 1 (无关,不动)
+    """
+    session.add(Watchlist(fund_code="110011"))
+    session.add(Fund(fund_code="110011", fund_name="易方达优质精选",
+                     fund_type="QDII", manager="张坤", company="易方达基金"))
+    session.add_all([
+        FundNav(fund_code="110011", nav_date="2026-06-01", unit_nav=5.0,
+                accumulated_nav=5.0, daily_return=0.0, source="akshare"),
+        FundNav(fund_code="110011", nav_date="2026-06-02", unit_nav=5.1,
+                accumulated_nav=5.1, daily_return=0.02, source="akshare"),
+        FundNav(fund_code="110011", nav_date="2026-06-03", unit_nav=5.2,
+                accumulated_nav=5.2, daily_return=0.0196, source="akshare"),
+    ])
+    # market_data 用同 fund_code 不会出现(它的 pk 是 symbol+market_date)
+    # ——但放一行验证无关表不被误伤
+    session.add(MarketData(symbol="000300", market_date="2026-06-30",
+                           name="沪深300", close=4000.0, change_pct=0.5))
+    session.commit()
+
+    r = client.delete("/api/watchlist/110011")
+    assert r.status_code == 200, r.text
+    assert r.json() == {"fund_code": "110011", "removed": True}
+
+    from sqlalchemy import select, func
+    assert session.scalar(
+        select(func.count()).select_from(Watchlist).where(Watchlist.fund_code == "110011")
+    ) == 0, "Watchlist 应被删光"
+    assert session.get(Fund, "110011") is None, "Fund 基础信息应被级联删"
+    assert session.scalar(
+        select(func.count()).select_from(FundNav).where(FundNav.fund_code == "110011")
+    ) == 0, "FundNav 历史净值应被级联删"
+    # 无关表不能动 —— 防止"删自选时把市场数据搞飞"的灾难
+    assert session.scalar(select(MarketData).where(MarketData.symbol == "000300")) is not None
+
+
+def test_delete_cascade_is_idempotent(session):
+    """已在 Fund/FundNav 没有缓存的基金,DELETE 走纯原路径不该报错。
+
+    之前实现删 Watchlist 一行就够 —— 这里保证加级联后,空缓存的场景
+    跟原来等价(returned True, Watchlist 行被删, 不抛异常)。
+    """
+    repo.add_to_watchlist(session, "000001")
+    r = client.delete("/api/watchlist/000001")
+    assert r.status_code == 200
+    assert r.json() == {"fund_code": "000001", "removed": True}

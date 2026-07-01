@@ -10,9 +10,9 @@ service 既可以传入测试用的内存 Session,也可以传通过
   这样调用方可以直接 JSON 序列化。
 - 写路径都在内部自己 `session.commit()`,调用方不要重复提交。
 """
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
-from backend.db.models import Fund, Watchlist, FundNav
+from backend.db.models import Fund, FundNav, Watchlist
 
 
 def _watchlist_to_dict(w: Watchlist) -> dict:
@@ -83,10 +83,25 @@ def add_to_watchlist_full(session, fund_code: str, attrs: dict) -> dict:
 
 
 def remove_from_watchlist(session, fund_code: str) -> bool:
-    """从自选里删除一只基金。返回是否真的删除了一行。"""
+    """从自选里删除一只基金,级联清理该基金缓存。
+
+    删一行 Watchlist,并把同 `fund_code` 的 Fund(基础信息)和
+    FundNav(净值快照)也一并删掉 —— 不留"幽灵数据":
+    删了自选再点回这条基金,应触发"立即拉取"按钮,而不是把早已
+    作废的净值/基础信息当成本地真相显示出来。
+
+    注意:`MarketData` 表存的是市场指数(如沪深300),它的主键是
+    `symbol + market_date` 而非 `fund_code`,不应被波及。
+
+    返回是否真的删了一行 Watchlist;不在池中返回 False。
+    """
     w = session.scalar(select(Watchlist).where(Watchlist.fund_code == fund_code))
     if not w:
         return False
+    # 顺序:FundNav(行最多) → Fund → Watchlist,统一一次 commit。
+    # delete 一条 SQL 不读 ORM,大表更快。
+    session.execute(delete(FundNav).where(FundNav.fund_code == fund_code))
+    session.execute(delete(Fund).where(Fund.fund_code == fund_code))
     session.delete(w)
     session.commit()
     return True

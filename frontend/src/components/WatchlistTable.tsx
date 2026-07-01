@@ -185,7 +185,16 @@ function RowActions({
     }
     try {
       await api.watchlistRemove(row.fund_code);
+      // 与详情页 `removeFromWatchlist` 对齐,后端级联删 Fund/FundNav
+      // 后,前端也要把可能正显示在详情页的缓存一并失效,否则用户
+      // 走到 `/funds/{fund_code}` 会看到"幽灵数据"。
+      const code = row.fund_code;
       qc.invalidateQueries({ queryKey: ["watchlist"] });
+      qc.invalidateQueries({ queryKey: ["fund", code] });
+      qc.invalidateQueries({ queryKey: ["nav", code] });
+      qc.invalidateQueries({ queryKey: ["navHistory", code] });
+      qc.invalidateQueries({ queryKey: ["metrics", code] });
+      qc.invalidateQueries({ queryKey: ["portfolioPnl", [code]] });
       toast.push(`已从自选池移除 ${row.fund_code}`, "success");
     } catch (err) {
       toast.push(`移除失败：${String(err)}`, "error");
