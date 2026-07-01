@@ -8,7 +8,7 @@
 """
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -16,6 +16,7 @@ from backend.api.app import app
 from backend.db import repository as repo
 from backend.db import session as db_session
 from backend.db.init_db import init_db
+from backend.db.models import FundTransaction
 from backend.services import transaction_service as ts
 from backend.services import watchlist_service as ws
 
@@ -210,6 +211,7 @@ class TestTransactionApi:
         assert wl["holding_share"] == pytest.approx(500.0)
         assert wl["cost_nav"] == pytest.approx(2.0)
         assert wl["cost_nav_basis"] == "transactions"
+        assert wl["holding_amount"] == pytest.approx(1000.0)
 
     def test_post_rejects_zero_amount_or_nav(self, session):
         repo.add_to_watchlist(session, "110011")
@@ -234,6 +236,20 @@ class TestTransactionApi:
             "tx_date": "2026-03-01", "amount": 1000.0, "nav": 2.0,
         })
         assert r.status_code == 404
+        assert session.scalar(
+            select(func.count()).select_from(FundTransaction)
+        ) == 0
+
+    def test_post_rejects_unsupported_kind(self, session):
+        repo.add_to_watchlist(session, "110011")
+        r = client.post("/api/watchlist/110011/transactions", json={
+            "tx_date": "2026-03-01",
+            "amount": 1000.0,
+            "nav": 2.0,
+            "kind": "sell",
+        })
+        assert r.status_code == 422
+        assert repo.list_transactions(session, "110011") == []
 
     def test_delete_transaction_recalcs(self, session):
         repo.add_to_watchlist(session, "110011")
@@ -257,6 +273,34 @@ class TestTransactionApi:
     def test_delete_404_when_absent(self, session):
         r = client.delete("/api/watchlist/110011/transactions/99999")
         assert r.status_code == 404
+
+    def test_delete_rejects_wrong_fund_without_deleting(self, session):
+        repo.add_to_watchlist(session, "110011")
+        repo.add_to_watchlist(session, "000001")
+        r = client.post("/api/watchlist/110011/transactions", json={
+            "tx_date": "2026-01-01", "amount": 1000.0, "nav": 1.0,
+        })
+        tx_id = r.json()["transaction"]["id"]
+
+        wrong = client.delete(f"/api/watchlist/000001/transactions/{tx_id}")
+
+        assert wrong.status_code == 400
+        assert session.get(FundTransaction, tx_id) is not None
+
+    def test_delete_watchlist_removes_transactions(self, session):
+        repo.add_to_watchlist(session, "110011")
+        client.post("/api/watchlist/110011/transactions", json={
+            "tx_date": "2026-01-01", "amount": 1000.0, "nav": 1.0,
+        })
+
+        r = client.delete("/api/watchlist/110011")
+
+        assert r.status_code == 200
+        assert session.scalar(
+            select(func.count())
+            .select_from(FundTransaction)
+            .where(FundTransaction.fund_code == "110011")
+        ) == 0
 
     def test_get_transactions_returns_in_order(self, session):
         repo.add_to_watchlist(session, "110011")

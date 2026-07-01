@@ -99,8 +99,9 @@ def remove_from_watchlist(session, fund_code: str) -> bool:
     w = session.scalar(select(Watchlist).where(Watchlist.fund_code == fund_code))
     if not w:
         return False
-    # 顺序:FundNav(行最多) → Fund → Watchlist,统一一次 commit。
+    # 顺序:交易明细 → FundNav(行最多) → Fund → Watchlist,统一一次 commit。
     # delete 一条 SQL 不读 ORM,大表更快。
+    session.execute(delete(FundTransaction).where(FundTransaction.fund_code == fund_code))
     session.execute(delete(FundNav).where(FundNav.fund_code == fund_code))
     session.execute(delete(Fund).where(Fund.fund_code == fund_code))
     session.delete(w)
@@ -191,64 +192,6 @@ def get_accumulated_navs(session, fund_code: str) -> list[float]:
         .where(FundNav.fund_code == fund_code)
         .order_by(FundNav.nav_date)).all()
     return [float(x) for x in rows if x is not None]
-
-
-def _tx_to_dict(tx: FundTransaction) -> dict:
-    """FundTransaction ORM 行 → 可序列化 dict。"""
-    return {
-        "id": tx.id,
-        "fund_code": tx.fund_code,
-        "tx_date": tx.tx_date,
-        "tx_seq": tx.tx_seq,
-        "kind": tx.kind,
-        "amount": tx.amount,
-        "nav": tx.nav,
-        "share": tx.share,
-        "fee": tx.fee,
-        "note": tx.note,
-        "created_at": tx.created_at.isoformat() if tx.created_at else None,
-    }
-
-
-def list_transactions(session, fund_code: str) -> list[dict]:
-    """按 `fund_code` 列出全部买入/加仓记录,按日期+seq 升序。
-
-    同一天多笔买入用 `tx_seq` 区分顺序,而不是按 id —— 用户场景下
-    "先买的成本"应当排在前面,id 顺序可能与用户输入顺序不一致。
-    """
-    rows = session.scalars(
-        select(FundTransaction)
-        .where(FundTransaction.fund_code == fund_code)
-        .order_by(FundTransaction.tx_date, FundTransaction.tx_seq, FundTransaction.id)
-    ).all()
-    return [_tx_to_dict(r) for r in rows]
-
-
-def count_transactions(session, fund_code: str) -> int:
-    """返回某只基金的交易笔数 —— 给列表/卡片 UI 展示用。"""
-    return int(session.scalar(
-        select(func.count())
-        .select_from(FundTransaction)
-        .where(FundTransaction.fund_code == fund_code)
-    ) or 0)
-
-
-def get_transaction(session, tx_id: int) -> FundTransaction | None:
-    """按 id 取单条交易。"""
-    return session.get(FundTransaction, tx_id)
-
-
-def delete_transaction(session, tx_id: int) -> dict | None:
-    """删除一条交易,返回被删的 dict(用于告知前端它原本是哪只基金);
-    不存在返回 None —— 调用方据此发 404。
-    """
-    tx = session.get(FundTransaction, tx_id)
-    if tx is None:
-        return None
-    snapshot = _tx_to_dict(tx)
-    session.delete(tx)
-    session.commit()
-    return snapshot
 
 
 def _tx_to_dict(tx: FundTransaction) -> dict:

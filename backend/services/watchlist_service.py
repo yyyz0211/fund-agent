@@ -126,30 +126,32 @@ def add_transaction(fund_code: str, attrs: dict, session=None) -> dict | None:
     s = _with_session(session)
     owns = session is None
     try:
+        if repo.get_watchlist_row(s, fund_code) is None:
+            return None
         tx = repo.add_transaction(s, fund_code, attrs or {})
         wl = _recalc(s, fund_code)
-        if wl is None:
-            return None
         return {"transaction": tx, "watchlist": wl}
     finally:
         if owns:
             s.close()
 
 
-def remove_transaction(tx_id: int, session=None) -> dict | None:
+def remove_transaction(fund_code: str, tx_id: int, session=None) -> dict | None:
     """按 `tx_id` 删除一笔交易,删除后用剩余交易重算并回写 Watchlist。
 
     返回 {"removed": True, "transaction": <原交易摘要>, "watchlist": <新行>}
-    或 None(交易不存在)。注意这里需要从被删交易拿到 fund_code,因
-    为 delete 后 SQLAlchemy 实例已 expire。
+    或 None(交易不存在)。如果路径 fund_code 与交易所属基金不一致,
+    返回带 error 的 dict,调用方应转 400,且不会删除任何数据。
     """
     s = _with_session(session)
     owns = session is None
     try:
-        snapshot = repo.delete_transaction(s, tx_id)
-        if snapshot is None:
+        existing = repo.get_transaction(s, tx_id)
+        if existing is None:
             return None
-        fund_code = snapshot["fund_code"]
+        if existing["fund_code"] != fund_code:
+            return {"error": "fund_mismatch", "transaction": existing}
+        snapshot = repo.delete_transaction(s, tx_id)
         wl = _recalc(s, fund_code)
         return {"removed": True, "transaction": snapshot, "watchlist": wl}
     finally:

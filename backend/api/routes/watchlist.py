@@ -11,7 +11,7 @@
 - 写路径走 service 层统一的事务管理,route 层只做参数校验。
 """
 from datetime import date
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -35,7 +35,7 @@ class TransactionUpsert(BaseModel):
     nav: float = Field(ge=0)
     fee: Optional[float] = Field(default=None, ge=0)
     note: Optional[str] = Field(default=None, max_length=2000)
-    kind: Optional[str] = Field(default="buy")
+    kind: Literal["buy"] = "buy"
 
     @field_validator("tx_date")
     @classmethod
@@ -94,11 +94,10 @@ def add_transaction(fund_code: str, payload: TransactionUpsert) -> dict:
 @router.delete("/{fund_code}/transactions/{tx_id}")
 def delete_transaction(fund_code: str, tx_id: int) -> dict:
     """按 id 删除一笔买入,删除后用剩余交易重算并回写 Watchlist。"""
-    result = ws.remove_transaction(tx_id)
+    result = ws.remove_transaction(fund_code, tx_id)
     if result is None:
         raise HTTPException(status_code=404, detail=f"transaction {tx_id} 不存在")
-    # fund_code 路径参数做一道二次校验,防止误删其它基金行
-    if result["transaction"]["fund_code"] != fund_code:
+    if result.get("error") == "fund_mismatch":
         raise HTTPException(
             status_code=400,
             detail=f"transaction {tx_id} 不属于 {fund_code}",

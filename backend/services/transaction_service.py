@@ -61,6 +61,7 @@ def recalc_holding(fund_code: str, session=None) -> dict | None:
             if w.cost_nav_basis == "transactions":
                 w.holding_share = None
                 w.cost_nav = None
+                w.holding_amount = None
             elif w.cost_nav_basis is None:
                 w.cost_nav_basis = "legacy"
             s.commit()
@@ -75,6 +76,7 @@ def recalc_holding(fund_code: str, session=None) -> dict | None:
         else:
             cur_share = float(w.holding_share) if w.holding_share else 0.0
             cur_cost = float(w.cost_nav) if w.cost_nav else 0.0
+        invested = cur_share * cur_cost
 
         for tx in txs:
             if tx["kind"] != "buy":
@@ -89,12 +91,14 @@ def recalc_holding(fund_code: str, session=None) -> dict | None:
             if new_share <= 0:
                 # 数值上不可能(只加不卖),但保留防御
                 continue
-            new_cost = (cur_share * cur_cost + amount) / new_share
+            invested += amount
+            new_cost = invested / new_share
             cur_share = new_share
             cur_cost = new_cost
 
         w.holding_share = _round6(cur_share)
         w.cost_nav = _round6(cur_cost)
+        w.holding_amount = _round6(invested)
         w.cost_nav_basis = "transactions"
         # 首次建仓日期 = 最早一笔 buy 的日期(若还没有 buy_date)
         if not w.buy_date and txs:

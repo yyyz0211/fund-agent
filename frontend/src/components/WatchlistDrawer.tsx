@@ -10,8 +10,9 @@ import { api } from "@/lib/api";
 import { useToast } from "@/components/Toast";
 import { cn } from "@/lib/cn";
 import { formatDate, formatNav, formatMoney } from "@/lib/format";
+import { buildAutoTransactionDraft, type AutoTransactionDraft } from "@/lib/auto-transaction";
 import type {
-  FundTransaction, TransactionUpsertPayload,
+  FundTransaction, NavPoint, TransactionUpsertPayload,
   WatchlistPatchPayload, WatchlistRow, WatchlistUpsertPayload,
 } from "@/types/api";
 
@@ -35,15 +36,10 @@ interface FormState {
   is_holding: boolean;
   is_focus: boolean;
   holding_amount: string;
-  holding_share: string;
-  cost_nav: string;
-  buy_date: string;
 }
 
 interface TxFormState {
-  tx_date: string;
   amount: string;
-  nav: string;
   fee: string;
   note: string;
 }
@@ -55,9 +51,6 @@ function rowToForm(row: WatchlistRow): FormState {
     is_holding: !!row.is_holding,
     is_focus: !!row.is_focus,
     holding_amount: row.holding_amount?.toString() ?? "",
-    holding_share: row.holding_share?.toString() ?? "",
-    cost_nav: row.cost_nav?.toString() ?? "",
-    buy_date: row.buy_date ?? "",
   };
 }
 
@@ -68,20 +61,11 @@ function blankForm(fundCode = ""): FormState {
     is_holding: false,
     is_focus: false,
     holding_amount: "",
-    holding_share: "",
-    cost_nav: "",
-    buy_date: "",
   };
 }
 
 function blankTxForm(): TxFormState {
-  return { tx_date: "", amount: "", nav: "", fee: "", note: "" };
-}
-
-function toOptionalNumber(s: string): number | null {
-  if (s.trim() === "") return null;
-  const n = Number(s);
-  return Number.isFinite(n) ? n : null;
+  return { amount: "", fee: "", note: "" };
 }
 
 export function WatchlistDrawer({
@@ -118,15 +102,39 @@ export function WatchlistDrawer({
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose, submitting]);
 
-  // 编辑模式 + is_holding=true 才挂交易表数据 —— 新增模式首次保存
-  // 后再切到加仓 tab 时也会自然拿到。
-  const showTxTab = mode === "edit" && row != null && form.is_holding;
+  // 只有已经保存为持仓的行才显示交易明细 tab;从关注切换为持仓时,
+  // 先在基础表单里创建首笔交易,保存后再出现加仓 tab。
+  const showTxTab = mode === "edit" && row != null && row.is_holding;
   const fundCodeForTx = row?.fund_code ?? "";
+  const currentFundCode = mode === "edit" ? fundCodeForTx : form.fund_code.trim();
+  const needsInitialHolding = form.is_holding && (mode === "add" || row?.is_holding === false);
+  const shouldLoadLatestNav = open && currentFundCode.length > 0 && (
+    needsInitialHolding ||
+    (showTxTab && activeTab === "transactions" && txFormOpen)
+  );
 
   const txQuery = useQuery({
     queryKey: ["watchlistTransactions", fundCodeForTx],
     queryFn: () => api.watchlistTransactions(fundCodeForTx),
     enabled: showTxTab,
+  });
+
+  const latestNavQuery = useQuery({
+    queryKey: ["nav", currentFundCode],
+    queryFn: () => api.nav(currentFundCode),
+    enabled: shouldLoadLatestNav,
+  });
+
+  const initialHoldingDraft = buildAutoTransactionDraft({
+    amountInput: form.holding_amount,
+    latestNav: latestNavQuery.data,
+    note: "初始持仓",
+  });
+  const txDraft = buildAutoTransactionDraft({
+    amountInput: txForm.amount,
+    feeInput: txForm.fee,
+    note: txForm.note,
+    latestNav: latestNavQuery.data,
   });
 
   const addTx = useMutation({
@@ -176,6 +184,14 @@ export function WatchlistDrawer({
       toast.push("请填写基金代码", "error");
       return;
     }
+    if (needsInitialHolding && latestNavQuery.isLoading) {
+      toast.push("正在读取最新 NAV,请稍后再保存", "error");
+      return;
+    }
+    if (needsInitialHolding && !initialHoldingDraft) {
+      toast.push("请填写有效持仓金额，并确认本地已有最新 NAV", "error");
+      return;
+    }
     setSubmitting(true);
     try {
       let saved: WatchlistRow;
@@ -185,24 +201,40 @@ export function WatchlistDrawer({
           note: form.note || null,
           is_holding: form.is_holding,
           is_focus: form.is_focus,
-          holding_amount: toOptionalNumber(form.holding_amount),
-          holding_share: toOptionalNumber(form.holding_share),
-          cost_nav: toOptionalNumber(form.cost_nav),
-          buy_date: form.buy_date || null,
+          holding_amount: needsInitialHolding
+            ? initialHoldingDraft?.payload.amount ?? null
+            : null,
         };
         saved = await api.watchlistAdd(payload);
+        if (needsInitialHolding && initialHoldingDraft) {
+          const txResult = await api.watchlistAddTransaction(
+            fundCode,
+            initialHoldingDraft.payload,
+          );
+          saved = txResult.watchlist;
+          qc.invalidateQueries({ queryKey: ["watchlistTransactions", fundCode] });
+          qc.invalidateQueries({ queryKey: ["portfolioPnl", [fundCode]] });
+        }
         toast.push(`${fundCode} 已加入自选池`, "success");
       } else {
         const patch: WatchlistPatchPayload = {
           note: form.note || null,
           is_holding: form.is_holding,
           is_focus: form.is_focus,
-          holding_amount: toOptionalNumber(form.holding_amount),
-          holding_share: toOptionalNumber(form.holding_share),
-          cost_nav: toOptionalNumber(form.cost_nav),
-          buy_date: form.buy_date || null,
+          holding_amount: needsInitialHolding
+            ? initialHoldingDraft?.payload.amount ?? null
+            : undefined,
         };
         saved = await api.watchlistUpdate(fundCode, patch);
+        if (needsInitialHolding && initialHoldingDraft) {
+          const txResult = await api.watchlistAddTransaction(
+            fundCode,
+            initialHoldingDraft.payload,
+          );
+          saved = txResult.watchlist;
+          qc.invalidateQueries({ queryKey: ["watchlistTransactions", fundCode] });
+          qc.invalidateQueries({ queryKey: ["portfolioPnl", [fundCode]] });
+        }
         toast.push(`已更新 ${fundCode}`, "success");
       }
       onSaved?.(saved);
@@ -224,24 +256,22 @@ export function WatchlistDrawer({
 
   function submitTx(e: React.FormEvent) {
     e.preventDefault();
-    const amount = Number(txForm.amount);
-    const nav = Number(txForm.nav);
-    if (!txForm.tx_date) {
-      toast.push("请选择加仓日期", "error");
+    if (latestNavQuery.isLoading) {
+      toast.push("正在读取最新 NAV,请稍后再提交", "error");
       return;
     }
-    if (!Number.isFinite(amount) || amount <= 0 || !Number.isFinite(nav) || nav <= 0) {
-      toast.push("金额和 NAV 必须大于 0", "error");
+    if (!txDraft) {
+      toast.push("请填写有效投入金额，并确认本地已有最新 NAV", "error");
       return;
     }
-    addTx.mutate({
-      tx_date: txForm.tx_date,
-      amount,
-      nav,
-      fee: txForm.fee ? Number(txForm.fee) : null,
-      note: txForm.note || null,
-    });
+    addTx.mutate(txDraft.payload);
   }
+
+  const saveDisabled = submitting || (
+    needsInitialHolding && (
+      latestNavQuery.isLoading || initialHoldingDraft == null
+    )
+  );
 
   return (
     <div
@@ -331,55 +361,39 @@ export function WatchlistDrawer({
                   />
                 </div>
 
-                <div>
-                  <label className="mb-1 block text-xs font-medium text-gray-700">持仓金额</label>
-                  <Input
-                    inputMode="decimal"
-                    min={0}
-                    onChange={(e) => setField("holding_amount", e.target.value)}
-                    placeholder="例如 12000.50"
-                    step="0.0001"
-                    type="number"
-                    value={form.holding_amount}
-                  />
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="mb-1 block text-xs font-medium text-gray-700">持仓份额</label>
-                    <Input
-                      inputMode="decimal"
-                      min={0}
-                      onChange={(e) => setField("holding_share", e.target.value)}
-                      placeholder="1000.00"
-                      step="0.0001"
-                      type="number"
-                      value={form.holding_share}
+                {needsInitialHolding && (
+                  <>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-gray-700">持仓金额</label>
+                      <Input
+                        inputMode="decimal"
+                        min={0}
+                        onChange={(e) => setField("holding_amount", e.target.value)}
+                        placeholder="例如 12000.50"
+                        step="0.01"
+                        type="number"
+                        value={form.holding_amount}
+                      />
+                    </div>
+                    <AutoNavSummary
+                      draft={initialHoldingDraft}
+                      latestNav={latestNavQuery.data}
+                      navError={latestNavQuery.error}
+                      navLoading={latestNavQuery.isLoading}
+                      purpose="initial"
                     />
-                  </div>
-                  <div>
-                    <label className="mb-1 block text-xs font-medium text-gray-700">成本净值</label>
-                    <Input
-                      inputMode="decimal"
-                      min={0}
-                      onChange={(e) => setField("cost_nav", e.target.value)}
-                      placeholder="1.234"
-                      step="0.0001"
-                      type="number"
-                      value={form.cost_nav}
-                    />
-                  </div>
-                </div>
-                <div>
-                  <label className="mb-1 block text-xs font-medium text-gray-700">买入日期</label>
-                  <Input
-                    onChange={(e) => setField("buy_date", e.target.value)}
-                    type="date"
-                    value={form.buy_date}
-                  />
-                  <p className="mt-1 text-[11px] text-gray-500">
-                    添加加仓后,这里会显示首次建仓日期。
+                  </>
+                )}
+
+                {form.is_holding && mode === "edit" && row?.is_holding && (
+                  <HoldingSnapshot row={row} />
+                )}
+
+                {!form.is_holding && mode === "add" && (
+                  <p className="rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-500">
+                    未勾选持仓时只加入观察清单,不会写入持仓金额或交易记录。
                   </p>
-                </div>
+                )}
 
                 <div>
                   <label className="mb-1 block text-xs font-medium text-gray-700">备注</label>
@@ -396,22 +410,25 @@ export function WatchlistDrawer({
 
             {showTxTab && activeTab === "transactions" && (
               <TransactionsTab
-                addTx={addTx}
                 costNav={row?.cost_nav}
                 holdingShare={row?.holding_share}
+                latestNav={latestNavQuery.data}
+                navDraft={txDraft}
+                navError={latestNavQuery.error}
+                navLoading={latestNavQuery.isLoading}
                 isSubmitting={addTx.isPending}
                 isTxFormOpen={txFormOpen}
                 onDelete={(id) => removeTx.mutate(id)}
                 onOpenTxForm={() => setTxFormOpen((v) => !v)}
-    onChangeTxField={setTxField}
-    onSubmitTx={submitTx}
-    removeTx={removeTx}
-    txForm={txForm}
-    txs={txQuery.data ?? []}
-    txState={{
-      isLoading: txQuery.isLoading,
-      error: txQuery.error,
-    }}
+                onChangeTxField={setTxField}
+                onSubmitTx={submitTx}
+                removeTx={removeTx}
+                txForm={txForm}
+                txs={txQuery.data ?? []}
+                txState={{
+                  isLoading: txQuery.isLoading,
+                  error: txQuery.error,
+                }}
               />
             )}
           </div>
@@ -420,7 +437,7 @@ export function WatchlistDrawer({
             <Button onClick={onClose} type="button" variant="outline" disabled={submitting}>
               取消
             </Button>
-            <Button disabled={submitting} type="submit">
+            <Button disabled={saveDisabled} type="submit">
               {submitting ? "保存中..." : "保存"}
             </Button>
           </footer>
@@ -449,13 +466,95 @@ function TabButton({
   );
 }
 
-function TransactionsTab({
-  addTx, costNav, holdingShare, isSubmitting, isTxFormOpen, onDelete, onOpenTxForm,
-  onChangeTxField, onSubmitTx, removeTx, txForm, txs, txState,
+function HoldingSnapshot({ row }: { row: WatchlistRow }) {
+  const isTxBasis = row.cost_nav_basis === "transactions";
+  return (
+    <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600">
+      <div className="font-medium text-gray-900">
+        {isTxBasis ? "持仓由交易记录维护" : "已有持仓信息"}
+      </div>
+      <div className="mt-2 grid grid-cols-2 gap-2">
+        <SummaryItem label="投入金额" value={row.holding_amount != null ? `¥ ${formatMoney(row.holding_amount)}` : "—"} />
+        <SummaryItem label="持仓份额" value={row.holding_share != null ? row.holding_share.toFixed(2) : "—"} />
+        <SummaryItem label="成本 NAV" value={row.cost_nav != null ? formatNav(row.cost_nav) : "—"} />
+        <SummaryItem label="建仓日期" value={row.buy_date ? formatDate(row.buy_date) : "—"} />
+      </div>
+      <p className="mt-2 text-[11px] text-gray-500">
+        追加投入请使用“加仓记录”,系统会按最新 NAV 自动重算份额和成本。
+      </p>
+    </div>
+  );
+}
+
+function AutoNavSummary({
+  draft, latestNav, navError, navLoading, purpose,
 }: {
-  addTx: { isPending: boolean };
+  draft: AutoTransactionDraft | null;
+  latestNav: NavPoint | undefined;
+  navError: unknown;
+  navLoading: boolean;
+  purpose: "initial" | "add";
+}) {
+  if (navLoading) {
+    return (
+      <StateBlock title="读取最新 NAV" tone="loading">
+        正在读取本地最新净值。
+      </StateBlock>
+    );
+  }
+  if (navError != null) {
+    return (
+      <StateBlock title="缺少最新 NAV" tone="error">
+        {`${navError}`}。请先刷新基金数据。
+      </StateBlock>
+    );
+  }
+  if (!latestNav || latestNav.accumulated_nav == null || latestNav.accumulated_nav <= 0) {
+    return (
+      <StateBlock title="等待最新 NAV" tone="empty">
+        填写基金代码后会自动读取最新 NAV；没有本地数据时请先刷新基金。
+      </StateBlock>
+    );
+  }
+  const label = purpose === "initial" ? "首笔持仓" : "本次加仓";
+  return (
+    <div className="rounded-lg bg-blue-50 p-3 text-xs text-blue-900">
+      <div className="font-medium">{label}将使用本地最新 NAV</div>
+      <div className="mt-2 grid grid-cols-3 gap-2">
+        <SummaryItem label="净值日期" value={formatDate(latestNav.nav_date)} />
+        <SummaryItem label="成本 NAV" value={formatNav(latestNav.accumulated_nav)} />
+        <SummaryItem
+          label="预计份额"
+          value={draft ? draft.estimatedShare.toFixed(2) : "填写金额后计算"}
+        />
+      </div>
+      <p className="mt-2 text-[11px] text-blue-700">
+        source/as_of: {latestNav.source} / {latestNav.as_of ?? "—"}
+      </p>
+    </div>
+  );
+}
+
+function SummaryItem({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <div className="text-[11px] text-gray-500">{label}</div>
+      <div className="mt-0.5 font-medium text-gray-900">{value}</div>
+    </div>
+  );
+}
+
+function TransactionsTab({
+  costNav, holdingShare, isSubmitting, isTxFormOpen, latestNav, navDraft,
+  navError, navLoading, onDelete, onOpenTxForm, onChangeTxField, onSubmitTx,
+  removeTx, txForm, txs, txState,
+}: {
   costNav: number | null | undefined;
   holdingShare: number | null | undefined;
+  latestNav: NavPoint | undefined;
+  navDraft: AutoTransactionDraft | null;
+  navError: unknown;
+  navLoading: boolean;
   isSubmitting: boolean;
   isTxFormOpen: boolean;
   onDelete: (id: number) => void;
@@ -496,15 +595,7 @@ function TransactionsTab({
 
       {isTxFormOpen && (
         <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <label className="mb-1 block text-[11px] font-medium text-gray-700">日期</label>
-              <Input
-                onChange={(e) => onChangeTxField("tx_date", e.target.value)}
-                type="date"
-                value={txForm.tx_date}
-              />
-            </div>
+          <div className="space-y-3">
             <div>
               <label className="mb-1 block text-[11px] font-medium text-gray-700">投入金额 ¥</label>
               <Input
@@ -517,37 +608,34 @@ function TransactionsTab({
                 value={txForm.amount}
               />
             </div>
-            <div>
-              <label className="mb-1 block text-[11px] font-medium text-gray-700">买入 NAV</label>
-              <Input
-                inputMode="decimal"
-                min={0}
-                onChange={(e) => onChangeTxField("nav", e.target.value)}
-                placeholder="1.234"
-                step="0.0001"
-                type="number"
-                value={txForm.nav}
-              />
-            </div>
-            <div>
-              <label className="mb-1 block text-[11px] font-medium text-gray-700">手续费(可选)</label>
-              <Input
-                inputMode="decimal"
-                min={0}
-                onChange={(e) => onChangeTxField("fee", e.target.value)}
-                placeholder="0.00"
-                step="0.01"
-                type="number"
-                value={txForm.fee}
-              />
-            </div>
-            <div className="col-span-2">
-              <label className="mb-1 block text-[11px] font-medium text-gray-700">备注(可选)</label>
-              <Input
-                onChange={(e) => onChangeTxField("note", e.target.value)}
-                placeholder="如:大跌加仓"
-                value={txForm.note}
-              />
+            <AutoNavSummary
+              draft={navDraft}
+              latestNav={latestNav}
+              navError={navError}
+              navLoading={navLoading}
+              purpose="add"
+            />
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="mb-1 block text-[11px] font-medium text-gray-700">手续费(可选)</label>
+                <Input
+                  inputMode="decimal"
+                  min={0}
+                  onChange={(e) => onChangeTxField("fee", e.target.value)}
+                  placeholder="0.00"
+                  step="0.01"
+                  type="number"
+                  value={txForm.fee}
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-[11px] font-medium text-gray-700">备注(可选)</label>
+                <Input
+                  onChange={(e) => onChangeTxField("note", e.target.value)}
+                  placeholder="如:大跌加仓"
+                  value={txForm.note}
+                />
+              </div>
             </div>
           </div>
           <div className="mt-3 flex justify-end gap-2">
@@ -560,7 +648,7 @@ function TransactionsTab({
               取消
             </Button>
             <Button
-              disabled={isSubmitting}
+              disabled={isSubmitting || navLoading || navDraft == null}
               onClick={onSubmitTx}
               size="sm"
               type="button"
