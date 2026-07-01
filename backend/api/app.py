@@ -17,7 +17,9 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"],
     allow_credentials=False,
-    allow_methods=["GET"],
+    # 自选池的 POST/PATCH/DELETE 走浏览器预检,必须显式放行;
+    # OPTIONS 留给浏览器自动处理(不在这里列出,FastAPI 也能响应)。
+    allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["*"],
 )
 

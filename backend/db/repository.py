@@ -16,11 +16,37 @@ from backend.db.models import Fund, Watchlist, FundNav
 
 
 def _watchlist_to_dict(w: Watchlist) -> dict:
-    """把 Watchlist 的 ORM 行投影成一个可序列化的 dict。"""
-    return {"id": w.id, "fund_code": w.fund_code, "is_holding": w.is_holding,
-            "is_focus": w.is_focus, "holding_amount": w.holding_amount,
-            "holding_share": w.holding_share, "cost_nav": w.cost_nav,
-            "buy_date": w.buy_date, "note": w.note}
+    """把 Watchlist 的 ORM 行投影成一个可序列化的 dict。
+
+    时间字段显式转 ISO 字符串,避免 JSON 序列化在 `datetime` 上踩坑;
+    DB 里用 `func.now()` 写入的本地时间统一到 UTC ISO 便于前端直接显示。
+    """
+    return {
+        "id": w.id,
+        "fund_code": w.fund_code,
+        "is_holding": w.is_holding,
+        "is_focus": w.is_focus,
+        "holding_amount": w.holding_amount,
+        "holding_share": w.holding_share,
+        "cost_nav": w.cost_nav,
+        "buy_date": w.buy_date,
+        "note": w.note,
+        "created_at": w.created_at.isoformat() if w.created_at else None,
+        "updated_at": w.updated_at.isoformat() if w.updated_at else None,
+    }
+
+
+# 允许通过 PATCH 写入的字段白名单 —— 不在白名单里的会被忽略,
+# 防止 API 误传 `fund_code`/`id`/`created_at` 等敏感列。
+_WATCHLIST_PATCH_FIELDS = {
+    "note", "is_holding", "is_focus",
+    "holding_amount", "holding_share", "cost_nav", "buy_date",
+}
+
+
+def _patch_to_set(patch: dict) -> dict:
+    """把入参 dict 收敛到 ORM 列集合,丢掉未知 key。"""
+    return {k: v for k, v in patch.items() if k in _WATCHLIST_PATCH_FIELDS}
 
 
 def add_to_watchlist(session, fund_code: str, note: str | None = None) -> dict:
@@ -34,6 +60,23 @@ def add_to_watchlist(session, fund_code: str, note: str | None = None) -> dict:
     if existing:
         return _watchlist_to_dict(existing)
     w = Watchlist(fund_code=fund_code, note=note)
+    session.add(w)
+    session.commit()
+    return _watchlist_to_dict(w)
+
+
+def add_to_watchlist_full(session, fund_code: str, attrs: dict) -> dict:
+    """加入自选池并初始化全部字段(给 POST /api/watchlist 用)。
+
+    与 `add_to_watchlist` 的区别:`attrs` 接受白名单内的全部列,
+    首次写入时落到新行;基金已存在则返回已有行,**不会**用 attrs
+    覆盖已有值 —— 想改字段请走 PATCH。
+    """
+    existing = session.scalar(select(Watchlist).where(Watchlist.fund_code == fund_code))
+    if existing:
+        return _watchlist_to_dict(existing)
+    init = {k: v for k, v in (attrs or {}).items() if k in _WATCHLIST_PATCH_FIELDS}
+    w = Watchlist(fund_code=fund_code, **init)
     session.add(w)
     session.commit()
     return _watchlist_to_dict(w)
@@ -63,6 +106,27 @@ def get_watchlist(session) -> list[dict]:
     """列出全部自选行,按插入顺序(id 升序)排序。"""
     rows = session.scalars(select(Watchlist).order_by(Watchlist.id)).all()
     return [_watchlist_to_dict(w) for w in rows]
+
+
+def get_watchlist_row(session, fund_code: str) -> dict | None:
+    """按 `fund_code` 查单条,不在池中返回 None。"""
+    w = session.scalar(select(Watchlist).where(Watchlist.fund_code == fund_code))
+    return _watchlist_to_dict(w) if w else None
+
+
+def update_watchlist(session, fund_code: str, patch: dict) -> dict | None:
+    """按 `fund_code` 更新自选行。
+
+    只 patch 白名单内的字段(`_WATCHLIST_PATCH_FIELDS`),
+    其他字段保持不变。该基金不在自选里时返回 None。
+    """
+    w = session.scalar(select(Watchlist).where(Watchlist.fund_code == fund_code))
+    if not w:
+        return None
+    for k, v in _patch_to_set(patch).items():
+        setattr(w, k, v)
+    session.commit()
+    return _watchlist_to_dict(w)
 
 
 def upsert_fund(session, fund: dict) -> None:

@@ -1,15 +1,17 @@
 "use client";
 import type { ReactNode } from "react";
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
-import { ArrowLeft, MessageSquareText } from "lucide-react";
+import { ArrowLeft, MessageSquareText, Plus, Star } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { NavChart } from "@/components/NavChart";
 import { MetricCards } from "@/components/MetricCard";
 import { PageHeader, SectionHeader } from "@/components/PageHeader";
 import { StateBlock } from "@/components/StateBlock";
+import { WatchlistDrawer } from "@/components/WatchlistDrawer";
+import { useToast } from "@/components/Toast";
 import { api } from "@/lib/api";
 import { formatPct, formatNav, formatDate } from "@/lib/format";
 
@@ -25,13 +27,34 @@ const PERIOD_LABELS: Record<(typeof PERIODS)[number], string> = {
 export default function FundDetail({ params }: { params: { code: string } }) {
   const code = params.code;
   const [period, setPeriod] = useState<(typeof PERIODS)[number]>("1m");
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const toast = useToast();
+  const qc = useQueryClient();
 
   const fund = useQuery({ queryKey: ["fund", code], queryFn: () => api.fund(code) });
   const nav = useQuery({ queryKey: ["nav", code], queryFn: () => api.nav(code) });
   const metrics = useQuery({
     queryKey: ["metrics", code, period], queryFn: () => api.metrics(code, period),
   });
+  // 直接读 ["watchlist"] 缓存,详情页就能立刻判断该基金是否在池中;
+  // 若缓存为空就拉一次。
+  const watchlistQuery = useQuery({ queryKey: ["watchlist"], queryFn: api.watchlist });
+  const inWatchlist = (watchlistQuery.data ?? []).find((r) => r.fund_code === code);
   const fundName = fund.data?.fund_name ?? code;
+
+  async function removeFromWatchlist() {
+    if (typeof window !== "undefined") {
+      const ok = window.confirm(`确认从自选池移除 ${code}?`);
+      if (!ok) return;
+    }
+    try {
+      await api.watchlistRemove(code);
+      qc.invalidateQueries({ queryKey: ["watchlist"] });
+      toast.push(`已从自选池移除 ${code}`, "success");
+    } catch (err) {
+      toast.push(`移除失败：${String(err)}`, "error");
+    }
+  }
 
   return (
     <main className="mx-auto max-w-6xl space-y-8 px-4 py-8 sm:px-6">
@@ -51,8 +74,19 @@ export default function FundDetail({ params }: { params: { code: string } }) {
                 返回自选池
               </Button>
             </Link>
+            {inWatchlist ? (
+              <Button onClick={removeFromWatchlist} type="button" variant="outline">
+                <Star className="mr-2 h-4 w-4 fill-current text-amber-500" />
+                已在自选池
+              </Button>
+            ) : (
+              <Button onClick={() => setDrawerOpen(true)} type="button">
+                <Plus className="mr-2 h-4 w-4" />
+                加入自选
+              </Button>
+            )}
             <Link href={`/qa?prefill=${encodeURIComponent(`基金 ${code} 净值`)}`}>
-              <Button>
+              <Button variant={inWatchlist ? "default" : "outline"}>
                 <MessageSquareText className="mr-2 h-4 w-4" />
                 向助手提问
               </Button>
@@ -158,6 +192,13 @@ export default function FundDetail({ params }: { params: { code: string } }) {
           </div>
         )}
       </section>
+
+      <WatchlistDrawer
+        onClose={() => setDrawerOpen(false)}
+        onSaved={() => qc.invalidateQueries({ queryKey: ["watchlist"] })}
+        open={drawerOpen}
+        prefillFundCode={code}
+      />
     </main>
   );
 }

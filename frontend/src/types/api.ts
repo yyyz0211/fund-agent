@@ -39,13 +39,28 @@ export interface WatchlistRow {
   id?: number;
   fund_code: string;
   note: string | null;
-  is_holding?: boolean;
-  is_focus?: boolean;
+  is_holding: boolean;
+  is_focus: boolean;
+  holding_amount: number | null;
+  holding_share: number | null;
+  cost_nav: number | null;
+  buy_date: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface WatchlistUpsertPayload {
+  fund_code: string;
+  note?: string | null;
+  is_holding?: boolean | null;
+  is_focus?: boolean | null;
   holding_amount?: number | null;
   holding_share?: number | null;
   cost_nav?: number | null;
   buy_date?: string | null;
 }
+
+export type WatchlistPatchPayload = Partial<Omit<WatchlistUpsertPayload, "fund_code">>;
 
 export interface MarketIndex {
   symbol: string;

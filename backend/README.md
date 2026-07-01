@@ -66,8 +66,13 @@ Swagger UI：`http://localhost:8000/docs`
 - `GET /api/funds/{code}/nav-history?start=&end=` —— 净值历史
 - `GET /api/funds/{code}/metrics?period=1m` —— 阶段指标
 - `GET /api/watchlist` —— 自选池
+- `POST /api/watchlist` —— 加入自选（幂等，body 含完整字段）
+- `PATCH /api/watchlist/{fund_code}` —— 局部更新自选行字段
+- `DELETE /api/watchlist/{fund_code}` —— 从自选池移除
 - `GET /api/market/latest` —— 主要指数
 - `GET /api/announcements` —— 公告占位
+
+自选池写路径允许的字段：`note, is_holding, is_focus, holding_amount, holding_share, cost_nav, buy_date`（ISO YYYY-MM-DD）。数值字段 ge=0；不在池中时 PATCH/DELETE 返回 404。
 
 ## Boundaries
 

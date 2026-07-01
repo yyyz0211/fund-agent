@@ -11,6 +11,14 @@ export function formatNav(v: number | null | undefined): string {
 
 export function formatDate(s: string | null | undefined): string {
   if (!s) return "—";
+  // ISO datetime: 取本地时区的 YYYY-MM-DD HH:MM(无秒);纯日期串则取前 10。
+  if (s.length > 10 && s.includes("T")) {
+    const d = new Date(s);
+    if (!Number.isNaN(d.getTime())) {
+      const pad = (n: number) => String(n).padStart(2, "0");
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    }
+  }
   return s.slice(0, 10);
 }
 
