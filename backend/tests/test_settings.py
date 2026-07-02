@@ -1,4 +1,7 @@
 from backend.config.settings import get_settings
+from sqlalchemy import text
+
+from backend.db.session import make_engine
 
 
 def test_settings_defaults(monkeypatch):
@@ -38,3 +41,28 @@ def test_env_file_path_is_cwd_independent(tmp_path, monkeypatch):
     get_settings.cache_clear()
     s = get_settings()
     assert s.deepseek_base_url == "https://api.deepseek.com"
+
+
+def test_sqlite_engine_applies_concurrency_pragmas(tmp_path):
+    db_path = tmp_path / "fund_agent.db"
+    engine = make_engine(f"sqlite:///{db_path}")
+
+    with engine.connect() as conn:
+        journal_mode = conn.execute(text("PRAGMA journal_mode")).scalar()
+        busy_timeout = conn.execute(text("PRAGMA busy_timeout")).scalar()
+        foreign_keys = conn.execute(text("PRAGMA foreign_keys")).scalar()
+
+    assert str(journal_mode).lower() == "wal"
+    assert busy_timeout == 5000
+    assert foreign_keys == 1
+
+
+def test_sqlite_memory_engine_accepts_pragmas_without_wal_requirement():
+    engine = make_engine("sqlite:///:memory:")
+
+    with engine.connect() as conn:
+        busy_timeout = conn.execute(text("PRAGMA busy_timeout")).scalar()
+        foreign_keys = conn.execute(text("PRAGMA foreign_keys")).scalar()
+
+    assert busy_timeout == 5000
+    assert foreign_keys == 1

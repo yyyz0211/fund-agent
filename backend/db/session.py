@@ -4,7 +4,7 @@
 engine。除非有特别理由,大部分调用方应当走 `get_session()` 而不是
 直接操作 engine。
 """
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from backend.config.settings import get_settings
@@ -27,7 +27,28 @@ def make_engine(url: str | None = None):
     """
     url = url or get_settings().database_url
     connect_args = {"check_same_thread": False} if url.startswith("sqlite") else {}
-    return create_engine(url, connect_args=connect_args, future=True)
+    eng = create_engine(url, connect_args=connect_args, future=True)
+    if url.startswith("sqlite"):
+        _install_sqlite_pragmas(eng)
+    return eng
+
+
+def _install_sqlite_pragmas(eng) -> None:
+    """给 SQLite 连接设置本地单用户场景下更友好的并发参数。"""
+
+    @event.listens_for(eng, "connect")
+    def _set_sqlite_pragmas(dbapi_connection, _connection_record):
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.execute("PRAGMA busy_timeout=5000")
+            try:
+                cursor.execute("PRAGMA journal_mode=WAL")
+            except Exception:
+                # in-memory SQLite 不支持 WAL;文件库失败也不应阻断测试建库。
+                pass
+        finally:
+            cursor.close()
 
 
 # 进程级单例,默认代码路径都直接用这两个。

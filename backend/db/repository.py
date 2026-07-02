@@ -11,7 +11,7 @@ service 既可以传入测试用的内存 Session,也可以传通过
 - 写路径默认在内部自己 `session.commit()`,调用方不要重复提交;少数需要
   原子组合的 service 会显式传 `commit=False` 并自行控制事务。
 """
-from sqlalchemy import delete, func, select
+from sqlalchemy import and_, delete, func, select
 
 from backend.db.models import Fund, FundNav, FundTransaction, Watchlist
 
@@ -229,6 +229,60 @@ def count_transactions(session, fund_code: str) -> int:
         .select_from(FundTransaction)
         .where(FundTransaction.fund_code == fund_code)
     ) or 0
+
+
+def count_transactions_for_funds(session, fund_codes: list[str]) -> dict[str, int]:
+    """批量返回每只基金的交易条数;未出现的 fund_code 默认 0。"""
+    codes = list(dict.fromkeys(c for c in fund_codes if c))
+    counts = {code: 0 for code in codes}
+    if not codes:
+        return counts
+    rows = session.execute(
+        select(FundTransaction.fund_code, func.count())
+        .where(FundTransaction.fund_code.in_(codes))
+        .group_by(FundTransaction.fund_code)
+    ).all()
+    for code, count in rows:
+        counts[str(code)] = int(count or 0)
+    return counts
+
+
+def _nav_to_dict(row: FundNav) -> dict:
+    """FundNav 最新点序列化函数。"""
+    return {
+        "fund_code": row.fund_code,
+        "nav_date": row.nav_date,
+        "accumulated_nav": row.accumulated_nav,
+        "source": row.source,
+        "as_of": row.source_updated_at,
+    }
+
+
+def get_latest_navs_for_funds(session, fund_codes: list[str]) -> dict[str, dict]:
+    """批量取每只基金最新 NAV,无 NAV 的基金不出现在结果中。"""
+    codes = list(dict.fromkeys(c for c in fund_codes if c))
+    if not codes:
+        return {}
+    latest_dates = (
+        select(
+            FundNav.fund_code.label("fund_code"),
+            func.max(FundNav.nav_date).label("nav_date"),
+        )
+        .where(FundNav.fund_code.in_(codes))
+        .group_by(FundNav.fund_code)
+        .subquery()
+    )
+    rows = session.scalars(
+        select(FundNav)
+        .join(
+            latest_dates,
+            and_(
+                FundNav.fund_code == latest_dates.c.fund_code,
+                FundNav.nav_date == latest_dates.c.nav_date,
+            ),
+        )
+    ).all()
+    return {row.fund_code: _nav_to_dict(row) for row in rows}
 
 
 def get_transaction(session, tx_id: int) -> dict | None:

@@ -6,10 +6,17 @@
 所有成功返回都是普通 dict 并带 `source` / `as_of`,失败返回
 `{"error": ..., "source": ...}`(沿用 collector 的契约)。
 """
+from concurrent.futures import ThreadPoolExecutor
+
 from backend.db.session import get_session
 from backend.db import repository as repo
 from backend.services import data_collector as dc
 from backend.services import metric_service as metrics
+from backend.services import pnl_service as psvc
+from backend.services import watchlist_service as wsvc
+
+
+_REFRESH_FETCH_WORKERS = 2
 
 
 def _with_session(session):
@@ -38,12 +45,11 @@ def refresh_fund(fund_code: str, session=None) -> dict:
     s = _with_session(session)
     owns = session is None
     try:
-        navs = dc.fetch_fund_nav_history(fund_code)
+        navs, info = _collect_refresh_data(fund_code)
         if isinstance(navs, dict) and "error" in navs:
             return navs
         inserted = repo.upsert_navs(s, fund_code, navs)
 
-        info = dc.fetch_fund_info(fund_code)
         fund_info_warn = None
         if isinstance(info, dict) and "error" in info:
             fund_info_warn = info["error"]
@@ -61,6 +67,29 @@ def refresh_fund(fund_code: str, session=None) -> dict:
     finally:
         if owns:
             s.close()
+
+
+def _collector_error(label: str, fund_code: str, exc: Exception) -> dict:
+    return {
+        "error": f"{label} failed for {fund_code}: {exc}",
+        "source": dc.SOURCE,
+    }
+
+
+def _collect_refresh_data(fund_code: str) -> tuple[list[dict] | dict, dict]:
+    """并行读取 NAV 与基础信息;写库仍由 `refresh_fund` 串行完成。"""
+    with ThreadPoolExecutor(max_workers=_REFRESH_FETCH_WORKERS) as executor:
+        nav_future = executor.submit(dc.fetch_fund_nav_history, fund_code)
+        info_future = executor.submit(dc.fetch_fund_info, fund_code)
+        try:
+            navs = nav_future.result()
+        except Exception as exc:  # noqa: BLE001
+            navs = _collector_error("fetch_fund_nav_history", fund_code, exc)
+        try:
+            info = info_future.result()
+        except Exception as exc:  # noqa: BLE001
+            info = _collector_error("fetch_fund_info", fund_code, exc)
+    return navs, info
 
 
 def get_latest_nav(fund_code: str, session=None) -> dict:
@@ -162,6 +191,73 @@ def get_nav_history(fund_code: str, start_date: str = "", end_date: str = "",
                  "daily_return": r.daily_return} for r in rows]
         return {"fund_code": fund_code, "navs": navs, "count": len(navs),
                 "source": dc.SOURCE, "as_of": dc.today_str()}
+    finally:
+        if owns:
+            s.close()
+
+
+def _summary_value(result: dict, key: str, errors: dict[str, str]) -> dict | None:
+    if isinstance(result, dict) and "error" in result:
+        errors[key] = result["error"]
+        return None
+    return result
+
+
+def get_summary(
+    fund_code: str,
+    period: str = "1m",
+    start_date: str = "",
+    session=None,
+) -> dict:
+    """聚合详情页首屏需要的本地只读数据,不触发联网刷新。"""
+    s = _with_session(session)
+    owns = session is None
+    errors: dict[str, str] = {}
+    try:
+        fund = _summary_value(
+            get_basic_info(fund_code, session=s),
+            "fund",
+            errors,
+        )
+        latest_nav = _summary_value(
+            get_latest_nav(fund_code, session=s),
+            "latest_nav",
+            errors,
+        )
+        metric_payload = _summary_value(
+            get_metrics(fund_code, period=period, session=s),
+            "metrics",
+            errors,
+        )
+        nav_history = _summary_value(
+            get_nav_history(fund_code, start_date=start_date, session=s),
+            "nav_history",
+            errors,
+        )
+        watchlist = wsvc.get_one(fund_code, session=s)
+        pnl = psvc.calculate_pnl(fund_codes=[fund_code], session=s)
+        pnl_item = next(
+            (item for item in pnl.get("items", []) if item["fund_code"] == fund_code),
+            None,
+        )
+        pnl_skipped = next(
+            (item for item in pnl.get("skipped", []) if item["fund_code"] == fund_code),
+            None,
+        )
+
+        return {
+            "fund_code": fund_code,
+            "fund": fund,
+            "latest_nav": latest_nav,
+            "metrics": metric_payload,
+            "nav_history": nav_history,
+            "watchlist": watchlist,
+            "pnl_item": pnl_item,
+            "pnl_skipped": pnl_skipped,
+            "errors": errors,
+            "source": dc.SOURCE,
+            "as_of": dc.today_str(),
+        }
     finally:
         if owns:
             s.close()

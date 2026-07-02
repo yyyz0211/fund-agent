@@ -17,7 +17,7 @@ from __future__ import annotations
 from sqlalchemy import select
 
 from backend.db import repository as repo
-from backend.db.models import Fund, FundNav, Watchlist
+from backend.db.models import Fund, Watchlist
 from backend.services import data_collector as dc
 
 
@@ -91,24 +91,14 @@ def calculate_pnl(
         # 一次性把当前会用到 fund_name / 最新 NAV / 交易笔数 拉出来,避免 N+1。
         codes = [r.fund_code for r in rows]
         names: dict[str, str | None] = {}
-        latest: dict[str, tuple[float, str]] = {}
+        latest: dict[str, dict] = {}
         tx_counts: dict[str, int] = {}
         if codes:
             name_rows = s.scalars(select(Fund).where(Fund.fund_code.in_(codes))).all()
             names = {f.fund_code: f.fund_name for f in name_rows}
 
-            # 每只基金取最新一天的 accumulated_nav
-            for code in codes:
-                nav_row = s.scalars(
-                    select(FundNav)
-                    .where(FundNav.fund_code == code)
-                    .order_by(FundNav.nav_date.desc())
-                ).first()
-                if nav_row is not None and nav_row.accumulated_nav is not None:
-                    latest[code] = (float(nav_row.accumulated_nav), str(nav_row.nav_date))
-
-            # 交易笔数(供 HoldingCard 展示"加仓 N 笔"用)
-            tx_counts = {code: repo.count_transactions(s, code) for code in codes}
+            latest = repo.get_latest_navs_for_funds(s, codes)
+            tx_counts = repo.count_transactions_for_funds(s, codes)
 
         for r in rows:
             if r.holding_share is None or r.cost_nav is None:
@@ -128,13 +118,18 @@ def calculate_pnl(
                     "reason": "non-positive holding_share or cost_nav",
                 })
                 continue
-            if r.fund_code not in latest:
+            latest_nav = latest.get(r.fund_code)
+            if (
+                latest_nav is None
+                or latest_nav.get("accumulated_nav") is None
+            ):
                 skipped.append({
                     "fund_code": r.fund_code,
                     "reason": "no nav data; call refresh_fund first",
                 })
                 continue
-            current_nav, nav_date = latest[r.fund_code]
+            current_nav = float(latest_nav["accumulated_nav"])
+            nav_date = str(latest_nav["nav_date"])
             items.append(_row_to_pnl_item(
                 r, names.get(r.fund_code), current_nav, nav_date,
                 tx_counts.get(r.fund_code, 0),

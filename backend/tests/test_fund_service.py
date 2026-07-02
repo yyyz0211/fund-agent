@@ -1,4 +1,5 @@
 import pytest
+from threading import Event
 from backend.db.session import make_engine
 from backend.db.init_db import init_db
 import backend.db.models  # noqa: F401
@@ -64,6 +65,35 @@ def test_refresh_propagates_collector_error(session, monkeypatch):
                         lambda c: {"error": "boom", "source": "akshare"})
     out = fs.refresh_fund("110011", session=session)
     assert "error" in out
+    assert "error" in fs.get_latest_nav("110011", session=session)
+
+
+def test_refresh_collector_starts_nav_and_info_in_parallel(monkeypatch):
+    nav_started = Event()
+    info_started = Event()
+    navs = [{"nav_date": "2026-06-01", "unit_nav": None,
+             "accumulated_nav": 1.0, "daily_return": 0.0,
+             "source": "akshare", "source_updated_at": "2026-06-30"}]
+    info = {"fund_code": "110011", "fund_name": "FundA", "source": "akshare",
+            "as_of": "2026-06-30"}
+
+    def fetch_nav(code):
+        nav_started.set()
+        assert info_started.wait(1), "fund_info collector did not start in parallel"
+        return navs
+
+    def fetch_info(code):
+        info_started.set()
+        assert nav_started.wait(1), "nav collector did not start in parallel"
+        return info
+
+    monkeypatch.setattr(dc, "fetch_fund_nav_history", fetch_nav)
+    monkeypatch.setattr(dc, "fetch_fund_info", fetch_info)
+
+    collected_navs, collected_info = fs._collect_refresh_data("110011")
+
+    assert collected_navs == navs
+    assert collected_info == info
 
 
 def test_refresh_continues_when_fund_info_fails(session, monkeypatch):

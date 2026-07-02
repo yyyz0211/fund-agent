@@ -105,6 +105,24 @@ class TestMultiFund:
         assert result["totals"]["count"] == 1
         assert result["items"][0]["fund_code"] == "110011"
 
+    def test_transaction_count_is_returned_for_each_holding(self, session):
+        _seed_holding(session, "110011", share=1000, cost=2.0, current_nav=2.5)
+        _seed_holding(session, "000001", share=500, cost=3.0, current_nav=2.4)
+        repo.add_transaction(session, "110011", {
+            "tx_date": "2026-01-01", "amount": 1000.0, "nav": 2.0,
+        })
+        repo.add_transaction(session, "110011", {
+            "tx_date": "2026-02-01", "amount": 500.0, "nav": 2.5,
+        })
+        repo.add_transaction(session, "000001", {
+            "tx_date": "2026-03-01", "amount": 300.0, "nav": 2.4,
+        })
+
+        result = psvc.calculate_pnl(session=session)
+
+        counts = {item["fund_code"]: item["transaction_count"] for item in result["items"]}
+        assert counts == {"110011": 2, "000001": 1}
+
     def test_empty_when_no_holdings(self, session):
         """没有任何 is_holding=true 行时,空 totals + 空 skipped。"""
         result = psvc.calculate_pnl(session=session)
