@@ -16,6 +16,8 @@
 - Do not add trading, brokerage, Alipay, auto-order, or portfolio action capabilities.
 - Do not output guaranteed returns or future NAV predictions.
 - Keep GET diagnosis endpoints local/cache-first; only the explicit refresh endpoint may call AkShare.
+- Profile refresh must be an in-process background job with bounded workers; never block a FastAPI request thread on all AkShare calls.
+- Per fund code, allow only one active profile refresh job; duplicate refresh requests return the existing job.
 - AkShare enhancement failures must degrade to `missing_data`, not fail the whole diagnosis page.
 
 ## File Map
@@ -23,6 +25,7 @@
 - Create `docs/superpowers/specs/2026-07-02-fund-diagnosis-design.md`: approved design spec.
 - Create `backend/services/fund_code_parser.py`: extract fund codes from user text.
 - Create `backend/services/fund_profile_service.py`: refresh/read optional profile cache.
+- Create `backend/services/diagnosis_refresh_jobs.py`: in-process refresh job registry, single-flight, bounded executor, status snapshots.
 - Create `backend/services/diagnosis_rules.py`: deterministic risk-light and label rules.
 - Create `backend/services/diagnosis_service.py`: assemble summary, profile, peers, and diagnosis response.
 - Modify `backend/db/models.py`: add `FundProfile`.
@@ -48,6 +51,8 @@ git status --short --branch
 Expected: any daily-return edits are visible and understood.
 
 - [ ] Commit or stash daily-return work before touching diagnosis files.
+
+如果 daily-return 测试不通过，先修复该测试再继续。**不允许带着红测试进入 diagnosis 阶段**——后续 pytest 命令的 `all pass` 期望是全仓库 pass。
 
 Recommended commit if the daily-return work is complete:
 
@@ -164,12 +169,12 @@ def test_upsert_and_get_fund_profile(session):
     repo.upsert_fund_profile(session, "110011", {
         "scale": 12.3,
         "scale_date": "2026-06-30",
-        "peer_category": "混合型",
+        "peer_category": "偏股混合",
         "rank_total": 100,
         "rank_position": 25,
+        "peer_candidates_json": '[{"fund_code":"000001","fund_name":"PeerA","fund_type":"偏股混合","rank_position":10}]',
         "top10_holding_pct": 0.45,
         "top_industry_pct": 0.38,
-        "rating": "五星",
         "manager_summary": "经理A",
         "source": "akshare",
         "as_of": "2026-07-02",
@@ -179,7 +184,8 @@ def test_upsert_and_get_fund_profile(session):
     row = repo.get_fund_profile(session, "110011")
     assert row["fund_code"] == "110011"
     assert row["scale"] == 12.3
-    assert row["peer_category"] == "混合型"
+    assert row["peer_category"] == "偏股混合"
+    assert "000001" in row["peer_candidates_json"]
 
 
 def test_get_fund_profile_missing_returns_none(session):
@@ -209,9 +215,9 @@ class FundProfile(Base):
     peer_category: Mapped[str | None] = mapped_column(String)
     rank_total: Mapped[int | None] = mapped_column(Integer)
     rank_position: Mapped[int | None] = mapped_column(Integer)
+    peer_candidates_json: Mapped[str | None] = mapped_column(String)
     top10_holding_pct: Mapped[float | None] = mapped_column(Float)
     top_industry_pct: Mapped[float | None] = mapped_column(Float)
-    rating: Mapped[str | None] = mapped_column(String)
     manager_summary: Mapped[str | None] = mapped_column(String)
     source: Mapped[str | None] = mapped_column(String)
     as_of: Mapped[str | None] = mapped_column(String)
@@ -231,9 +237,9 @@ def _profile_to_dict(p: FundProfile) -> dict:
         "peer_category": p.peer_category,
         "rank_total": p.rank_total,
         "rank_position": p.rank_position,
+        "peer_candidates_json": p.peer_candidates_json,
         "top10_holding_pct": p.top10_holding_pct,
         "top_industry_pct": p.top_industry_pct,
-        "rating": p.rating,
         "manager_summary": p.manager_summary,
         "source": p.source,
         "as_of": p.as_of,
@@ -255,7 +261,7 @@ def upsert_fund_profile(session, fund_code: str, attrs: dict) -> dict:
         session.add(row)
     for key in (
         "scale", "scale_date", "peer_category", "rank_total", "rank_position",
-        "top10_holding_pct", "top_industry_pct", "rating", "manager_summary",
+        "peer_candidates_json", "top10_holding_pct", "top_industry_pct", "manager_summary",
         "source", "as_of", "raw_errors",
     ):
         if key in attrs:
@@ -278,8 +284,10 @@ Expected: all pass.
 
 - Modify `backend/services/data_collector.py`
 - Create `backend/services/fund_profile_service.py`
+- Create `backend/services/diagnosis_refresh_jobs.py`
 - Test `backend/tests/test_data_collector.py`
 - Test `backend/tests/test_fund_profile_service.py`
+- Test `backend/tests/test_diagnosis_refresh_jobs.py`
 
 - [ ] Add collector tests with monkeypatched AkShare DataFrames for profile parsing.
 
@@ -290,12 +298,13 @@ Expected collector contract:
     "fund_code": "110011",
     "scale": 12.3,
     "scale_date": "2026-06-30",
-    "peer_category": "混合型",
+    "peer_category": "偏股混合",
     "rank_total": 100,
     "rank_position": 25,
+    "peer_candidates": [{"fund_code": "000001", "fund_name": "PeerA",
+                         "fund_type": "偏股混合", "rank_position": 10}],
     "top10_holding_pct": 0.45,
     "top_industry_pct": 0.38,
-    "rating": "五星",
     "manager_summary": "经理A",
     "missing_data": [],
     "errors": [],
@@ -303,6 +312,25 @@ Expected collector contract:
     "as_of": "2026-07-02",
 }
 ```
+
+Note: v1 不接收 `rating` 字段，对应 AkShare `fund_rating_all` 接口不接入；`manager_summary` 是从 `fund_manager_em` 拿到的字符串，没拿到就 `missing_data += ["manager"]`，不报错。
+
+`fetch_fund_profile()` 返回的 `peer_candidates` 是 Python list；`fund_profile_service.refresh_profile()` 负责用 `json.dumps(..., ensure_ascii=False)` 写入 `peer_candidates_json`。读取时由 `diagnosis_service.get_peers()` 解析，解析失败按空列表处理并记录 `missing_data += ["peers"]`。
+
+Performance requirement: `fetch_fund_profile()` 内部对规模、同类、持仓、行业、经理这 5 类 AkShare 调用使用 `ThreadPoolExecutor(max_workers=3)` 有界并行；每个 future 用短 timeout 收敛，超时源写入 `errors/missing_data`，不能拖住整个 refresh job。
+
+AkShare 接口稳定性 sanity check（在实施 Task 3 当天用本地 Python 跑一次）：
+
+```bash
+.venv/bin/python -c "
+import akshare as ak
+for fn in ['fund_open_fund_rank_em','fund_scale_change_em','fund_portfolio_hold_em',
+          'fund_portfolio_industry_allocation_em','fund_manager_em']:
+    print(fn, hasattr(ak, fn))
+"
+```
+
+任一接口不存在就把对应字段从 §6 schema 中删除，绝不写"字段存在但永远 None"。
 
 - [ ] Add profile service tests:
 
@@ -314,12 +342,12 @@ def test_refresh_profile_persists_partial_data(session, monkeypatch):
         "fund_code": code,
         "scale": 12.3,
         "scale_date": "2026-06-30",
-        "peer_category": "混合型",
+        "peer_category": "偏股混合",
         "rank_total": None,
         "rank_position": None,
+        "peer_candidates": [],
         "top10_holding_pct": None,
         "top_industry_pct": None,
-        "rating": None,
         "manager_summary": None,
         "missing_data": ["rank", "holdings"],
         "errors": ["rank failed"],
@@ -339,14 +367,13 @@ def fetch_fund_profile(fund_code: str) -> dict:
     """Fetch optional diagnosis profile data. Partial failures are returned as missing_data."""
 ```
 
-Use these AkShare functions:
+Use these AkShare functions (after Task 3 sanity check passes):
 
 - `ak.fund_open_fund_rank_em`
 - `ak.fund_scale_change_em`
 - `ak.fund_portfolio_hold_em`
 - `ak.fund_portfolio_industry_allocation_em`
 - `ak.fund_manager_em`
-- `ak.fund_rating_all`
 
 - [ ] Implement `fund_profile_service.refresh_profile()` and `get_profile()`.
 
@@ -358,6 +385,165 @@ Use these AkShare functions:
 
 Expected: all pass.
 
+### Task 3A: Background Refresh Job Manager
+
+**Files:**
+
+- Create `backend/services/diagnosis_refresh_jobs.py`
+- Test `backend/tests/test_diagnosis_refresh_jobs.py`
+
+- [ ] Add job manager tests:
+
+```python
+def test_start_job_returns_done_when_cache_fresh(monkeypatch):
+    from backend.services import diagnosis_refresh_jobs as jobs
+
+    monkeypatch.setattr(jobs.profile_service, "is_profile_fresh", lambda code, ttl_hours=24: True)
+
+    out = jobs.start_refresh_job("110011")
+    assert out["fund_code"] == "110011"
+    assert out["status"] == "done"
+    assert out["job_id"]
+
+
+def test_start_job_single_flight(monkeypatch):
+    from backend.services import diagnosis_refresh_jobs as jobs
+
+    monkeypatch.setattr(jobs.profile_service, "is_profile_fresh", lambda code, ttl_hours=24: False)
+    monkeypatch.setattr(jobs, "_submit_refresh", lambda job: None)
+
+    first = jobs.start_refresh_job("110011")
+    second = jobs.start_refresh_job("110011")
+
+    assert first["job_id"] == second["job_id"]
+    assert second["status"] in {"started", "running"}
+
+
+def test_get_refresh_job_missing():
+    from backend.services import diagnosis_refresh_jobs as jobs
+
+    out = jobs.get_refresh_job("110011", "missing")
+    assert out["status"] == "missing"
+```
+
+- [ ] Implement job manager:
+
+```python
+"""In-process fund diagnosis refresh jobs.
+
+This is intentionally local-process only. The project is single-user SQLite,
+so avoiding request-thread blocking matters more than durable queue semantics.
+"""
+from __future__ import annotations
+
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+from threading import Lock
+from uuid import uuid4
+
+from backend.services import fund_profile_service as profile_service
+
+_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="diagnosis-refresh")
+_lock = Lock()
+_jobs: dict[str, dict] = {}
+_active_by_code: dict[str, str] = {}
+
+
+def _now() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def _snapshot(job: dict) -> dict:
+    return dict(job)
+
+
+def start_refresh_job(fund_code: str, *, force: bool = False) -> dict:
+    if not force and profile_service.is_profile_fresh(fund_code, ttl_hours=24):
+        return {
+            "job_id": f"{fund_code}-{uuid4().hex[:8]}",
+            "fund_code": fund_code,
+            "status": "done",
+            "started_at": _now(),
+            "finished_at": _now(),
+            "missing_data": [],
+            "error": None,
+            "as_of": _now()[:10],
+        }
+    with _lock:
+        active_id = _active_by_code.get(fund_code)
+        if active_id and _jobs.get(active_id, {}).get("status") in {"started", "running"}:
+            job = _jobs[active_id]
+            job["status"] = "running"
+            return _snapshot(job)
+        job_id = f"{fund_code}-{uuid4().hex[:8]}"
+        job = {
+            "job_id": job_id,
+            "fund_code": fund_code,
+            "status": "started",
+            "started_at": _now(),
+            "finished_at": None,
+            "missing_data": [],
+            "error": None,
+            "as_of": _now()[:10],
+        }
+        _jobs[job_id] = job
+        _active_by_code[fund_code] = job_id
+    _submit_refresh(job)
+    return _snapshot(job)
+
+
+def _submit_refresh(job: dict) -> None:
+    _executor.submit(_run_refresh, job["job_id"])
+
+
+def _run_refresh(job_id: str) -> None:
+    with _lock:
+        job = _jobs[job_id]
+        job["status"] = "running"
+    try:
+        result = profile_service.refresh_profile(job["fund_code"])
+        with _lock:
+            job["status"] = "done"
+            job["missing_data"] = result.get("missing_data", [])
+            job["as_of"] = result.get("as_of") or job["as_of"]
+    except Exception as exc:  # noqa: BLE001
+        with _lock:
+            job["status"] = "failed"
+            job["error"] = str(exc)
+    finally:
+        with _lock:
+            job["finished_at"] = _now()
+            if _active_by_code.get(job["fund_code"]) == job_id:
+                _active_by_code.pop(job["fund_code"], None)
+
+
+def get_refresh_job(fund_code: str, job_id: str) -> dict:
+    with _lock:
+        job = _jobs.get(job_id)
+        if not job or job.get("fund_code") != fund_code:
+            return {
+                "job_id": job_id,
+                "fund_code": fund_code,
+                "status": "missing",
+                "started_at": None,
+                "finished_at": None,
+                "missing_data": [],
+                "error": "refresh job not found",
+                "as_of": None,
+            }
+        return _snapshot(job)
+```
+
+- [ ] Add `fund_profile_service.is_profile_fresh(fund_code, ttl_hours=24)` using `FundProfile.updated_at`.
+
+- [ ] Run job tests:
+
+```bash
+.venv/bin/python -m pytest backend/tests/test_diagnosis_refresh_jobs.py -q
+```
+
+Expected: all pass.
+
 ## Task 4: Diagnosis Rules
 
 **Files:**
@@ -365,24 +551,38 @@ Expected: all pass.
 - Create `backend/services/diagnosis_rules.py`
 - Test `backend/tests/test_diagnosis_rules.py`
 
-- [ ] Write rule tests covering thresholds:
+- [ ] Write rule tests covering thresholds, including per-type grouping and gray handling:
 
 ```python
-from backend.services.diagnosis_rules import level_for_drawdown, choose_decision_label, confidence_for
+from backend.services.diagnosis_rules import (
+    level_for_drawdown,
+    level_for_volatility,
+    level_for_period_return,
+    choose_decision_label,
+    confidence_for,
+)
 
+# 回撤：偏股基金阈值
+def test_drawdown_levels_equity():
+    assert level_for_drawdown(-0.31, category="偏股混合") == "red"
+    assert level_for_drawdown(-0.20, category="偏股混合") == "yellow"
+    assert level_for_drawdown(-0.10, category="偏股混合") == "green"
+    assert level_for_drawdown(None, category="偏股混合") == "gray"
 
-def test_drawdown_levels():
-    assert level_for_drawdown(-0.26) == "red"
-    assert level_for_drawdown(-0.16) == "yellow"
-    assert level_for_drawdown(-0.10) == "green"
-    assert level_for_drawdown(None) == "gray"
+# 回撤：债券基金阈值（更严）
+def test_drawdown_levels_bond():
+    assert level_for_drawdown(-0.11, category="债券型") == "red"
+    assert level_for_drawdown(-0.06, category="债券型") == "yellow"
 
+# gray 不参与红黄统计
+def test_decision_label_gray_does_not_count():
+    lights = [
+        {"key": "max_drawdown", "level": "gray", "core": True},
+        {"key": "volatility", "level": "yellow", "core": True},
+    ]
+    assert choose_decision_label(lights, missing_data=["scale"]) == "小仓试验"
 
-def test_decision_label_red_core_risk():
-    lights = [{"key": "max_drawdown", "level": "red", "core": True}]
-    assert choose_decision_label(lights, missing_data=[]) == "暂不碰"
-
-
+# 多黄触发观察
 def test_decision_label_many_yellow():
     lights = [
         {"key": "max_drawdown", "level": "yellow", "core": True},
@@ -397,18 +597,25 @@ def test_confidence_levels():
     assert confidence_for(core_complete=False, profile_complete=False, peers_count=0) == "low"
 ```
 
+Threshold table lives in `diagnosis_rules.THRESHOLDS_BY_CATEGORY` mapping `category -> {drawdown: (red, yellow), volatility: (red, yellow), period_return: (red_up, red_dn, yellow_up, yellow_dn)}`. Default category when unknown: "偏股混合".
+
 - [ ] Implement pure rule functions:
 
 ```python
-def level_for_drawdown(value: float | None) -> str: ...
-def level_for_volatility(value: float | None) -> str: ...
-def level_for_period_return(value: float | None) -> str: ...
+# 阈值表，按 peer_category 分组
+THRESHOLDS_BY_CATEGORY: dict[str, dict[str, tuple[float, float]]]
+
+def level_for_drawdown(value: float | None, category: str = "偏股混合") -> str: ...
+def level_for_volatility(value: float | None, category: str = "偏股混合") -> str: ...
+def level_for_period_return(value: float | None, category: str = "偏股混合") -> str: ...
 def level_for_age_years(value: float | None) -> str: ...
 def level_for_scale(value: float | None) -> str: ...
 def level_for_concentration(value: float | None) -> str: ...
 def choose_decision_label(lights: list[dict], missing_data: list[str]) -> str: ...
 def confidence_for(core_complete: bool, profile_complete: bool, peers_count: int) -> str: ...
 ```
+
+`choose_decision_label` 必须显式忽略 `level == "gray"` 灯，避免把"未知"误算成"红灯"。
 
 - [ ] Run rules tests:
 
@@ -463,6 +670,18 @@ Required behavior:
 - `reasons` has at most 3 entries.
 - `peers` defaults to an empty list on missing peer data.
 
+`get_peers()` implementation strategy:
+
+1. **只读本地缓存**：从 `FundProfile.peer_candidates_json` 解析候选列表；GET `/peers` 不允许调用 AkShare。
+2. **本地缓存交叉**：把候选代码列表转成 `set`，与 `fund_nav` 表里"近 30 天有 NAV 记录"的 `fund_code` 取交集，丢弃没本地 NAV 的（避免响应里出现 `period_return=null`）。
+3. **指标回填**：对交集里的每个代码，调用 `metric_service.period_return / max_drawdown / volatility` 计算对应 `period` 的指标。
+4. **降级路径**：profile 缺失 / `peer_candidates_json` 为空 / 交集为空 → 返回 `[]`，不在响应里欺骗用户；写一条 `missing_data += ["peers"]`。
+
+测试用例：
+
+- `test_get_peers_does_not_call_akshare`
+- `test_get_peers_filters_codes_without_local_nav`
+
 - [ ] Run diagnosis service tests:
 
 ```bash
@@ -511,12 +730,53 @@ def test_diagnosis_rejects_bad_period():
 def test_peers_rejects_bad_limit():
     r = client.get("/api/funds/110011/peers", params={"limit": 0})
     assert r.status_code == 422
+
+
+def test_refresh_diagnosis_starts_background_job(monkeypatch):
+    from backend.api.routes import funds as funds_routes
+
+    monkeypatch.setattr(funds_routes.refresh_jobs, "start_refresh_job", lambda code: {
+        "job_id": "job-1",
+        "fund_code": code,
+        "status": "started",
+        "started_at": "2026-07-02T12:00:00",
+        "finished_at": None,
+        "missing_data": [],
+        "error": None,
+        "as_of": "2026-07-02",
+    })
+
+    r = client.post("/api/funds/110011/diagnosis/refresh")
+    assert r.status_code == 202
+    assert r.json()["job_id"] == "job-1"
+
+
+def test_refresh_diagnosis_status(monkeypatch):
+    from backend.api.routes import funds as funds_routes
+
+    monkeypatch.setattr(funds_routes.refresh_jobs, "get_refresh_job", lambda code, job_id: {
+        "job_id": job_id,
+        "fund_code": code,
+        "status": "done",
+        "started_at": "2026-07-02T12:00:00",
+        "finished_at": "2026-07-02T12:00:03",
+        "missing_data": ["manager"],
+        "error": None,
+        "as_of": "2026-07-02",
+    })
+
+    r = client.get("/api/funds/110011/diagnosis/refresh/job-1")
+    assert r.status_code == 200
+    assert r.json()["status"] == "done"
 ```
 
 - [ ] Add routes:
 
 ```python
+from fastapi import status
+
 from backend.services import diagnosis_service as ds
+from backend.services import diagnosis_refresh_jobs as refresh_jobs
 
 
 @router.get("/{code}/diagnosis")
@@ -533,9 +793,14 @@ def get_peers(code: str, limit: int = Query(default=5, ge=1, le=10), period: str
     return {"fund_code": code, "peers": ds.get_peers(code, limit=limit, period=period)}
 
 
-@router.post("/{code}/diagnosis/refresh")
+@router.post("/{code}/diagnosis/refresh", status_code=status.HTTP_202_ACCEPTED)
 def refresh_diagnosis(code: str):
-    return ds.refresh_diagnosis_data(code)
+    return refresh_jobs.start_refresh_job(code)
+
+
+@router.get("/{code}/diagnosis/refresh/{job_id}")
+def get_refresh_diagnosis_job(code: str, job_id: str):
+    return refresh_jobs.get_refresh_job(code, job_id)
 ```
 
 - [ ] Run API tests:
@@ -593,9 +858,33 @@ def test_diagnosis_questions_allowed(text):
     "现在买入110011",
     "110011下个月收益多少",
     "明天涨跌预测",
+    "110011 跌太多了我想止损",
+    "我能不能现在加仓 110011",
 ])
-def test_operation_and_prediction_still_blocked(text):
+def test_operation_prediction_and_action_intent_blocked(text):
     assert check_question(text) is False
+```
+
+止损用例特意放在被拒绝列表里：policy 必须先于诊断放行模式匹配 "我想止损" 这种带行动倾向的句子，而不是放行后让诊断工具间接引导交易动作。
+
+`backend/tests/test_qa_graph.py` 端到端 case（必加）：
+
+```python
+def test_qa_graph_diagnosis_questions_call_tool(fake_model):
+    fake_model.queue([
+        {"role": "assistant", "content": "", "tool_calls": [{
+            "id": "1", "type": "function",
+            "function": {"name": "diagnose_fund",
+                         "arguments": '{"fund_code":"110011","period":"1y"}'}
+        }]},
+        {"role": "assistant", "content": "诊断建议"},
+    ])
+    out = qa_graph.ask("110011能买吗")
+    assert "decision_label" in out  # 由 tool 输出注入 response
+
+def test_qa_graph_action_intent_blocked_before_tool_call():
+    out = qa_graph.ask("110011 跌太多了我想止损")
+    assert "暂不支持" in out["answer"] or "暂不回答" in out["answer"]
 ```
 
 - [ ] Implement `diagnose_fund` tool and add it to `FUND_TOOLS`.
@@ -671,6 +960,17 @@ export interface FundDiagnosis {
   source: string;
   as_of: string;
 }
+
+export interface DiagnosisRefreshJob {
+  job_id: string;
+  fund_code: string;
+  status: "started" | "running" | "done" | "failed" | "missing";
+  started_at: string | null;
+  finished_at: string | null;
+  missing_data: string[];
+  error: string | null;
+  as_of: string | null;
+}
 ```
 
 - [ ] Add API client methods:
@@ -681,7 +981,9 @@ fundDiagnosis: (code: string, period = "1y") =>
 fundPeers: (code: string, limit = 5, period = "1y") =>
   get<{ fund_code: string; peers: PeerFund[] }>(`/api/funds/${code}/peers`, { limit, period }),
 refreshFundDiagnosis: (code: string) =>
-  send<FundDiagnosis>("POST", `/api/funds/${encodeURIComponent(code)}/diagnosis/refresh`),
+  send<DiagnosisRefreshJob>("POST", `/api/funds/${encodeURIComponent(code)}/diagnosis/refresh`),
+fundDiagnosisRefreshJob: (code: string, jobId: string) =>
+  get<DiagnosisRefreshJob>(`/api/funds/${code}/diagnosis/refresh/${jobId}`),
 ```
 
 - [ ] Add `diagnosis-ui.ts` helpers:
@@ -729,7 +1031,20 @@ interface FundDiagnosisCardProps {
 - Loading: `StateBlock title="加载基金体检" tone="loading"`.
 - Error: `StateBlock title="基金体检加载失败" tone="error"`.
 - Missing data: show gray missing-data chips.
-- Peers empty: show “暂无同类候选数据，可先刷新体检数据”.
+- Peers empty: show "暂无同类候选数据，可先刷新体检数据"。
+- Refreshing: button disabled + 显示 spinner，不允许重复点击。
+- Refresh job running: 每 1 秒轮询 `fundDiagnosisRefreshJob`，`done/failed/missing` 后停止轮询。
+
+前端组件测试（必加，`frontend/tests/FundDiagnosisCard.test.tsx`）至少 4 个用例：
+
+```tsx
+test("loading state")
+test("error state")
+test("full data state renders decision label, risk lights, peers")
+test("missing_data 占大头时展示灰灯和 missing chips")
+```
+
+测试用 vitest + @testing-library/react + happy-dom（已在 `frontend/package.json` 里就检查；不在则 Task 8 之前补依赖）。
 
 - [ ] Add diagnosis query and mutation to fund detail page:
 
@@ -739,17 +1054,49 @@ const diagnosis = useQuery({
   queryFn: () => api.fundDiagnosis(code, period),
 });
 
-const refreshDiagnosis = useMutation({
-  mutationFn: () => api.refreshFundDiagnosis(code),
-  onSuccess: () => {
+const [refreshJobId, setRefreshJobId] = useState<string | null>(null);
+
+const refreshDiagnosisJob = useQuery({
+  queryKey: ["fundDiagnosisRefreshJob", code, refreshJobId],
+  queryFn: () => api.fundDiagnosisRefreshJob(code, refreshJobId!),
+  enabled: Boolean(refreshJobId),
+  refetchInterval: (query) => {
+    const status = query.state.data?.status;
+    return status === "done" || status === "failed" || status === "missing" ? false : 1000;
+  },
+});
+
+useEffect(() => {
+  const status = refreshDiagnosisJob.data?.status;
+  if (!status) return;
+  if (status === "done") {
+    setRefreshJobId(null);
     qc.invalidateQueries({ queryKey: ["fundDiagnosis", code] });
     toast.push("体检数据已刷新", "success");
+  } else if (status === "failed" || status === "missing") {
+    setRefreshJobId(null);
+    toast.push(`体检刷新失败：${refreshDiagnosisJob.data?.error ?? status}`, "error");
+  }
+}, [code, qc, refreshDiagnosisJob.data, toast]);
+
+const refreshDiagnosis = useMutation({
+  mutationFn: () => api.refreshFundDiagnosis(code),
+  onSuccess: (job) => {
+    if (job.status === "done") {
+      qc.invalidateQueries({ queryKey: ["fundDiagnosis", code] });
+      toast.push("体检数据已是最新", "success");
+    } else {
+      setRefreshJobId(job.job_id);
+      toast.push("已开始刷新体检数据", "info");
+    }
   },
   onError: (err) => toast.push(`体检刷新失败：${String(err)}`, "error"),
 });
 ```
 
-- [ ] Place card after `HoldingCard` or immediately after basic/latest NAV section, before NAV chart.
+- [ ] Place card after the basic info / latest NAV section and **before** `HoldingCard`. 用户进详情页应当先看到体检结论（红黄绿灯）再看自己的浮盈亏，避免被自己持仓盈亏左右判断。
+
+- [ ] Pass `refreshing={refreshDiagnosis.isPending || Boolean(refreshJobId)}` to `FundDiagnosisCard`.
 
 - [ ] Run typecheck:
 
@@ -832,3 +1179,17 @@ git commit -m "feat: expose fund diagnosis to qa"
 git add frontend
 git commit -m "feat: show fund diagnosis on detail page"
 ```
+
+## Out of Scope (Defer To Future Specs)
+
+明确把以下外部建议里的能力划入 v1 之后，避免交付时被追问：
+
+- **持仓重合度分析**（多只基金 → 共享持股 / 行业比例）：v1 只对单只基金体检。
+- **完整适配人群判断**：v1 只输出 `suitable_for.avoid`，不做风险偏好问卷。
+- **涨跌原因强解释**：v1 不解释当日涨跌归因，由现有公告 + 市场指数兜底。
+- **定投 / 分批建议**：v1 明确不输出仓位百分比、节奏、止盈止损点位。
+- **自选基金组合体检**：v1 只对单只基金；"每周/月输出组合风险变化"不在本阶段。
+- **基金经理完整画像**：v1 仅抓 `manager` + `manager_summary` 字符串，不做任期年限、历史业绩排行榜。
+- **公开评级**：v1 不接入 `fund_rating_all`，schema 不建 `rating` 字段。
+
+后续阶段如果重新激活任意一项，需要重新走 spec 评审。
