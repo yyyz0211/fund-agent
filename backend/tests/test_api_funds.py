@@ -1,11 +1,36 @@
 """`/api/funds/*` 路由离线测试 —— `POST /refresh` 等增量端点。"""
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from backend.api.app import app
+from backend.db import repository as repo
+from backend.db import session as db_session
+from backend.db.init_db import init_db
+from backend.db.models import Fund, FundNav
 from backend.services import fund_service as fs
 
 client = TestClient(app)
+
+
+@pytest.fixture()
+def session(monkeypatch):
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    init_db(engine)
+    Session = sessionmaker(bind=engine, expire_on_commit=False)
+    s = Session()
+
+    monkeypatch.setattr(fs, "get_session", lambda: Session())
+    monkeypatch.setattr(db_session, "get_session", lambda: Session())
+
+    yield s
+    s.close()
 
 
 def test_refresh_success(monkeypatch):
@@ -50,3 +75,63 @@ def test_refresh_failure_returns_502(monkeypatch):
     r = client.post("/api/funds/999999/refresh")
     assert r.status_code == 502
     assert "akshare timeout" in r.json()["detail"]
+
+
+class TestFundSummaryEndpoint:
+    def test_summary_returns_local_detail_payload(self, session):
+        session.add(Fund(
+            fund_code="110011",
+            fund_name="FundA",
+            fund_type="混合型",
+            manager="Manager",
+            company="Company",
+        ))
+        session.add_all([
+            FundNav(fund_code="110011", nav_date="2026-06-01",
+                    accumulated_nav=1.0, daily_return=0.0, source="akshare",
+                    source_updated_at="2026-06-01"),
+            FundNav(fund_code="110011", nav_date="2026-06-30",
+                    accumulated_nav=1.2, daily_return=0.01, source="akshare",
+                    source_updated_at="2026-06-30"),
+        ])
+        session.commit()
+        repo.add_to_watchlist_full(session, "110011", {
+            "is_holding": True,
+            "holding_share": 1000.0,
+            "cost_nav": 1.0,
+        })
+
+        r = client.get(
+            "/api/funds/110011/summary",
+            params={"period": "1m", "start": "2026-06-01"},
+        )
+
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["fund"]["fund_name"] == "FundA"
+        assert body["latest_nav"]["nav_date"] == "2026-06-30"
+        assert body["metrics"]["fund_code"] == "110011"
+        assert body["nav_history"]["count"] == 2
+        assert body["watchlist"]["fund_code"] == "110011"
+        assert body["pnl_item"]["fund_code"] == "110011"
+        assert body["errors"] == {}
+
+    def test_summary_returns_200_with_local_missing_errors(self, session):
+        r = client.get("/api/funds/999999/summary")
+
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["fund"] is None
+        assert body["latest_nav"] is None
+        assert body["metrics"] is None
+        assert body["nav_history"] is None
+        assert body["watchlist"] is None
+        assert body["pnl_item"] is None
+        assert "fund" in body["errors"]
+        assert "latest_nav" in body["errors"]
+
+    def test_summary_rejects_invalid_period(self, session):
+        r = client.get("/api/funds/110011/summary", params={"period": "bad"})
+
+        assert r.status_code == 400
+        assert "unsupported period" in r.json()["detail"]

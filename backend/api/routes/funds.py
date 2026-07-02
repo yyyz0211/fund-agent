@@ -37,6 +37,16 @@ def _validate_date(s: str) -> None:
         raise HTTPException(status_code=400, detail=f"invalid date: {s}")
 
 
+@router.get("/{code}/summary")
+def get_summary(code: str,
+                period: str = Query(default="1m"),
+                start: str = Query(default="")):
+    _validate_date(start)
+    if period not in _PERIOD_ROWS:
+        raise HTTPException(status_code=400, detail=f"unsupported period: {period}")
+    return fs.get_summary(code, period=period, start_date=start)
+
+
 @router.get("/{code}")
 def get_fund(code: str):
     body = fs.get_basic_info(code)
