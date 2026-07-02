@@ -1,14 +1,14 @@
 "use client";
-import Link from "next/link";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowUpRight, Pencil, Trash2 } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { Pencil, Trash2 } from "lucide-react";
 import { StateBlock } from "@/components/StateBlock";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
 import { useToast } from "@/components/Toast";
 import { cn } from "@/lib/cn";
-import { formatDate } from "@/lib/format";
+import { formatDate, formatPct } from "@/lib/format";
 import type { WatchlistRow } from "@/types/api";
 
 interface WatchlistTableProps {
@@ -29,6 +29,7 @@ export function WatchlistTable({
   rows: externalRows,
   onEdit,
 }: WatchlistTableProps) {
+  const router = useRouter();
   const shouldFetch = externalRows === undefined;
   const { data, isLoading, error } = useQuery({
     queryKey: ["watchlist"],
@@ -50,7 +51,8 @@ export function WatchlistTable({
       <Table>
         <THead>
           <TR>
-            <TH>基金代码</TH>
+            <TH>基金</TH>
+            <TH>当日盈亏</TH>
             <TH>类型</TH>
             <TH>持仓摘要</TH>
             <TH>备注</TH>
@@ -62,11 +64,24 @@ export function WatchlistTable({
           {rows.map((r) => (
             <RowActions key={r.fund_code} row={r} onEdit={onEdit}>
               {(handleEdit, handleDelete) => (
-                <TR className="hover:bg-gray-50/80">
+                <TR
+                  className="cursor-pointer transition hover:bg-blue-50/50 focus-within:bg-blue-50/50"
+                  onClick={() => router.push(`/funds/${r.fund_code}`)}
+                  onKeyDown={(event) => {
+                    if (event.target !== event.currentTarget) return;
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      router.push(`/funds/${r.fund_code}`);
+                    }
+                  }}
+                  role="link"
+                  tabIndex={0}
+                >
                   <TD>
-                    <code className="rounded bg-gray-100 px-2 py-1 text-xs font-medium text-gray-800">
-                      {r.fund_code}
-                    </code>
+                    <FundIdentity row={r} />
+                  </TD>
+                  <TD>
+                    <DailyPnl row={r} />
                   </TD>
                   <TD>
                     <TypeBadges row={r} />
@@ -82,17 +97,13 @@ export function WatchlistTable({
                   </TD>
                   <TD className="text-right">
                     <div className="inline-flex items-center gap-1">
-                      <Link
-                        className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-sm font-medium text-blue-700 hover:bg-blue-50 hover:text-blue-800"
-                        href={`/funds/${r.fund_code}`}
-                      >
-                        查看
-                        <ArrowUpRight className="h-3.5 w-3.5" />
-                      </Link>
                       {onEdit && (
                         <Button
                           aria-label={`编辑 ${r.fund_code}`}
-                          onClick={handleEdit}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            handleEdit();
+                          }}
                           size="sm"
                           variant="ghost"
                         >
@@ -101,7 +112,10 @@ export function WatchlistTable({
                       )}
                       <Button
                         aria-label={`删除 ${r.fund_code}`}
-                        onClick={handleDelete}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          handleDelete();
+                        }}
                         size="sm"
                         variant="ghost"
                       >
@@ -115,6 +129,45 @@ export function WatchlistTable({
           ))}
         </TBody>
       </Table>
+    </div>
+  );
+}
+
+function FundIdentity({ row }: { row: WatchlistRow }) {
+  return (
+    <div className="min-w-[150px]">
+      <div className="font-medium text-gray-950">
+        {row.fund_name || "未拉取基金名称"}
+      </div>
+      <code className="mt-1 inline-flex rounded bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700">
+        {row.fund_code}
+      </code>
+    </div>
+  );
+}
+
+function DailyPnl({ row }: { row: WatchlistRow }) {
+  const pct = row.daily_pnl_pct ?? row.daily_return ?? null;
+  const amount = row.daily_pnl_abs ?? null;
+  if (pct == null && amount == null) {
+    return <span className="text-xs text-gray-400">暂无净值</span>;
+  }
+  const tone = trendTextClass(amount ?? pct);
+  return (
+    <div className="min-w-[110px] text-right sm:text-left">
+      {row.is_holding && amount != null ? (
+        <div className={`font-semibold tabular-nums ${tone}`}>
+          {formatSignedCurrency(amount)}
+        </div>
+      ) : (
+        <div className={`font-semibold tabular-nums ${tone}`}>
+          {formatPct(pct)}
+        </div>
+      )}
+      <div className="mt-1 text-xs text-gray-500">
+        {row.is_holding && amount != null ? formatPct(pct) : "日涨跌"}
+        {row.nav_date ? ` · ${formatDate(row.nav_date)}` : ""}
+      </div>
     </div>
   );
 }
@@ -162,6 +215,18 @@ function HoldingSummary({ row }: { row: WatchlistRow }) {
       )}
     </span>
   );
+}
+
+function formatSignedCurrency(value: number) {
+  const sign = value > 0 ? "+" : value < 0 ? "-" : "";
+  return `${sign}¥${Math.abs(value).toFixed(2)}`;
+}
+
+function trendTextClass(value: number | null | undefined) {
+  if (value == null) return "text-gray-600";
+  if (value > 0) return "text-red-600";
+  if (value < 0) return "text-green-600";
+  return "text-gray-600";
 }
 
 /**

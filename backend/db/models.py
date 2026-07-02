@@ -32,6 +32,32 @@ class Fund(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
+class FundProfile(Base):
+    """基金体检用的扩展画像缓存。
+
+    这里存放 AkShare 多接口采集后的低频字段,避免详情页/诊断接口每次
+    都同步打外部数据源。JSON 结构先用字符串保存,由 service 层负责
+    解析和容错。
+    """
+    __tablename__ = "fund_profiles"
+
+    fund_code: Mapped[str] = mapped_column(String, primary_key=True)
+    scale: Mapped[float | None] = mapped_column(Float)
+    scale_date: Mapped[str | None] = mapped_column(String)
+    peer_category: Mapped[str | None] = mapped_column(String)
+    rank_total: Mapped[int | None] = mapped_column(Integer)
+    rank_position: Mapped[int | None] = mapped_column(Integer)
+    peer_candidates_json: Mapped[str | None] = mapped_column(String)
+    top10_holding_pct: Mapped[float | None] = mapped_column(Float)
+    top_industry_pct: Mapped[float | None] = mapped_column(Float)
+    manager_summary: Mapped[str | None] = mapped_column(String)
+    source: Mapped[str | None] = mapped_column(String)
+    as_of: Mapped[str | None] = mapped_column(String)
+    raw_errors: Mapped[str | None] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
 class Watchlist(Base):
     """用户自选条目(持有 / 关注)。
 

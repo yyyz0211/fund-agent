@@ -39,6 +39,7 @@ export interface FundMetrics {
 export interface WatchlistRow {
   id?: number;
   fund_code: string;
+  fund_name?: string | null;
   note: string | null;
   is_holding: boolean;
   is_focus: boolean;
@@ -48,6 +49,11 @@ export interface WatchlistRow {
   buy_date: string | null;
   cost_nav_basis: "legacy" | "transactions" | null;
   transaction_count?: number;
+  latest_nav?: number | null;
+  nav_date?: string | null;
+  daily_return?: number | null;
+  daily_pnl_abs?: number | null;
+  daily_pnl_pct?: number | null;
   created_at?: string | null;
   updated_at?: string | null;
 }
@@ -170,4 +176,67 @@ export interface FundSummary {
 export interface ComparisonSeries {
   code: string;
   points: { nav_date: string; accumulated_nav: number | null }[];
+}
+
+export type DiagnosisLabel = "暂不碰" | "观察" | "小仓试验" | "候选";
+export type DiagnosisConfidence = "low" | "medium" | "high";
+export type RiskLightLevel = "red" | "yellow" | "green" | "gray";
+
+export interface RiskLight {
+  key: string;
+  label: string;
+  level: RiskLightLevel;
+  value: number | string | null;
+  reason: string;
+  source: string;
+  as_of: string;
+}
+
+export interface Pitfall {
+  key: string;
+  severity: "info" | "warning" | "danger";
+  title: string;
+  detail: string;
+  source: string;
+  as_of: string;
+}
+
+export interface PeerFund {
+  fund_code: string;
+  fund_name: string | null;
+  fund_type: string | null;
+  period_return: number | null;
+  max_drawdown: number | null;
+  volatility: number | null;
+  scale: number | null;
+  has_local_nav: boolean;
+}
+
+export interface FundDiagnosis {
+  fund_code: string;
+  period?: string;
+  decision_label: DiagnosisLabel;
+  confidence: DiagnosisConfidence;
+  summary: string;
+  reasons: string[];
+  risk_lights: RiskLight[];
+  pitfalls: Pitfall[];
+  suitable_for: { fit: string[]; avoid: string[] };
+  peers: PeerFund[];
+  missing_data: string[];
+  fund?: Fund | null;
+  latest_nav?: NavPoint | null;
+  source: string;
+  as_of: string;
+}
+
+export interface DiagnosisRefreshJob {
+  job_id: string;
+  fund_code: string;
+  status: "started" | "running" | "done" | "failed" | "missing";
+  started_at: string | null;
+  finished_at: string | null;
+  missing_data: string[];
+  error: string | null;
+  as_of: string | null;
 }

@@ -136,3 +136,91 @@ class TestFundSummaryEndpoint:
 
         assert r.status_code == 400
         assert "unsupported period" in r.json()["detail"]
+
+
+class TestFundDiagnosisEndpoint:
+    def test_diagnosis_endpoint(self, monkeypatch):
+        from backend.api.routes import funds as funds_routes
+
+        monkeypatch.setattr(funds_routes.ds, "diagnose_fund", lambda code, period="1y": {
+            "fund_code": code,
+            "decision_label": "观察",
+            "confidence": "medium",
+            "summary": "测试结论",
+            "reasons": [],
+            "risk_lights": [],
+            "pitfalls": [],
+            "suitable_for": {"fit": [], "avoid": []},
+            "peers": [],
+            "missing_data": [],
+            "source": "akshare",
+            "as_of": "2026-07-02",
+        })
+
+        r = client.get("/api/funds/110011/diagnosis", params={"period": "1y"})
+
+        assert r.status_code == 200
+        assert r.json()["decision_label"] == "观察"
+
+    def test_diagnosis_rejects_bad_period(self):
+        r = client.get("/api/funds/110011/diagnosis", params={"period": "bad"})
+
+        assert r.status_code == 400
+        assert "unsupported period" in r.json()["detail"]
+
+    def test_peers_rejects_bad_limit(self):
+        r = client.get("/api/funds/110011/peers", params={"limit": 0})
+
+        assert r.status_code == 422
+
+    def test_peers_endpoint(self, monkeypatch):
+        from backend.api.routes import funds as funds_routes
+
+        monkeypatch.setattr(
+            funds_routes.ds,
+            "get_peers",
+            lambda code, limit=5, period="1y": [{"fund_code": "000001"}],
+        )
+
+        r = client.get("/api/funds/110011/peers", params={"limit": 5, "period": "1y"})
+
+        assert r.status_code == 200
+        assert r.json() == {"fund_code": "110011", "peers": [{"fund_code": "000001"}]}
+
+    def test_refresh_diagnosis_starts_background_job(self, monkeypatch):
+        from backend.api.routes import funds as funds_routes
+
+        monkeypatch.setattr(funds_routes.refresh_jobs, "start_refresh_job", lambda code: {
+            "job_id": "job-1",
+            "fund_code": code,
+            "status": "started",
+            "started_at": "2026-07-02T12:00:00",
+            "finished_at": None,
+            "missing_data": [],
+            "error": None,
+            "as_of": "2026-07-02",
+        })
+
+        r = client.post("/api/funds/110011/diagnosis/refresh")
+
+        assert r.status_code == 202
+        assert r.json()["job_id"] == "job-1"
+
+    def test_refresh_diagnosis_status(self, monkeypatch):
+        from backend.api.routes import funds as funds_routes
+
+        monkeypatch.setattr(funds_routes.refresh_jobs, "get_refresh_job", lambda code, job_id: {
+            "job_id": job_id,
+            "fund_code": code,
+            "status": "done",
+            "started_at": "2026-07-02T12:00:00",
+            "finished_at": "2026-07-02T12:00:03",
+            "missing_data": ["manager"],
+            "error": None,
+            "as_of": "2026-07-02",
+        })
+
+        r = client.get("/api/funds/110011/diagnosis/refresh/job-1")
+
+        assert r.status_code == 200
+        assert r.json()["status"] == "done"

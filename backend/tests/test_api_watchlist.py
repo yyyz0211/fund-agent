@@ -44,14 +44,43 @@ def test_watchlist_empty(session):
 
 
 def test_watchlist_with_rows(session):
-    repo.add_to_watchlist(session, "110011", note="hold")
+    repo.add_to_watchlist_full(session, "110011", {
+        "note": "hold",
+        "is_holding": True,
+        "holding_share": 1000.0,
+        "cost_nav": 1.0,
+    })
     repo.add_to_watchlist(session, "000001", note="watch")
+    session.add_all([
+        Fund(fund_code="110011", fund_name="易方达优质精选",
+             fund_type="QDII", manager="张坤", company="易方达基金"),
+        Fund(fund_code="000001", fund_name="华夏成长",
+             fund_type="混合型", manager=None, company=None),
+        FundNav(fund_code="110011", nav_date="2026-06-30", unit_nav=1.2,
+                accumulated_nav=1.2, daily_return=0.02, source="akshare",
+                source_updated_at="2026-06-30"),
+        FundNav(fund_code="000001", nav_date="2026-06-30", unit_nav=1.0,
+                accumulated_nav=1.0, daily_return=-0.01, source="akshare",
+                source_updated_at="2026-06-30"),
+    ])
+    session.commit()
+
     r = client.get("/api/watchlist")
+
     assert r.status_code == 200
     body = r.json()
     assert len(body) == 2
     codes = {row["fund_code"] for row in body}
     assert codes == {"110011", "000001"}
+    by_code = {row["fund_code"]: row for row in body}
+    assert by_code["110011"]["fund_name"] == "易方达优质精选"
+    assert by_code["110011"]["latest_nav"] == pytest.approx(1.2)
+    assert by_code["110011"]["daily_return"] == pytest.approx(0.02)
+    assert by_code["110011"]["daily_pnl_pct"] == pytest.approx(0.02)
+    assert by_code["110011"]["daily_pnl_abs"] == pytest.approx(23.5294)
+    assert by_code["000001"]["fund_name"] == "华夏成长"
+    assert by_code["000001"]["daily_return"] == pytest.approx(-0.01)
+    assert by_code["000001"]["daily_pnl_abs"] is None
 
 
 def test_post_adds_row_with_full_attrs(session):

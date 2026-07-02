@@ -1,5 +1,6 @@
 from backend.tools import fund_tools
 from backend.services import fund_service as fs
+from backend.services import diagnosis_service as ds
 
 
 def test_latest_nav_tool_invokes_service(monkeypatch):
@@ -84,13 +85,27 @@ def test_refresh_fund_tool(monkeypatch):
     assert fund_tools.refresh_fund.invoke({"fund_code": "110011"})["navs_inserted"] == 5
 
 
+def test_diagnose_fund_tool(monkeypatch):
+    monkeypatch.setattr(ds, "diagnose_fund", lambda code, period="1y", session=None: {
+        "fund_code": code,
+        "period": period,
+        "decision_label": "观察",
+        "source": "akshare",
+        "as_of": "2026-07-02",
+    })
+
+    out = fund_tools.diagnose_fund.invoke({"fund_code": "110011", "period": "1y"})
+
+    assert out["decision_label"] == "观察"
+
+
 def test_all_tools_aggregate_has_unique_set():
-    # 12:5 fund + 4 watchlist + 2 market + 1 pnl
+    # 13:6 fund + 4 watchlist + 2 market + 1 pnl
     names = [t.name for t in fund_tools.ALL_TOOLS]
     assert len(names) == len(set(names))  # no name collisions
     assert set(names) == {
         "get_latest_fund_nav", "calculate_fund_metrics", "get_fund_basic_info",
-        "get_fund_nav_history", "refresh_fund", "get_watchlist",
+        "get_fund_nav_history", "refresh_fund", "diagnose_fund", "get_watchlist",
         "add_fund_to_watchlist", "remove_fund_from_watchlist", "update_fund_note",
         "get_market_indices", "refresh_market", "calculate_holding_pnl",
     }

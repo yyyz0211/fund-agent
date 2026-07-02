@@ -13,7 +13,7 @@ service 既可以传入测试用的内存 Session,也可以传通过
 """
 from sqlalchemy import and_, delete, func, select
 
-from backend.db.models import Fund, FundNav, FundTransaction, Watchlist
+from backend.db.models import Fund, FundNav, FundProfile, FundTransaction, Watchlist
 
 
 def _watchlist_to_dict(w: Watchlist) -> dict:
@@ -35,6 +35,27 @@ def _watchlist_to_dict(w: Watchlist) -> dict:
         "cost_nav_basis": w.cost_nav_basis,
         "created_at": w.created_at.isoformat() if w.created_at else None,
         "updated_at": w.updated_at.isoformat() if w.updated_at else None,
+    }
+
+
+def _profile_to_dict(p: FundProfile) -> dict:
+    """FundProfile 的可序列化投影。"""
+    return {
+        "fund_code": p.fund_code,
+        "scale": p.scale,
+        "scale_date": p.scale_date,
+        "peer_category": p.peer_category,
+        "rank_total": p.rank_total,
+        "rank_position": p.rank_position,
+        "peer_candidates_json": p.peer_candidates_json,
+        "top10_holding_pct": p.top10_holding_pct,
+        "top_industry_pct": p.top_industry_pct,
+        "manager_summary": p.manager_summary,
+        "source": p.source,
+        "as_of": p.as_of,
+        "raw_errors": p.raw_errors,
+        "created_at": p.created_at.isoformat() if p.created_at else None,
+        "updated_at": p.updated_at.isoformat() if p.updated_at else None,
     }
 
 
@@ -100,10 +121,11 @@ def remove_from_watchlist(session, fund_code: str) -> bool:
     w = session.scalar(select(Watchlist).where(Watchlist.fund_code == fund_code))
     if not w:
         return False
-    # 顺序:交易明细 → FundNav(行最多) → Fund → Watchlist,统一一次 commit。
+    # 顺序:交易明细 → FundNav(行最多) → Fund/Profile → Watchlist,统一一次 commit。
     # delete 一条 SQL 不读 ORM,大表更快。
     session.execute(delete(FundTransaction).where(FundTransaction.fund_code == fund_code))
     session.execute(delete(FundNav).where(FundNav.fund_code == fund_code))
+    session.execute(delete(FundProfile).where(FundProfile.fund_code == fund_code))
     session.execute(delete(Fund).where(Fund.fund_code == fund_code))
     session.delete(w)
     session.commit()
@@ -161,6 +183,42 @@ def upsert_fund(session, fund: dict) -> None:
             if k != "fund_code":
                 setattr(obj, k, v)
     session.commit()
+
+
+_FUND_PROFILE_FIELDS = {
+    "scale",
+    "scale_date",
+    "peer_category",
+    "rank_total",
+    "rank_position",
+    "peer_candidates_json",
+    "top10_holding_pct",
+    "top_industry_pct",
+    "manager_summary",
+    "source",
+    "as_of",
+    "raw_errors",
+}
+
+
+def upsert_fund_profile(session, fund_code: str, attrs: dict) -> dict:
+    """按 fund_code upsert 画像缓存,只更新传入字段。"""
+    data = {k: v for k, v in (attrs or {}).items() if k in _FUND_PROFILE_FIELDS}
+    obj = session.get(FundProfile, fund_code)
+    if obj is None:
+        obj = FundProfile(fund_code=fund_code, **data)
+        session.add(obj)
+    else:
+        for k, v in data.items():
+            setattr(obj, k, v)
+    session.commit()
+    return _profile_to_dict(obj)
+
+
+def get_fund_profile(session, fund_code: str) -> dict | None:
+    """读取单只基金画像缓存;不存在返回 None。"""
+    obj = session.get(FundProfile, fund_code)
+    return _profile_to_dict(obj) if obj else None
 
 
 def upsert_navs(session, fund_code: str, rows: list[dict]) -> int:
@@ -253,6 +311,7 @@ def _nav_to_dict(row: FundNav) -> dict:
         "fund_code": row.fund_code,
         "nav_date": row.nav_date,
         "accumulated_nav": row.accumulated_nav,
+        "daily_return": row.daily_return,
         "source": row.source,
         "as_of": row.source_updated_at,
     }

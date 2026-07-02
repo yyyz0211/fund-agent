@@ -47,6 +47,27 @@ class TestCheckQuestion:
     def test_allowed(self, text):
         assert check_question(text) is True, f"should allow: {text}"
 
+    @pytest.mark.parametrize("text", [
+        "110011能买吗",
+        "110011怎么样",
+        "帮我体检一下 110011",
+        "这只基金适合我吗",
+        "110011 有什么风险",
+    ])
+    def test_diagnosis_questions_allowed(self, text):
+        assert check_question(text) is True, f"diagnosis question should allow: {text}"
+
+    @pytest.mark.parametrize("text", [
+        "帮我买1000块110011",
+        "现在买入110011",
+        "110011下个月收益多少",
+        "明天涨跌预测",
+        "110011 跌太多了我想止损",
+        "我能不能现在加仓 110011",
+    ])
+    def test_operation_prediction_and_action_intent_blocked(self, text):
+        assert check_question(text) is False, f"action intent should block: {text}"
+
 
 class TestCheckAnswer:
     """Answer post-check:模型生成的回答若触及禁区,应被替换。"""

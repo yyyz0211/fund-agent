@@ -48,6 +48,53 @@ def test_upsert_fund(session):
     assert session.get(Fund, "110011").fund_name == "FundA v2"
 
 
+def test_upsert_and_get_fund_profile(session):
+    repo.upsert_fund_profile(session, "110011", {
+        "scale": 12.5,
+        "scale_date": "2026-06-30",
+        "peer_category": "混合型",
+        "rank_total": 100,
+        "rank_position": 12,
+        "peer_candidates_json": '[{"fund_code":"000001"}]',
+        "top10_holding_pct": 42.3,
+        "top_industry_pct": 30.1,
+        "manager_summary": "经理A 任职稳定",
+        "source": "akshare",
+        "as_of": "2026-07-02",
+        "raw_errors": "[]",
+    })
+    repo.upsert_fund_profile(session, "110011", {
+        "scale": 13.5,
+        "rank_position": 8,
+        "raw_errors": '["scale stale"]',
+    })
+
+    profile = repo.get_fund_profile(session, "110011")
+
+    assert profile["fund_code"] == "110011"
+    assert profile["scale"] == pytest.approx(13.5)
+    assert profile["scale_date"] == "2026-06-30"
+    assert profile["peer_category"] == "混合型"
+    assert profile["rank_total"] == 100
+    assert profile["rank_position"] == 8
+    assert profile["peer_candidates_json"] == '[{"fund_code":"000001"}]'
+    assert profile["top10_holding_pct"] == pytest.approx(42.3)
+    assert profile["top_industry_pct"] == pytest.approx(30.1)
+    assert profile["manager_summary"] == "经理A 任职稳定"
+    assert profile["source"] == "akshare"
+    assert profile["as_of"] == "2026-07-02"
+    assert profile["raw_errors"] == '["scale stale"]'
+
+
+def test_remove_from_watchlist_cleans_fund_profile(session):
+    repo.add_to_watchlist(session, "110011")
+    repo.upsert_fund_profile(session, "110011", {"scale": 12.5})
+
+    assert repo.remove_from_watchlist(session, "110011") is True
+
+    assert repo.get_fund_profile(session, "110011") is None
+
+
 def test_count_transactions_for_funds_returns_counts_and_zero_defaults(session):
     repo.add_to_watchlist(session, "110011")
     repo.add_to_watchlist(session, "000001")

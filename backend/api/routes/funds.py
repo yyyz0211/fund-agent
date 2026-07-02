@@ -4,8 +4,10 @@
 """
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, status
 
+from backend.services import diagnosis_refresh_jobs as refresh_jobs
+from backend.services import diagnosis_service as ds
 from backend.services import fund_service as fs
 from backend.services.metric_service import _PERIOD_ROWS  # noqa: PLC2701
 
@@ -45,6 +47,32 @@ def get_summary(code: str,
     if period not in _PERIOD_ROWS:
         raise HTTPException(status_code=400, detail=f"unsupported period: {period}")
     return fs.get_summary(code, period=period, start_date=start)
+
+
+@router.get("/{code}/diagnosis")
+def get_diagnosis(code: str, period: str = Query(default="1y")):
+    if period not in _PERIOD_ROWS:
+        raise HTTPException(status_code=400, detail=f"unsupported period: {period}")
+    return ds.diagnose_fund(code, period=period)
+
+
+@router.get("/{code}/peers")
+def get_peers(code: str,
+              limit: int = Query(default=5, ge=1, le=10),
+              period: str = Query(default="1y")):
+    if period not in _PERIOD_ROWS:
+        raise HTTPException(status_code=400, detail=f"unsupported period: {period}")
+    return {"fund_code": code, "peers": ds.get_peers(code, limit=limit, period=period)}
+
+
+@router.post("/{code}/diagnosis/refresh", status_code=status.HTTP_202_ACCEPTED)
+def refresh_diagnosis(code: str):
+    return refresh_jobs.start_refresh_job(code)
+
+
+@router.get("/{code}/diagnosis/refresh/{job_id}")
+def get_refresh_diagnosis_job(code: str, job_id: str):
+    return refresh_jobs.get_refresh_job(code, job_id)
 
 
 @router.get("/{code}")

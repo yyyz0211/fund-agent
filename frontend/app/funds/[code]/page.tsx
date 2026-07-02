@@ -1,15 +1,15 @@
 "use client";
 import type { ReactNode } from "react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { ArrowLeft, DownloadCloud, GitCompareArrows, MessageSquareText, Plus, Star } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { NavChart, PERIODS, periodToStart } from "@/components/NavChart";
-import { MetricCards } from "@/components/MetricCard";
 import { PageHeader, SectionHeader } from "@/components/PageHeader";
 import { HoldingCard } from "@/components/HoldingCard";
+import { FundDiagnosisCard } from "@/components/FundDiagnosisCard";
 import { StateBlock } from "@/components/StateBlock";
 import { WatchlistDrawer } from "@/components/WatchlistDrawer";
 import { useToast } from "@/components/Toast";
@@ -20,6 +20,7 @@ import {
   summarizePeriodReturns,
   type NavDailyReturnPoint,
 } from "@/lib/nav-daily-return";
+import type { FundMetrics } from "@/types/api";
 
 const PERIOD_LABELS: Record<(typeof PERIODS)[number], string> = {
   "1w": "1周",
@@ -33,6 +34,7 @@ export default function FundDetail({ params }: { params: { code: string } }) {
   const code = params.code;
   const [period, setPeriod] = useState<(typeof PERIODS)[number]>("1m");
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [refreshJobId, setRefreshJobId] = useState<string | null>(null);
   const toast = useToast();
   const qc = useQueryClient();
   const start = periodToStart(period);
@@ -50,6 +52,18 @@ export default function FundDetail({ params }: { params: { code: string } }) {
   const fundName = fundData?.fund_name ?? code;
   const dailyReturnRows = periodDailyReturnRows(summaryData?.nav_history);
 
+  const diagnosis = useQuery({
+    queryKey: ["fundDiagnosis", code, period],
+    queryFn: () => api.fundDiagnosis(code, period),
+  });
+
+  const refreshDiagnosisJob = useQuery({
+    queryKey: ["fundDiagnosisRefreshJob", code, refreshJobId],
+    queryFn: () => api.fundDiagnosisRefreshJob(code, refreshJobId!),
+    enabled: Boolean(refreshJobId),
+    refetchInterval: refreshJobId ? 1000 : false,
+  });
+
   // 当本地无 Fund 数据时,提供"立即拉取"按钮 —— 用户从自选池进来
   // 但还没 refresh_fund 过,详情页会 404。点按钮调 POST /api/funds/{code}/refresh,
   // 成功后 invalidate 所有相关 query(基础信息/净值/历史/指标/持仓卡)。
@@ -62,6 +76,7 @@ export default function FundDetail({ params }: { params: { code: string } }) {
       qc.invalidateQueries({ queryKey: ["navHistory", code] });
       qc.invalidateQueries({ queryKey: ["metrics", code] });
       qc.invalidateQueries({ queryKey: ["portfolioPnl", [code]] });
+      qc.invalidateQueries({ queryKey: ["fundDiagnosis", code] });
       if (res.already_up_to_date) {
         toast.push(`${code} 本地已是最新`, "success");
       } else {
@@ -97,11 +112,46 @@ export default function FundDetail({ params }: { params: { code: string } }) {
       qc.invalidateQueries({ queryKey: ["navHistory", code] });
       qc.invalidateQueries({ queryKey: ["metrics", code] });
       qc.invalidateQueries({ queryKey: ["portfolioPnl", [code]] });
+      qc.invalidateQueries({ queryKey: ["fundDiagnosis", code] });
       toast.push(`已从自选池移除 ${code}`, "success");
     } catch (err) {
       toast.push(`移除失败：${String(err)}`, "error");
     }
   }
+
+  const refreshDiagnosis = useMutation({
+    mutationFn: () => api.refreshFundDiagnosis(code),
+    onSuccess: (job) => {
+      if (job.status === "done") {
+        qc.invalidateQueries({ queryKey: ["fundDiagnosis", code] });
+        toast.push("体检数据已是最新", "success");
+        return;
+      }
+      setRefreshJobId(job.job_id);
+      toast.push("已开始刷新体检数据", "info");
+    },
+    onError: (err) => {
+      toast.push(`体检刷新失败：${String(err)}`, "error");
+    },
+  });
+
+  useEffect(() => {
+    const job = refreshDiagnosisJob.data;
+    if (!job) return;
+    if (job.status === "done") {
+      setRefreshJobId(null);
+      qc.invalidateQueries({ queryKey: ["fundDiagnosis", code] });
+      toast.push(
+        job.missing_data.length > 0
+          ? `体检数据已刷新，仍缺失 ${job.missing_data.slice(0, 3).join(", ")}`
+          : "体检数据已刷新",
+        job.missing_data.length > 0 ? "info" : "success",
+      );
+    } else if (job.status === "failed" || job.status === "missing") {
+      setRefreshJobId(null);
+      toast.push(`体检刷新失败：${job.error ?? job.status}`, "error");
+    }
+  }, [code, qc, refreshDiagnosisJob.data, toast]);
 
   return (
     <main className="mx-auto max-w-6xl space-y-8 px-4 py-8 sm:px-6">
@@ -218,6 +268,15 @@ export default function FundDetail({ params }: { params: { code: string } }) {
         </Card>
       </section>
 
+      <FundDiagnosisCard
+        code={code}
+        data={diagnosis.data}
+        error={diagnosis.error}
+        isLoading={diagnosis.isLoading}
+        onRefresh={() => refreshDiagnosis.mutate()}
+        refreshing={refreshDiagnosis.isPending || Boolean(refreshJobId)}
+      />
+
       <HoldingCard
         fundCode={code}
         pnlError={summary.error}
@@ -227,27 +286,9 @@ export default function FundDetail({ params }: { params: { code: string } }) {
       />
 
       <section>
-        <SectionHeader title="净值走势" description="累计净值历史曲线，按本地数据可用范围绘制。" />
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.7fr_1fr]">
-          <NavChart
-            code={code}
-            navError={summary.error ?? errors.nav_history}
-            navHistory={summaryData?.nav_history}
-            navLoading={summary.isLoading}
-            period={period}
-          />
-          <RecentDailyReturns
-            endDate={dailyReturnRows[0]?.date ?? null}
-            periodStart={start}
-            rows={dailyReturnRows}
-          />
-        </div>
-      </section>
-
-      <section>
         <SectionHeader
-          title="阶段指标"
-          description="收益、回撤和波动率均基于历史数据计算。"
+          title="净值走势与区间涨跌"
+          description="累计净值、日涨跌、收益、回撤和波动率均基于本地历史数据计算。"
           action={
             <div className="flex flex-wrap gap-1 rounded-lg border border-gray-200 bg-white p-1 shadow-sm">
               {PERIODS.map((p) => (
@@ -263,29 +304,24 @@ export default function FundDetail({ params }: { params: { code: string } }) {
             </div>
           }
         />
-        {summary.isLoading ? (
-          <StateBlock title="计算阶段指标" tone="loading">正在读取并计算 {PERIOD_LABELS[period]} 指标。</StateBlock>
-        ) : summary.error || errors.metrics ? (
-          <StateBlock title="阶段指标加载失败" tone="error">{String(summary.error ?? errors.metrics)}</StateBlock>
-        ) : (
-          <div className="space-y-3">
-            <MetricCards items={[
-              { label: `${PERIOD_LABELS[period]}收益`, value: formatPct(metricsData?.period_return) },
-              { label: "累计收益", value: formatPct(metricsData?.cumulative_return) },
-              { label: "最大回撤", value: formatPct(metricsData?.max_drawdown) },
-              {
-                label: "波动率",
-                value:
-                  metricsData?.volatility === null || metricsData?.volatility === undefined
-                    ? "--"
-                    : `${(metricsData.volatility * 100).toFixed(2)}%`,
-              },
-            ]} />
-            <p className="text-xs text-gray-500">
-              来源 {metricsData?.source ?? "--"} · as_of {formatDate(metricsData?.as_of)}
-            </p>
-          </div>
-        )}
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.7fr_1fr]">
+          <NavChart
+            code={code}
+            navError={summary.error ?? errors.nav_history}
+            navHistory={summaryData?.nav_history}
+            navLoading={summary.isLoading}
+            period={period}
+          />
+          <RecentDailyReturns
+            endDate={dailyReturnRows[0]?.date ?? null}
+            metrics={metricsData}
+            metricsError={summary.error ?? errors.metrics}
+            metricsLoading={summary.isLoading}
+            periodLabel={PERIOD_LABELS[period]}
+            periodStart={start}
+            rows={dailyReturnRows}
+          />
+        </div>
       </section>
 
       <WatchlistDrawer
@@ -293,6 +329,7 @@ export default function FundDetail({ params }: { params: { code: string } }) {
         onSaved={() => {
           qc.invalidateQueries({ queryKey: ["fundSummary", code] });
           qc.invalidateQueries({ queryKey: ["watchlist"] });
+          qc.invalidateQueries({ queryKey: ["fundDiagnosis", code] });
         }}
         open={drawerOpen}
         prefillFundCode={code}
@@ -314,12 +351,19 @@ function RecentDailyReturns({
   rows,
   periodStart,
   endDate,
+  metrics,
+  metricsLoading,
+  metricsError,
+  periodLabel,
 }: {
   rows: NavDailyReturnPoint[];
   periodStart: string;
   endDate: string | null;
+  metrics: FundMetrics | null;
+  metricsLoading: boolean;
+  metricsError: unknown;
+  periodLabel: string;
 }) {
-  if (rows.length === 0) return null;
   const summary = summarizePeriodReturns(rows);
 
   const caption =
@@ -335,13 +379,47 @@ function RecentDailyReturns({
 
   return (
     <div className="flex h-full flex-col overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
-      {/* Header */}
       <div className="flex shrink-0 items-center justify-between border-b border-gray-100 px-3 py-2 text-[11px]">
-        <span className="font-medium text-gray-700">区间涨跌（{rows.length} 条）</span>
+        <span className="font-medium text-gray-700">区间涨跌 · {periodLabel}</span>
         <span className="text-gray-500">{caption}</span>
       </div>
 
-      {/* Summary KPIs */}
+      <div className="border-b border-gray-100 p-3">
+        <div className="mb-2 flex items-center justify-between text-[11px]">
+          <span className="font-medium text-gray-700">阶段指标</span>
+          <span className="text-gray-500">
+            来源 {metrics?.source ?? "--"} · as_of {formatDate(metrics?.as_of)}
+          </span>
+        </div>
+        {metricsLoading ? (
+          <StateBlock title="计算阶段指标" tone="loading">正在读取并计算 {periodLabel} 指标。</StateBlock>
+        ) : metricsError ? (
+          <StateBlock title="阶段指标加载失败" tone="error">{String(metricsError)}</StateBlock>
+        ) : (
+          <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg bg-gray-100">
+            <KpiCell
+              label={`${periodLabel}收益`}
+              value={formatPct(metrics?.period_return)}
+              valueColor={trendTextColor(metrics?.period_return)}
+            />
+            <KpiCell
+              label="累计收益"
+              value={formatPct(metrics?.cumulative_return)}
+              valueColor={trendTextColor(metrics?.cumulative_return)}
+            />
+            <KpiCell
+              label="最大回撤"
+              value={formatPct(metrics?.max_drawdown)}
+              valueColor={metrics?.max_drawdown === null || metrics?.max_drawdown === undefined ? "text-gray-600" : "text-green-600"}
+            />
+            <KpiCell
+              label="波动率"
+              value={formatVolatility(metrics?.volatility)}
+            />
+          </div>
+        )}
+      </div>
+
       <div className="grid shrink-0 grid-cols-2 gap-px border-b border-gray-100 bg-gray-100">
         <KpiCell
           label={streakLabel ?? "暂无连涨/跌"}
@@ -365,23 +443,28 @@ function RecentDailyReturns({
         />
       </div>
 
-      {/* Scrollable table */}
       <div className="max-h-[300px] flex-1 overflow-y-auto">
         <div className="grid grid-cols-[1fr_auto] gap-x-2 border-b border-gray-100 bg-white px-3 py-1.5 text-[10px] font-medium uppercase tracking-wide text-gray-400 sticky top-0">
           <span>日期</span>
           <span className="text-right">日涨跌</span>
         </div>
-        {rows.map((row) => (
-          <div
-            className="grid grid-cols-[1fr_auto] items-center gap-x-2 border-b border-gray-50 px-3 py-1.5 text-[11px]"
-            key={row.date}
-          >
-            <span className="text-gray-500">{formatDate(row.date)}</span>
-            <span className={`${trendBadgeClass(row.dailyReturn)} whitespace-nowrap`}>
-              {formatPct(row.dailyReturn)}
-            </span>
+        {rows.length === 0 ? (
+          <div className="px-3 py-6 text-center text-xs text-gray-500">
+            本地区间内暂无日涨跌数据。
           </div>
-        ))}
+        ) : (
+          rows.map((row) => (
+            <div
+              className="grid grid-cols-[1fr_auto] items-center gap-x-2 border-b border-gray-50 px-3 py-1.5 text-[11px]"
+              key={row.date}
+            >
+              <span className="text-gray-500">{formatDate(row.date)}</span>
+              <span className={`${trendBadgeClass(row.dailyReturn)} whitespace-nowrap`}>
+                {formatPct(row.dailyReturn)}
+              </span>
+            </div>
+          ))
+        )}
       </div>
     </div>
   );
@@ -402,6 +485,18 @@ function KpiCell({
       <span className={`text-xs font-semibold tabular-nums ${valueColor}`}>{value}</span>
     </div>
   );
+}
+
+function formatVolatility(value: number | null | undefined) {
+  if (value === null || value === undefined) return "--";
+  return `${(value * 100).toFixed(2)}%`;
+}
+
+function trendTextColor(value: number | null | undefined) {
+  if (value === null || value === undefined) return "text-gray-600";
+  if (value > 0) return "text-red-600";
+  if (value < 0) return "text-green-600";
+  return "text-gray-600";
 }
 
 function trendBadgeClass(value: number | null | undefined) {

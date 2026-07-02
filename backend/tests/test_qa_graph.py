@@ -190,6 +190,55 @@ class TestToolErrorPropagation:
 class TestToolCallLoop:
     """多轮 tool-call 循环:LLM 发 tool_calls → ToolNode 返回 → LLM 汇总。"""
 
+    def test_diagnosis_question_can_call_diagnose_tool(self):
+        diagnosis_msg = ToolMessage(
+            content='{"fund_code":"110011","decision_label":"观察","source":"akshare","as_of":"2026-07-02"}',
+            name="diagnose_fund",
+            tool_call_id="call_diag",
+        )
+        fake_model = _make_fake_model([
+            AIMessage(tool_calls=[{
+                "name": "diagnose_fund",
+                "args": {"fund_code": "110011", "period": "1y"},
+                "id": "call_diag",
+            }], content=""),
+            AIMessage(content="工具返回 decision_label=观察，source=akshare，as_of=2026-07-02。"),
+        ])
+
+        class DiagnosisToolNode:
+            def invoke(self, state):
+                return {"messages": [diagnosis_msg]}
+            __call__ = invoke
+
+        with patch("backend.graph.qa_graph.build_model", return_value=fake_model), \
+             patch("backend.graph.qa_graph._get_tool_node", return_value=DiagnosisToolNode()):
+            compiled = _build_graph()
+            result = compiled.invoke(
+                {"messages": [HumanMessage(content="110011能买吗")]}
+            )
+
+        assert "decision_label=观察" in result["messages"][-1].content
+
+    def test_action_intent_blocked_before_diagnosis_tool(self):
+        tool_called = []
+
+        class TrackerTool:
+            def invoke(self, state):
+                tool_called.append(True)
+                return {"messages": []}
+            __call__ = invoke
+
+        with patch("backend.graph.qa_graph.build_model",
+                   return_value=_make_fake_model([])), \
+             patch("backend.graph.qa_graph._get_tool_node", return_value=TrackerTool()):
+            compiled = _build_graph()
+            result = compiled.invoke(
+                {"messages": [HumanMessage(content="110011 跌太多了我想止损")]}
+            )
+
+        assert REFUSAL_MESSAGE in result["messages"][-1].content
+        assert tool_called == []
+
     def test_single_tool_call_then_summarize(self):
         nav_msg = ToolMessage(
             content='{"fund_code": "110011", "nav_date": "2026-06-30", '

@@ -176,3 +176,97 @@ def test_fetch_fund_nav_history_joins_unit_and_accumulated(monkeypatch):
     assert out[1]["daily_return"] == pytest.approx(0.01)
     # 第三行:0.99 / 1.01 - 1 ≈ -0.01980198
     assert out[2]["daily_return"] == pytest.approx(0.99 / 1.01 - 1)
+
+
+def test_fetch_fund_profile_parses_profile_sources(monkeypatch):
+    """画像采集是体检功能的可选增强:多源并行读,局部字段可缺失。
+
+    这里用本地 DataFrame 固定列名,验证 scale、同类候选、持仓集中度、
+    行业集中度和经理摘要能被解析到统一 contract。
+    """
+
+    class _ProfileAkshare:
+        def fund_scale_change_em(self):
+            return pd.DataFrame({
+                "基金代码": ["110011"],
+                "截止日期": ["2026-06-30"],
+                "基金规模": [12.3],
+            })
+
+        def fund_open_fund_rank_em(self, symbol="全部"):
+            return pd.DataFrame({
+                "基金代码": ["110011", "000001", "000002"],
+                "基金简称": ["目标基金", "PeerA", "PeerB"],
+                "基金类型": ["偏股混合", "偏股混合", "偏股混合"],
+                "同类排名": [25, 10, 30],
+                "同类总数": [100, 100, 100],
+            })
+
+        def fund_portfolio_hold_em(self, symbol: str, date: str):
+            return pd.DataFrame({
+                "股票名称": ["A", "B", "C"],
+                "占净值比例": ["20%", "15%", "10%"],
+            })
+
+        def fund_portfolio_industry_allocation_em(self, symbol: str, date: str):
+            return pd.DataFrame({
+                "行业类别": ["消费", "科技"],
+                "占净值比例": ["38%", "20%"],
+            })
+
+        def fund_manager_em(self):
+            return pd.DataFrame({
+                "基金代码": ["110011"],
+                "基金经理": ["经理A"],
+                "任职日期": ["2020-01-01"],
+            })
+
+    monkeypatch.setattr(dc, "ak", _ProfileAkshare())
+    monkeypatch.setattr(dc, "today_str", lambda: "2026-07-02")
+
+    out = dc.fetch_fund_profile("110011")
+
+    assert out["fund_code"] == "110011"
+    assert out["scale"] == pytest.approx(12.3)
+    assert out["scale_date"] == "2026-06-30"
+    assert out["peer_category"] == "偏股混合"
+    assert out["rank_total"] == 100
+    assert out["rank_position"] == 25
+    assert out["peer_candidates"] == [
+        {"fund_code": "000001", "fund_name": "PeerA", "fund_type": "偏股混合", "rank_position": 10},
+        {"fund_code": "000002", "fund_name": "PeerB", "fund_type": "偏股混合", "rank_position": 30},
+    ]
+    assert out["top10_holding_pct"] == pytest.approx(0.45)
+    assert out["top_industry_pct"] == pytest.approx(0.38)
+    assert out["manager_summary"] == "经理A 任职日期:2020-01-01"
+    assert out["missing_data"] == []
+    assert out["errors"] == []
+    assert out["source"] == dc.SOURCE
+    assert out["as_of"] == "2026-07-02"
+
+
+def test_fetch_fund_profile_degrades_when_source_fails(monkeypatch):
+    class _BrokenProfileAkshare:
+        def fund_scale_change_em(self):
+            raise RuntimeError("scale timeout")
+
+        def fund_open_fund_rank_em(self, symbol="全部"):
+            return pd.DataFrame()
+
+        def fund_portfolio_hold_em(self, symbol: str, date: str):
+            return pd.DataFrame()
+
+        def fund_portfolio_industry_allocation_em(self, symbol: str, date: str):
+            return pd.DataFrame()
+
+        def fund_manager_em(self):
+            return pd.DataFrame()
+
+    monkeypatch.setattr(dc, "ak", _BrokenProfileAkshare())
+
+    out = dc.fetch_fund_profile("110011")
+
+    assert out["fund_code"] == "110011"
+    assert out["scale"] is None
+    assert "scale" in out["missing_data"]
+    assert any("scale" in error for error in out["errors"])

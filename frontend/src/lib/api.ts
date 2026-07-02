@@ -1,6 +1,7 @@
 import type {
   AnnouncementList, Fund, FundMetrics, FundSummary, MarketLatest,
   NavHistory, NavPoint, PortfolioPnl, ComparisonSeries,
+  DiagnosisRefreshJob, FundDiagnosis, PeerFund,
   FundTransaction, InitialHoldingPayload, TransactionUpsertPayload,
   WatchlistPatchPayload, WatchlistRow, WatchlistUpsertPayload,
 } from "@/types/api";
@@ -51,6 +52,16 @@ export const api = {
     get<FundMetrics>(`/api/funds/${code}/metrics`, { period }),
   fundSummary: (code: string, period = "1m", start = "") =>
     get<FundSummary>(`/api/funds/${code}/summary`, { period, start }),
+  fundDiagnosis: (code: string, period = "1y") =>
+    get<FundDiagnosis>(`/api/funds/${code}/diagnosis`, { period }),
+  fundPeers: (code: string, limit = 5, period = "1y") =>
+    get<{ fund_code: string; peers: PeerFund[] }>(`/api/funds/${code}/peers`, { limit, period }),
+  refreshFundDiagnosis: (code: string) =>
+    send<DiagnosisRefreshJob>("POST", `/api/funds/${encodeURIComponent(code)}/diagnosis/refresh`),
+  fundDiagnosisRefreshJob: (code: string, jobId: string) =>
+    get<DiagnosisRefreshJob>(
+      `/api/funds/${encodeURIComponent(code)}/diagnosis/refresh/${encodeURIComponent(jobId)}`,
+    ),
   refreshFund: (code: string) =>
     send<{
       fund_code: string;

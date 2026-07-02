@@ -7,6 +7,7 @@ service,把返回字典直接交给 LangChain。LLM 不接触网络或数据库 
 """
 from langchain_core.tools import tool
 
+from backend.services import diagnosis_service as ds
 from backend.services import fund_service as fs
 from backend.tools.watchlist_tools import WATCHLIST_TOOLS
 from backend.tools.market_tools import MARKET_TOOLS
@@ -57,10 +58,21 @@ def refresh_fund(fund_code: str) -> dict:
     return fs.refresh_fund(fund_code)
 
 
+@tool
+def diagnose_fund(fund_code: str, period: str = "1y") -> dict:
+    """对基金做本地体检:风险灯、避坑提示、适配人群和同类候选。
+
+    `period ∈ {"1w","1m","3m","6m","1y"}`。输出是确定性规则结果,
+    不是交易建议,不得解释为买卖/加减仓指令。
+    """
+    return ds.diagnose_fund(fund_code, period=period)
+
+
 # Phase-1 thin agent 兼容入口
 TOOLS = [get_latest_fund_nav, calculate_fund_metrics]
 
 FUND_TOOLS = [get_latest_fund_nav, calculate_fund_metrics,
-              get_fund_basic_info, get_fund_nav_history, refresh_fund]
+              get_fund_basic_info, get_fund_nav_history, refresh_fund,
+              diagnose_fund]
 
 ALL_TOOLS = FUND_TOOLS + WATCHLIST_TOOLS + MARKET_TOOLS + PNL_TOOLS

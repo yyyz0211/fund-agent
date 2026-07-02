@@ -218,25 +218,64 @@ def _patch_payload(payload: WatchlistPatch) -> dict:
 
 @router.get("")
 def list_watchlist() -> list[dict]:
-    """列出全部自选行,每行附带 transaction_count(避免前端再发 N 次请求)。"""
+    """列出全部自选行,批量附带展示字段,避免前端逐行补数据。"""
     from backend.db import repository as repo
+    from backend.db.models import Fund
     from backend.db.session import get_session
+    from sqlalchemy import select
 
     rows = ws.list_watchlist()
     if not rows:
         return rows
-    # 一次性把每只基金的交易笔数取出来,避免 N+1
+    codes = [r["fund_code"] for r in rows]
     s = get_session()
     try:
-        counts = repo.count_transactions_for_funds(
-            s,
-            [r["fund_code"] for r in rows],
-        )
+        counts = repo.count_transactions_for_funds(s, codes)
+        latest_navs = repo.get_latest_navs_for_funds(s, codes)
+        fund_rows = s.scalars(select(Fund).where(Fund.fund_code.in_(codes))).all()
+        fund_names = {fund.fund_code: fund.fund_name for fund in fund_rows}
     finally:
         s.close()
     for r in rows:
-        r["transaction_count"] = counts.get(r["fund_code"], 0)
+        code = r["fund_code"]
+        latest_nav = latest_navs.get(code) or {}
+        accumulated_nav = latest_nav.get("accumulated_nav")
+        daily_return = latest_nav.get("daily_return")
+
+        r["fund_name"] = fund_names.get(code)
+        r["transaction_count"] = counts.get(code, 0)
+        r["latest_nav"] = accumulated_nav
+        r["nav_date"] = latest_nav.get("nav_date")
+        r["daily_return"] = daily_return
+        r["daily_pnl_pct"] = daily_return
+        r["daily_pnl_abs"] = _daily_pnl_abs(
+            holding_share=r.get("holding_share") if r.get("is_holding") else None,
+            current_nav=accumulated_nav,
+            daily_return=daily_return,
+        )
     return rows
+
+
+def _daily_pnl_abs(
+    *,
+    holding_share: float | None,
+    current_nav: float | None,
+    daily_return: float | None,
+) -> float | None:
+    """按最新日涨跌估算持仓当日盈亏金额。
+
+    daily_return 是 (current - previous) / previous,所以前一日净值为
+    current / (1 + daily_return)。没有持仓份额或日涨跌时返回 None。
+    """
+    if holding_share is None or current_nav is None or daily_return is None:
+        return None
+    share = float(holding_share)
+    nav = float(current_nav)
+    ret = float(daily_return)
+    if share <= 0 or nav <= 0 or ret <= -1:
+        return None
+    previous_nav = nav / (1 + ret)
+    return round(share * (nav - previous_nav), 4)
 
 
 @router.post("", status_code=200)
