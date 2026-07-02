@@ -95,9 +95,13 @@ def _reason_for(label: str, level: str) -> str:
     return f"{label}暂无足够本地数据"
 
 
-def _profile_missing(profile: dict | None) -> list[str]:
+def _profile_missing(profile: dict | None, fund: dict | None = None) -> list[str]:
+    has_basic_manager = bool((fund or {}).get("manager"))
     if not profile:
-        return ["scale", "rank", "peers", "holdings", "industry", "manager"]
+        missing = ["scale", "rank", "peers", "holdings", "industry"]
+        if not has_basic_manager:
+            missing.append("manager")
+        return missing
     missing = []
     if profile.get("scale") is None:
         missing.append("scale")
@@ -109,7 +113,7 @@ def _profile_missing(profile: dict | None) -> list[str]:
         missing.append("holdings")
     if profile.get("top_industry_pct") is None:
         missing.append("industry")
-    if profile.get("manager_summary") is None:
+    if profile.get("manager_summary") is None and not has_basic_manager:
         missing.append("manager")
     return missing
 
@@ -190,17 +194,16 @@ def diagnose_fund(fund_code: str, period: str = "1y", session=None) -> dict:
         profile = profile_service.get_profile(fund_code, session=s)
         peers = get_peers(fund_code, limit=5, period=period, session=s)
 
-        errors = summary.get("errors") or {}
-        missing_data = list(errors.keys())
-        missing_data.extend(_profile_missing(profile))
-        if not peers:
-            missing_data.append("peers")
-        missing_data = list(dict.fromkeys(missing_data))
-
         source = summary.get("source") or "akshare"
         as_of = summary.get("as_of")
         metrics_payload = summary.get("metrics") or {}
         fund_payload = summary.get("fund") or {}
+        errors = summary.get("errors") or {}
+        missing_data = list(errors.keys())
+        missing_data.extend(_profile_missing(profile, fund_payload))
+        if not peers:
+            missing_data.append("peers")
+        missing_data = list(dict.fromkeys(missing_data))
         category = (
             (profile or {}).get("peer_category")
             or fund_payload.get("fund_type")
@@ -268,7 +271,7 @@ def diagnose_fund(fund_code: str, period: str = "1y", session=None) -> dict:
         ]
 
         core_complete = bool(summary.get("latest_nav")) and bool(summary.get("metrics"))
-        profile_complete = not _profile_missing(profile)
+        profile_complete = not _profile_missing(profile, fund_payload)
         label = rules.choose_decision_label(lights, missing_data)
         confidence = rules.confidence_for(core_complete, profile_complete, len(peers))
         if not core_complete:

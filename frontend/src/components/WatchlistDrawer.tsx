@@ -160,6 +160,7 @@ export function WatchlistDrawer({
       });
       qc.invalidateQueries({ queryKey: ["watchlist"] });
       qc.invalidateQueries({ queryKey: ["watchlistTransactions", fundCodeForTx] });
+      qc.invalidateQueries({ queryKey: ["fundSummary", fundCodeForTx] });
       qc.invalidateQueries({ queryKey: ["portfolioPnl", [fundCodeForTx]] });
       setTxForm(blankTxForm());
       setTxFormOpen(false);
@@ -179,6 +180,7 @@ export function WatchlistDrawer({
       });
       qc.invalidateQueries({ queryKey: ["watchlist"] });
       qc.invalidateQueries({ queryKey: ["watchlistTransactions", fundCodeForTx] });
+      qc.invalidateQueries({ queryKey: ["fundSummary", fundCodeForTx] });
       qc.invalidateQueries({ queryKey: ["portfolioPnl", [fundCodeForTx]] });
       toast.push("已删除加仓记录", "success");
     },
@@ -215,6 +217,7 @@ export function WatchlistDrawer({
           });
           saved = txResult.watchlist;
           qc.invalidateQueries({ queryKey: ["watchlistTransactions", fundCode] });
+          qc.invalidateQueries({ queryKey: ["fundSummary", fundCode] });
           qc.invalidateQueries({ queryKey: ["portfolioPnl", [fundCode]] });
         } else {
           const payload: WatchlistUpsertPayload = {
@@ -236,6 +239,7 @@ export function WatchlistDrawer({
           });
           saved = txResult.watchlist;
           qc.invalidateQueries({ queryKey: ["watchlistTransactions", fundCode] });
+          qc.invalidateQueries({ queryKey: ["fundSummary", fundCode] });
           qc.invalidateQueries({ queryKey: ["portfolioPnl", [fundCode]] });
         } else {
           const patch: WatchlistPatchPayload = {

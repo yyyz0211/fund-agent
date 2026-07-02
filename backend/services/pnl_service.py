@@ -24,9 +24,22 @@ from backend.services import data_collector as dc
 _REQUIRED_FIELDS = ("holding_share", "cost_nav")
 
 
+def _daily_pnl_abs(
+    *,
+    holding_share: float,
+    current_nav: float,
+    daily_return: float | None,
+) -> float | None:
+    if daily_return is None or daily_return <= -1:
+        return None
+    previous_nav = current_nav / (1 + daily_return)
+    return round(holding_share * (current_nav - previous_nav), 4)
+
+
 def _row_to_pnl_item(row: Watchlist, fund_name: str | None,
                       current_nav: float, nav_date: str,
-                      transaction_count: int) -> dict:
+                      transaction_count: int,
+                      daily_return: float | None) -> dict:
     """单行 -> 盈亏 dict。"""
     share = float(row.holding_share or 0.0)
     cost = float(row.cost_nav or 0.0)
@@ -34,6 +47,11 @@ def _row_to_pnl_item(row: Watchlist, fund_name: str | None,
     market_value = share * current_nav
     pnl_abs = market_value - invested
     pnl_pct = (pnl_abs / invested) if invested > 0 else None
+    daily_abs = _daily_pnl_abs(
+        holding_share=share,
+        current_nav=current_nav,
+        daily_return=daily_return,
+    )
     return {
         "fund_code": row.fund_code,
         "fund_name": fund_name,
@@ -48,6 +66,9 @@ def _row_to_pnl_item(row: Watchlist, fund_name: str | None,
         "market_value": round(market_value, 4),
         "pnl_abs": round(pnl_abs, 4),
         "pnl_pct": round(pnl_pct, 6) if pnl_pct is not None else None,
+        "daily_return": daily_return,
+        "daily_pnl_abs": daily_abs,
+        "daily_pnl_pct": daily_return,
         "cost_nav_basis": row.cost_nav_basis or "legacy",
         "transaction_count": transaction_count,
     }
@@ -130,9 +151,11 @@ def calculate_pnl(
                 continue
             current_nav = float(latest_nav["accumulated_nav"])
             nav_date = str(latest_nav["nav_date"])
+            daily_return = latest_nav.get("daily_return")
             items.append(_row_to_pnl_item(
                 r, names.get(r.fund_code), current_nav, nav_date,
                 tx_counts.get(r.fund_code, 0),
+                float(daily_return) if daily_return is not None else None,
             ))
 
         # 聚合

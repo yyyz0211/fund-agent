@@ -38,6 +38,7 @@ def test_volatility_known_value():
 def test_period_return():
     navs = [1.0 + i * 0.01 for i in range(0, 30)]  # 30 ascending points
     assert m.period_return(navs, "1w") == pytest.approx(navs[-1] / navs[-6] - 1)
+    assert m.period_return(navs, "all") == pytest.approx(navs[-1] / navs[0] - 1)
     assert m.period_return(navs, "1y") is None  # needs 252+1
     with pytest.raises(ValueError):
         m.period_return(navs, "2y")

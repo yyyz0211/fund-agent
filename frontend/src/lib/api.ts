@@ -56,8 +56,11 @@ export const api = {
     get<FundDiagnosis>(`/api/funds/${code}/diagnosis`, { period }),
   fundPeers: (code: string, limit = 5, period = "1y") =>
     get<{ fund_code: string; peers: PeerFund[] }>(`/api/funds/${code}/peers`, { limit, period }),
-  refreshFundDiagnosis: (code: string) =>
-    send<DiagnosisRefreshJob>("POST", `/api/funds/${encodeURIComponent(code)}/diagnosis/refresh`),
+  refreshFundDiagnosis: (code: string, force = true) =>
+    send<DiagnosisRefreshJob>(
+      "POST",
+      `/api/funds/${encodeURIComponent(code)}/diagnosis/refresh?force=${force ? "true" : "false"}`,
+    ),
   fundDiagnosisRefreshJob: (code: string, jobId: string) =>
     get<DiagnosisRefreshJob>(
       `/api/funds/${encodeURIComponent(code)}/diagnosis/refresh/${encodeURIComponent(jobId)}`,

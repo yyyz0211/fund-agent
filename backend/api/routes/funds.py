@@ -66,8 +66,8 @@ def get_peers(code: str,
 
 
 @router.post("/{code}/diagnosis/refresh", status_code=status.HTTP_202_ACCEPTED)
-def refresh_diagnosis(code: str):
-    return refresh_jobs.start_refresh_job(code)
+def refresh_diagnosis(code: str, force: bool = Query(default=False)):
+    return refresh_jobs.start_refresh_job(code, force=force)
 
 
 @router.get("/{code}/diagnosis/refresh/{job_id}")

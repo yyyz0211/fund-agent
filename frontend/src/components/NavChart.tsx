@@ -19,11 +19,12 @@ export function periodToStart(period: (typeof PERIODS)[number]): string {
     case "3m": now.setMonth(now.getMonth() - 3); break;
     case "6m": now.setMonth(now.getMonth() - 6); break;
     case "1y": now.setFullYear(now.getFullYear() - 1); break;
+    case "all": return "";
   }
   return now.toISOString().slice(0, 10);
 }
 
-export const PERIODS = ["1w", "1m", "3m", "6m", "1y"] as const;
+export const PERIODS = ["1w", "1m", "3m", "6m", "1y", "all"] as const;
 export type Period = (typeof PERIODS)[number];
 
 export function NavChart({

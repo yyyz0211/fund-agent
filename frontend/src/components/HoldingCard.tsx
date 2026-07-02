@@ -5,41 +5,26 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { StateBlock } from "@/components/StateBlock";
 import { api } from "@/lib/api";
 import { formatMoney, formatNav, formatPct, formatDate } from "@/lib/format";
-import type { PnlItem, PnlSkipped } from "@/types/api";
 
 /**
  * 持仓信息卡 — 只在 `is_holding=true && holding_share>0` 时显示。
- * 数据来自 `/api/portfolio/pnl?codes={code}`,这样跟 PnL 总额共用同一份计算。
+ * 始终独立读取 `/api/portfolio/pnl?codes={code}`。不要复用详情页 summary
+ * 里的 `pnl_item`,否则 NAV/交易更新后容易显示旧快照。
  */
 export function HoldingCard({
   fundCode,
-  pnlItem,
-  pnlSkipped,
-  pnlLoading,
-  pnlError,
 }: {
   fundCode: string;
-  pnlItem?: PnlItem | null;
-  pnlSkipped?: PnlSkipped | null;
-  pnlLoading?: boolean;
-  pnlError?: unknown;
 }) {
-  const shouldFetch =
-    pnlItem === undefined &&
-    pnlSkipped === undefined &&
-    pnlLoading === undefined &&
-    pnlError === undefined;
   const pnl = useQuery({
     queryKey: ["portfolioPnl", [fundCode]],
     queryFn: () => api.portfolioPnl([fundCode]),
-    enabled: shouldFetch,
+    refetchOnMount: "always",
   });
 
-  const isLoading = pnlLoading ?? pnl.isLoading;
-  const error = pnlError ?? pnl.error;
-  const item = pnlItem === undefined
-    ? (pnl.data?.items ?? []).find((i) => i.fund_code === fundCode)
-    : pnlItem;
+  const isLoading = pnl.isLoading;
+  const error = pnl.error;
+  const item = (pnl.data?.items ?? []).find((i) => i.fund_code === fundCode);
 
   if (isLoading) {
     return (
@@ -69,7 +54,9 @@ export function HoldingCard({
   if (!item) return null;
 
   const isProfit = (item.pnl_abs ?? 0) >= 0;
+  const isDailyProfit = (item.daily_pnl_abs ?? 0) >= 0;
   const accent = isProfit ? "text-emerald-700" : "text-rose-700";
+  const dailyAccent = isDailyProfit ? "text-emerald-700" : "text-rose-700";
   const accentBg = isProfit ? "bg-emerald-50" : "bg-rose-50";
   // 交易表驱动:用 item.buy_date(已 recalc 成最早一笔) + 笔数提示;
   // 老数据(legacy):保持单行"买入日期"。
@@ -107,7 +94,7 @@ export function HoldingCard({
         </div>
 
         <div className={`mt-5 rounded-lg ${accentBg} p-4`}>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <div>
               <div className="text-xs text-gray-500">投入本金</div>
               <div className="mt-1 text-lg font-semibold text-gray-900">
@@ -121,9 +108,18 @@ export function HoldingCard({
               </div>
             </div>
             <div>
-              <div className="text-xs text-gray-500">浮盈浮亏</div>
+              <div className="text-xs text-gray-500">当日盈亏</div>
+              <div className={`mt-1 text-lg font-semibold ${dailyAccent}`}>
+                {formatSignedMoney(item.daily_pnl_abs)}
+                <span className="ml-2 text-sm font-medium">
+                  ({formatPct(item.daily_pnl_pct ?? item.daily_return)})
+                </span>
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-gray-500">累计浮盈浮亏</div>
               <div className={`mt-1 text-lg font-semibold ${accent}`}>
-                {item.pnl_abs >= 0 ? "+" : "−"}¥ {formatMoney(Math.abs(item.pnl_abs))}
+                {formatSignedMoney(item.pnl_abs)}
                 <span className="ml-2 text-sm font-medium">
                   ({formatPct(item.pnl_pct)})
                 </span>
@@ -148,4 +144,10 @@ function Stat({ label, value }: { label: string; value: string }) {
       <div className="mt-1 text-sm font-semibold text-gray-900">{value}</div>
     </div>
   );
+}
+
+function formatSignedMoney(value: number | null | undefined) {
+  if (value === null || value === undefined) return "—";
+  const sign = value >= 0 ? "+" : "−";
+  return `${sign}¥ ${formatMoney(Math.abs(value))}`;
 }

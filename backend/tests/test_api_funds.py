@@ -190,21 +190,28 @@ class TestFundDiagnosisEndpoint:
     def test_refresh_diagnosis_starts_background_job(self, monkeypatch):
         from backend.api.routes import funds as funds_routes
 
-        monkeypatch.setattr(funds_routes.refresh_jobs, "start_refresh_job", lambda code: {
-            "job_id": "job-1",
-            "fund_code": code,
-            "status": "started",
-            "started_at": "2026-07-02T12:00:00",
-            "finished_at": None,
-            "missing_data": [],
-            "error": None,
-            "as_of": "2026-07-02",
-        })
+        calls = []
 
-        r = client.post("/api/funds/110011/diagnosis/refresh")
+        def fake_start_refresh_job(code, force=False):
+            calls.append((code, force))
+            return {
+                "job_id": "job-1",
+                "fund_code": code,
+                "status": "started",
+                "started_at": "2026-07-02T12:00:00",
+                "finished_at": None,
+                "missing_data": [],
+                "error": None,
+                "as_of": "2026-07-02",
+            }
+
+        monkeypatch.setattr(funds_routes.refresh_jobs, "start_refresh_job", fake_start_refresh_job)
+
+        r = client.post("/api/funds/110011/diagnosis/refresh", params={"force": "true"})
 
         assert r.status_code == 202
         assert r.json()["job_id"] == "job-1"
+        assert calls == [("110011", True)]
 
     def test_refresh_diagnosis_status(self, monkeypatch):
         from backend.api.routes import funds as funds_routes

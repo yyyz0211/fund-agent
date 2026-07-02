@@ -80,6 +80,40 @@ def test_diagnosis_missing_core_data_is_low_confidence_block(session, monkeypatc
     assert "metrics" in out["missing_data"]
 
 
+def test_diagnosis_uses_basic_manager_when_profile_manager_missing(session, monkeypatch):
+    from backend.services import diagnosis_service as ds
+
+    monkeypatch.setattr(ds.fs, "get_summary", lambda code, period="1y", start_date="", session=None: {
+        "fund_code": code,
+        "fund": {"fund_code": code, "fund_name": "FundA", "fund_type": "偏股混合",
+                 "manager": "Manager A", "source": "akshare", "as_of": "2026-07-02"},
+        "latest_nav": {"fund_code": code, "nav_date": "2026-06-30", "source": "akshare",
+                       "as_of": "2026-06-30"},
+        "metrics": {"fund_code": code, "period": period, "period_return": 0.05,
+                    "max_drawdown": -0.08, "volatility": 0.10,
+                    "source": "akshare", "as_of": "2026-07-02"},
+        "errors": {},
+        "source": "akshare",
+        "as_of": "2026-07-02",
+    })
+    monkeypatch.setattr(ds.profile_service, "get_profile", lambda code, session=None: {
+        "scale": 10.0,
+        "rank_total": 100,
+        "rank_position": 20,
+        "peer_candidates_json": "[]",
+        "top10_holding_pct": 0.2,
+        "top_industry_pct": 0.2,
+        "manager_summary": None,
+        "source": "akshare",
+        "as_of": "2026-07-02",
+    })
+    monkeypatch.setattr(ds, "get_peers", lambda code, limit=5, period="1y", session=None: [])
+
+    out = ds.diagnose_fund("110011", period="1y", session=session)
+
+    assert "manager" not in out["missing_data"]
+
+
 def test_get_peers_filters_codes_without_local_nav(session):
     from backend.services import diagnosis_service as ds
 

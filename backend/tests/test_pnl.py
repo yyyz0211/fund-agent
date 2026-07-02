@@ -28,7 +28,7 @@ def session():
 
 
 def _seed_holding(s, fund_code, share, cost, fund_name=None, current_nav=None,
-                  nav_date="2026-06-30"):
+                  nav_date="2026-06-30", daily_return=None):
     """把 watchlist + Fund + FundNav 一次性塞满,准备好 PnL 计算。"""
     repo.add_to_watchlist_full(
         s, fund_code,
@@ -44,7 +44,8 @@ def _seed_holding(s, fund_code, share, cost, fund_name=None, current_nav=None,
         from backend.db.models import FundNav
         s.add(FundNav(
             fund_code=fund_code, nav_date=nav_date,
-            accumulated_nav=current_nav, source="akshare",
+            accumulated_nav=current_nav, daily_return=daily_return,
+            source="akshare",
         ))
         s.commit()
 
@@ -82,6 +83,22 @@ class TestSingleFund:
         result = psvc.calculate_pnl(session=session)
         assert result["items"][0]["pnl_abs"] == 0.0
         assert result["items"][0]["pnl_pct"] == 0.0
+
+    def test_daily_pnl_uses_latest_daily_return(self, session):
+        _seed_holding(
+            session,
+            "110011",
+            share=1000,
+            cost=1.0,
+            current_nav=1.2,
+            daily_return=0.02,
+        )
+
+        item = psvc.calculate_pnl(session=session)["items"][0]
+
+        assert item["daily_return"] == pytest.approx(0.02)
+        assert item["daily_pnl_pct"] == pytest.approx(0.02)
+        assert item["daily_pnl_abs"] == pytest.approx(23.5294)
 
 
 class TestMultiFund:

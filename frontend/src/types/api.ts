@@ -134,6 +134,9 @@ export interface PnlItem {
   market_value: number;
   pnl_abs: number;
   pnl_pct: number | null;
+  daily_return?: number | null;
+  daily_pnl_abs?: number | null;
+  daily_pnl_pct?: number | null;
   cost_nav_basis?: "legacy" | "transactions";
   transaction_count?: number;
 }

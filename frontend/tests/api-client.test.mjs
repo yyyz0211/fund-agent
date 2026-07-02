@@ -78,7 +78,7 @@ test("api.refreshFundDiagnosis posts to refresh endpoint", async () => {
 
   await api.refreshFundDiagnosis("110011");
 
-  assert.equal(calls[0].url, "http://api.test/api/funds/110011/diagnosis/refresh");
+  assert.equal(calls[0].url, "http://api.test/api/funds/110011/diagnosis/refresh?force=true");
   assert.equal(calls[0].init.method, "POST");
 });
 

@@ -6,11 +6,12 @@
 逐位复现。
 
 `_PERIOD_ROWS` 是中国 A 股交易日的常用口径:
-    1w ≈ 5 个交易日,1m ≈ 21,3m ≈ 63,6m ≈ 126,1y ≈ 252。
+    1w ≈ 5 个交易日,1m ≈ 21,3m ≈ 63,6m ≈ 126,1y ≈ 252,
+    all 表示本地全量历史。
 """
 import math
 
-_PERIOD_ROWS = {"1w": 5, "1m": 21, "3m": 63, "6m": 126, "1y": 252}
+_PERIOD_ROWS = {"1w": 5, "1m": 21, "3m": 63, "6m": 126, "1y": 252, "all": None}
 
 
 def daily_returns(navs: list[float]) -> list[float]:
@@ -59,16 +60,18 @@ def volatility(navs: list[float], annualize: bool = True,
 
 
 def period_return(navs: list[float], period: str) -> float | None:
-    """区间收益率:`period ∈ {"1w","1m","3m","6m","1y"}`,取最近 N+1 个点。
+    """区间收益率:`period ∈ {"1w","1m","3m","6m","1y","all"}`。
 
-    之所以要 N+1 个点(而不是 N 个)是为了在累计净值序列上得到
-    恰好 N 个日收益。点数不够时返回 None(而不是抛错),
-    让上层 service 可以走"数据不足"分支。
+    固定窗口取最近 N+1 个点。之所以要 N+1 个点(而不是 N 个)是为了
+    在累计净值序列上得到恰好 N 个日收益。`all` 使用本地全量历史。
+    点数不够时返回 None(而不是抛错),让上层 service 可以走"数据不足"分支。
     不支持的 period 抛 `ValueError`,因为那是调用方 bug。
     """
     if period not in _PERIOD_ROWS:
         raise ValueError(f"unsupported period: {period}")
     n = _PERIOD_ROWS[period]
+    if n is None:
+        return cumulative_return(navs)
     if len(navs) < n + 1:
         return None
     window = navs[-(n + 1):]

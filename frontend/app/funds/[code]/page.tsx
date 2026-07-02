@@ -28,6 +28,7 @@ const PERIOD_LABELS: Record<(typeof PERIODS)[number], string> = {
   "3m": "3月",
   "6m": "6月",
   "1y": "1年",
+  "all": "至今",
 };
 
 export default function FundDetail({ params }: { params: { code: string } }) {
@@ -277,13 +278,7 @@ export default function FundDetail({ params }: { params: { code: string } }) {
         refreshing={refreshDiagnosis.isPending || Boolean(refreshJobId)}
       />
 
-      <HoldingCard
-        fundCode={code}
-        pnlError={summary.error}
-        pnlItem={summaryData?.pnl_item}
-        pnlLoading={summary.isLoading}
-        pnlSkipped={summaryData?.pnl_skipped}
-      />
+      <HoldingCard fundCode={code} />
 
       <section>
         <SectionHeader
@@ -329,6 +324,7 @@ export default function FundDetail({ params }: { params: { code: string } }) {
         onSaved={() => {
           qc.invalidateQueries({ queryKey: ["fundSummary", code] });
           qc.invalidateQueries({ queryKey: ["watchlist"] });
+          qc.invalidateQueries({ queryKey: ["portfolioPnl", [code]] });
           qc.invalidateQueries({ queryKey: ["fundDiagnosis", code] });
         }}
         open={drawerOpen}
