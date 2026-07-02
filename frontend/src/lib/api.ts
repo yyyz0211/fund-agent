@@ -1,7 +1,7 @@
 import type {
   AnnouncementList, Fund, FundMetrics, MarketLatest,
   NavHistory, NavPoint, PortfolioPnl, ComparisonSeries,
-  FundTransaction, TransactionUpsertPayload,
+  FundTransaction, InitialHoldingPayload, TransactionUpsertPayload,
   WatchlistPatchPayload, WatchlistRow, WatchlistUpsertPayload,
 } from "@/types/api";
 
@@ -76,6 +76,12 @@ export const api = {
     send<{ transaction: FundTransaction; watchlist: WatchlistRow }>(
       "POST",
       `/api/watchlist/${encodeURIComponent(fundCode)}/transactions`,
+      body,
+    ),
+  watchlistSetInitialHolding: (fundCode: string, body: InitialHoldingPayload) =>
+    send<{ transaction: FundTransaction; watchlist: WatchlistRow }>(
+      "POST",
+      `/api/watchlist/${encodeURIComponent(fundCode)}/initial-holding`,
       body,
     ),
   watchlistRemoveTransaction: (fundCode: string, txId: number) =>

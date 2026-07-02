@@ -74,6 +74,11 @@ export interface TransactionUpsertPayload {
   kind?: string;
 }
 
+export interface InitialHoldingPayload extends TransactionUpsertPayload {
+  is_focus?: boolean | null;
+  watchlist_note?: string | null;
+}
+
 export interface WatchlistUpsertPayload {
   fund_code: string;
   note?: string | null;
