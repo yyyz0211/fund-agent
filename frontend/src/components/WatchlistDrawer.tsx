@@ -10,7 +10,11 @@ import { api } from "@/lib/api";
 import { useToast } from "@/components/Toast";
 import { cn } from "@/lib/cn";
 import { formatDate, formatNav, formatMoney } from "@/lib/format";
-import { buildAutoTransactionDraft, type AutoTransactionDraft } from "@/lib/auto-transaction";
+import {
+  buildAutoTransactionDraft,
+  isSixDigitFundCode,
+  type AutoTransactionDraft,
+} from "@/lib/auto-transaction";
 import type {
   FundTransaction, NavPoint, TransactionUpsertPayload,
   WatchlistPatchPayload, WatchlistRow, WatchlistUpsertPayload,
@@ -108,7 +112,7 @@ export function WatchlistDrawer({
   const fundCodeForTx = row?.fund_code ?? "";
   const currentFundCode = mode === "edit" ? fundCodeForTx : form.fund_code.trim();
   const needsInitialHolding = form.is_holding && (mode === "add" || row?.is_holding === false);
-  const shouldLoadLatestNav = open && currentFundCode.length > 0 && (
+  const shouldLoadLatestNav = open && isSixDigitFundCode(currentFundCode) && (
     needsInitialHolding ||
     (showTxTab && activeTab === "transactions" && txFormOpen)
   );
@@ -196,44 +200,43 @@ export function WatchlistDrawer({
     try {
       let saved: WatchlistRow;
       if (mode === "add") {
-        const payload: WatchlistUpsertPayload = {
-          fund_code: fundCode,
-          note: form.note || null,
-          is_holding: form.is_holding,
-          is_focus: form.is_focus,
-          holding_amount: needsInitialHolding
-            ? initialHoldingDraft?.payload.amount ?? null
-            : null,
-        };
-        saved = await api.watchlistAdd(payload);
         if (needsInitialHolding && initialHoldingDraft) {
-          const txResult = await api.watchlistAddTransaction(
-            fundCode,
-            initialHoldingDraft.payload,
-          );
+          const txResult = await api.watchlistSetInitialHolding(fundCode, {
+            ...initialHoldingDraft.payload,
+            is_focus: form.is_focus,
+            watchlist_note: form.note || null,
+          });
           saved = txResult.watchlist;
           qc.invalidateQueries({ queryKey: ["watchlistTransactions", fundCode] });
           qc.invalidateQueries({ queryKey: ["portfolioPnl", [fundCode]] });
+        } else {
+          const payload: WatchlistUpsertPayload = {
+            fund_code: fundCode,
+            note: form.note || null,
+            is_holding: form.is_holding,
+            is_focus: form.is_focus,
+            holding_amount: null,
+          };
+          saved = await api.watchlistAdd(payload);
         }
         toast.push(`${fundCode} 已加入自选池`, "success");
       } else {
-        const patch: WatchlistPatchPayload = {
-          note: form.note || null,
-          is_holding: form.is_holding,
-          is_focus: form.is_focus,
-          holding_amount: needsInitialHolding
-            ? initialHoldingDraft?.payload.amount ?? null
-            : undefined,
-        };
-        saved = await api.watchlistUpdate(fundCode, patch);
         if (needsInitialHolding && initialHoldingDraft) {
-          const txResult = await api.watchlistAddTransaction(
-            fundCode,
-            initialHoldingDraft.payload,
-          );
+          const txResult = await api.watchlistSetInitialHolding(fundCode, {
+            ...initialHoldingDraft.payload,
+            is_focus: form.is_focus,
+            watchlist_note: form.note || null,
+          });
           saved = txResult.watchlist;
           qc.invalidateQueries({ queryKey: ["watchlistTransactions", fundCode] });
           qc.invalidateQueries({ queryKey: ["portfolioPnl", [fundCode]] });
+        } else {
+          const patch: WatchlistPatchPayload = {
+            note: form.note || null,
+            is_holding: form.is_holding,
+            is_focus: form.is_focus,
+          };
+          saved = await api.watchlistUpdate(fundCode, patch);
         }
         toast.push(`已更新 ${fundCode}`, "success");
       }

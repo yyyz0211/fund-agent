@@ -88,3 +88,14 @@ test("buildAutoTransactionDraft rejects invalid amount or NAV", async () => {
     latestNav: { ...latestNav, accumulated_nav: 0 },
   }), null);
 });
+
+test("isSixDigitFundCode only accepts complete six digit fund codes", async () => {
+  const { isSixDigitFundCode } = await loadModule("../src/lib/auto-transaction.ts");
+
+  assert.equal(isSixDigitFundCode("110011"), true);
+  assert.equal(isSixDigitFundCode(" 110011 "), true);
+  assert.equal(isSixDigitFundCode("11001"), false);
+  assert.equal(isSixDigitFundCode("1100117"), false);
+  assert.equal(isSixDigitFundCode("abc011"), false);
+  assert.equal(isSixDigitFundCode(""), false);
+});

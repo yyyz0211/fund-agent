@@ -20,6 +20,10 @@ function parsePositiveNumber(value: string): number | null {
   return n;
 }
 
+export function isSixDigitFundCode(value: string): boolean {
+  return /^\d{6}$/.test(value.trim());
+}
+
 export function buildAutoTransactionDraft({
   amountInput,
   feeInput = "",
