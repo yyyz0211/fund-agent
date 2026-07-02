@@ -3,11 +3,23 @@
 对 repository 的自选池 CRUD 做一层 session 管理封装，使 watchlist 工具
 保持薄包装。自选池是本地用户数据，返回不带 source/as_of。
 """
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from backend.db.session import get_session
 from backend.db import repository as repo
-from backend.db.models import Watchlist
+from backend.db.models import FundTransaction, Watchlist
+
+
+class InitialHoldingConflict(Exception):
+    """基金已存在交易记录,不能再走 initial-holding 流程。
+
+    路由层捕获后转 409,前端应提示用户改用 `/transactions` 端点加仓。
+    """
+
+    def __init__(self, fund_code: str, existing_tx_count: int):
+        super().__init__(fund_code)
+        self.fund_code = fund_code
+        self.existing_tx_count = existing_tx_count
 
 
 def _with_session(session):
@@ -145,6 +157,10 @@ def set_initial_holding(fund_code: str, attrs: dict, session=None) -> dict:
     返回 {"transaction": <新交易 dict>, "watchlist": <重算后的行>}。
     任何一步失败都会 rollback,不会留下 is_holding=true 但无交易/成本的
     半成品状态。
+
+    Raises:
+        InitialHoldingConflict: 目标基金已有交易历史(避免把首笔"initial"
+            buy 静默合并到现有持仓,导致平均成本被错算)。
     """
     s = _with_session(session)
     owns = session is None
@@ -155,6 +171,17 @@ def set_initial_holding(fund_code: str, attrs: dict, session=None) -> dict:
             w = Watchlist(fund_code=fund_code)
             s.add(w)
             s.flush()
+            existing_tx_count = 0
+        else:
+            existing_tx_count = s.scalar(
+                select(func.count())
+                .select_from(FundTransaction)
+                .where(FundTransaction.fund_code == fund_code)
+            ) or 0
+            if existing_tx_count > 0:
+                # 早期抛错,事务还没写任何东西,不需要回滚;
+                # 但走 finally → close 一致性
+                raise InitialHoldingConflict(fund_code, existing_tx_count)
 
         w.is_holding = True
         if data.get("is_focus") is not None:

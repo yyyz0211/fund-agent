@@ -285,6 +285,27 @@ class TestInitialHoldingApi:
         assert session.scalar(select(func.count()).select_from(Watchlist)) == 0
         assert session.scalar(select(func.count()).select_from(FundTransaction)) == 0
 
+    def test_initial_holding_409s_when_fund_already_has_transactions(self, session):
+        """已有交易历史的基金不能再走 initial-holding;要追加请用 /transactions。"""
+        repo.add_to_watchlist_full(session, "110011", {"is_holding": True})
+        repo.add_transaction(session, "110011", {
+            "tx_date": "2026-01-01",
+            "amount": 500.0,
+            "nav": 2.0,
+        })
+        # 模拟前端"先点 is_holding=false 提交 → 再点 is_holding=true 提交"时
+        # row 已有 transaction_count=1 但前端 needsInitialHolding 仍命中。
+        r = client.post("/api/watchlist/110011/initial-holding", json={
+            "tx_date": "2026-02-01",
+            "amount": 800.0,
+            "nav": 2.5,
+        })
+
+        assert r.status_code == 409, r.text
+        assert "transactions" in r.json()["detail"].lower()
+        # 老交易不被破坏
+        assert repo.count_transactions(session, "110011") == 1
+
 
 class TestTransactionApi:
     def test_get_transactions_empty(self, session):

@@ -117,7 +117,16 @@ def set_initial_holding(fund_code: str, payload: InitialHoldingUpsert) -> dict:
             status_code=422,
             detail="amount 和 nav 必须都大于 0,否则无法反算份额",
         )
-    return ws.set_initial_holding(fund_code, _initial_holding_payload(payload))
+    try:
+        return ws.set_initial_holding(fund_code, _initial_holding_payload(payload))
+    except ws.InitialHoldingConflict as e:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{e.fund_code} 已有 {e.existing_tx_count} 笔交易记录,"
+                "不能再次走 initial-holding;请改用 /transactions 端点加仓"
+            ),
+        ) from e
 
 
 @router.delete("/{fund_code}/transactions/{tx_id}")
@@ -219,10 +228,10 @@ def list_watchlist() -> list[dict]:
     # 一次性把每只基金的交易笔数取出来,避免 N+1
     s = get_session()
     try:
-        counts = {
-            code: repo.count_transactions(s, code)
-            for code in (r["fund_code"] for r in rows)
-        }
+        counts = repo.count_transactions_for_funds(
+            s,
+            [r["fund_code"] for r in rows],
+        )
     finally:
         s.close()
     for r in rows:
