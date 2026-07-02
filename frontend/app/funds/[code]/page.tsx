@@ -15,6 +15,10 @@ import { WatchlistDrawer } from "@/components/WatchlistDrawer";
 import { useToast } from "@/components/Toast";
 import { api } from "@/lib/api";
 import { formatPct, formatNav, formatDate } from "@/lib/format";
+import {
+  periodDailyReturnRows,
+  type NavDailyReturnPoint,
+} from "@/lib/nav-daily-return";
 
 const PERIOD_LABELS: Record<(typeof PERIODS)[number], string> = {
   "1w": "1周",
@@ -43,6 +47,7 @@ export default function FundDetail({ params }: { params: { code: string } }) {
   const metricsData = summaryData?.metrics ?? null;
   const inWatchlist = summaryData?.watchlist ?? null;
   const fundName = fundData?.fund_name ?? code;
+  const dailyReturnRows = periodDailyReturnRows(summaryData?.nav_history);
 
   // 当本地无 Fund 数据时,提供"立即拉取"按钮 —— 用户从自选池进来
   // 但还没 refresh_fund 过,详情页会 404。点按钮调 POST /api/funds/{code}/refresh,
@@ -197,6 +202,12 @@ export default function FundDetail({ params }: { params: { code: string } }) {
                 <div className="text-4xl font-semibold tracking-tight text-gray-950">
                   {formatNav(latestNav?.accumulated_nav)}
                 </div>
+                <div className="flex items-center justify-between gap-3 rounded-lg bg-gray-50 p-3 text-xs">
+                  <span className="text-gray-500">日涨跌</span>
+                  <span className={trendBadgeClass(latestNav?.daily_return)}>
+                    {formatPct(latestNav?.daily_return)}
+                  </span>
+                </div>
                 <div className="rounded-lg bg-gray-50 p-3 text-xs leading-5 text-gray-500">
                   来源 {latestNav?.source ?? "--"} · 数据日期 {formatDate(latestNav?.nav_date)}
                 </div>
@@ -222,6 +233,11 @@ export default function FundDetail({ params }: { params: { code: string } }) {
           navHistory={summaryData?.nav_history}
           navLoading={summary.isLoading}
           period={period}
+        />
+        <RecentDailyReturns
+          endDate={dailyReturnRows[0]?.date ?? null}
+          periodStart={start}
+          rows={dailyReturnRows}
         />
       </section>
 
@@ -289,4 +305,66 @@ function InfoItem({ children, label }: { children: ReactNode; label: string }) {
       <dd className="mt-1 font-medium text-gray-900">{children}</dd>
     </div>
   );
+}
+
+function RecentDailyReturns({
+  rows,
+  periodStart,
+  endDate,
+}: {
+  rows: NavDailyReturnPoint[];
+  periodStart: string;
+  endDate: string | null;
+}) {
+  if (rows.length === 0) return null;
+  const caption =
+    endDate && periodStart
+      ? `${formatDate(periodStart)} ~ ${formatDate(endDate)}`
+      : endDate
+        ? `截至 ${formatDate(endDate)}`
+        : formatDate(periodStart);
+  return (
+    <div className="mt-3 overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
+      <div className="flex items-center justify-between border-b border-gray-100 px-4 py-2 text-xs">
+        <span className="font-medium text-gray-700">区间涨跌（{rows.length} 条）</span>
+        <span className="text-gray-500">{caption}</span>
+      </div>
+      <div className="max-h-96 overflow-y-auto">
+        <div className="sticky top-0 grid grid-cols-3 gap-3 border-b border-gray-100 bg-white px-4 py-1.5 text-[11px] font-medium uppercase tracking-wide text-gray-500">
+          <span>日期</span>
+          <span className="text-right">累计净值</span>
+          <span className="text-right">日涨跌</span>
+        </div>
+        <div className="divide-y divide-gray-100">
+          {rows.map((row) => (
+            <div
+              className="grid grid-cols-3 items-center gap-3 px-4 py-2 text-xs"
+              key={row.date}
+            >
+              <span className="text-gray-600">{formatDate(row.date)}</span>
+              <span className="text-right font-medium text-gray-900">
+                {formatNav(row.nav)}
+              </span>
+              <span className={`justify-self-end ${trendBadgeClass(row.dailyReturn)}`}>
+                {formatPct(row.dailyReturn)}
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function trendBadgeClass(value: number | null | undefined) {
+  if (value === null || value === undefined) {
+    return "rounded-full bg-gray-100 px-2 py-1 font-medium text-gray-600";
+  }
+  if (value > 0) {
+    return "rounded-full bg-red-50 px-2 py-1 font-medium text-red-600";
+  }
+  if (value < 0) {
+    return "rounded-full bg-green-50 px-2 py-1 font-medium text-green-600";
+  }
+  return "rounded-full bg-gray-100 px-2 py-1 font-medium text-gray-600";
 }
