@@ -1,5 +1,5 @@
 import type {
-  AnnouncementList, Fund, FundMetrics, MarketLatest,
+  AnnouncementList, Fund, FundMetrics, FundSummary, MarketLatest,
   NavHistory, NavPoint, PortfolioPnl, ComparisonSeries,
   FundTransaction, InitialHoldingPayload, TransactionUpsertPayload,
   WatchlistPatchPayload, WatchlistRow, WatchlistUpsertPayload,
@@ -49,6 +49,8 @@ export const api = {
     get<NavHistory>(`/api/funds/${code}/nav-history`, { start, end }),
   metrics: (code: string, period = "1m") =>
     get<FundMetrics>(`/api/funds/${code}/metrics`, { period }),
+  fundSummary: (code: string, period = "1m", start = "") =>
+    get<FundSummary>(`/api/funds/${code}/summary`, { period, start }),
   refreshFund: (code: string) =>
     send<{
       fund_code: string;

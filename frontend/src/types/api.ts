@@ -152,6 +152,20 @@ export interface PortfolioPnl {
   skipped: PnlSkipped[];
 }
 
+export interface FundSummary {
+  fund_code: string;
+  fund: Fund | null;
+  latest_nav: NavPoint | null;
+  metrics: FundMetrics | null;
+  nav_history: NavHistory | null;
+  watchlist: WatchlistRow | null;
+  pnl_item: PnlItem | null;
+  pnl_skipped: PnlSkipped | null;
+  errors: Record<string, string>;
+  source: string;
+  as_of: string;
+}
+
 export interface ComparisonSeries {
   code: string;
   points: { nav_date: string; accumulated_nav: number | null }[];

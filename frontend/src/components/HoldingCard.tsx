@@ -5,18 +5,43 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { StateBlock } from "@/components/StateBlock";
 import { api } from "@/lib/api";
 import { formatMoney, formatNav, formatPct, formatDate } from "@/lib/format";
+import type { PnlItem, PnlSkipped } from "@/types/api";
 
 /**
  * 持仓信息卡 — 只在 `is_holding=true && holding_share>0` 时显示。
  * 数据来自 `/api/portfolio/pnl?codes={code}`,这样跟 PnL 总额共用同一份计算。
  */
-export function HoldingCard({ fundCode }: { fundCode: string }) {
+export function HoldingCard({
+  fundCode,
+  pnlItem,
+  pnlSkipped,
+  pnlLoading,
+  pnlError,
+}: {
+  fundCode: string;
+  pnlItem?: PnlItem | null;
+  pnlSkipped?: PnlSkipped | null;
+  pnlLoading?: boolean;
+  pnlError?: unknown;
+}) {
+  const shouldFetch =
+    pnlItem === undefined &&
+    pnlSkipped === undefined &&
+    pnlLoading === undefined &&
+    pnlError === undefined;
   const pnl = useQuery({
     queryKey: ["portfolioPnl", [fundCode]],
     queryFn: () => api.portfolioPnl([fundCode]),
+    enabled: shouldFetch,
   });
 
-  if (pnl.isLoading) {
+  const isLoading = pnlLoading ?? pnl.isLoading;
+  const error = pnlError ?? pnl.error;
+  const item = pnlItem === undefined
+    ? (pnl.data?.items ?? []).find((i) => i.fund_code === fundCode)
+    : pnlItem;
+
+  if (isLoading) {
     return (
       <Card className="p-6">
         <CardHeader>
@@ -28,19 +53,18 @@ export function HoldingCard({ fundCode }: { fundCode: string }) {
       </Card>
     );
   }
-  if (pnl.error) {
+  if (error) {
     return (
       <Card className="p-6">
         <CardHeader>
           <CardTitle className="text-base">持仓信息</CardTitle>
         </CardHeader>
         <CardContent>
-          <StateBlock title="持仓加载失败" tone="error">{String(pnl.error)}</StateBlock>
+          <StateBlock title="持仓加载失败" tone="error">{String(error)}</StateBlock>
         </CardContent>
       </Card>
     );
   }
-  const item = (pnl.data?.items ?? []).find((i) => i.fund_code === fundCode);
   // 不是持仓 / 数据不足 → 整张卡不显示
   if (!item) return null;
 
@@ -109,7 +133,7 @@ export function HoldingCard({ fundCode }: { fundCode: string }) {
         </div>
 
         <p className="mt-3 text-xs text-gray-500">
-          来源 {pnl.data?.source} · as_of {formatDate(pnl.data?.as_of)}。
+          来源 {pnl.data?.source ?? "akshare"} · as_of {formatDate(pnl.data?.as_of ?? item.nav_date)}。
           数字基于本地最新 NAV 与自选池记录，不含交易费用与分红再投调整。
         </p>
       </CardContent>

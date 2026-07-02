@@ -7,9 +7,10 @@ import {
 import { StateBlock } from "@/components/StateBlock";
 import { api } from "@/lib/api";
 import { formatNav } from "@/lib/format";
+import type { NavHistory } from "@/types/api";
 
 /** Convert period shorthand to a cutoff date string (YYYY-MM-DD). */
-function periodToStart(period: (typeof PERIODS)[number]): string {
+export function periodToStart(period: (typeof PERIODS)[number]): string {
   const now = new Date();
   switch (period) {
     case "1w": now.setDate(now.getDate() - 7); break;
@@ -24,18 +25,36 @@ function periodToStart(period: (typeof PERIODS)[number]): string {
 export const PERIODS = ["1w", "1m", "3m", "6m", "1y"] as const;
 export type Period = (typeof PERIODS)[number];
 
-export function NavChart({ code, period = "1m" }: { code: string; period?: Period }) {
+export function NavChart({
+  code,
+  period = "1m",
+  navHistory,
+  navError,
+  navLoading,
+}: {
+  code: string;
+  period?: Period;
+  navHistory?: NavHistory | null;
+  navError?: unknown;
+  navLoading?: boolean;
+}) {
   const start = useMemo(() => periodToStart(period), [period]);
+  const shouldFetch = navHistory === undefined && navError === undefined && navLoading === undefined;
 
-  const { data, isLoading, error } = useQuery({
+  const query = useQuery({
     queryKey: ["navHistory", code, start],
     queryFn: () => api.navHistory(code, start),
+    enabled: shouldFetch,
   });
+  const data = navHistory === undefined ? query.data : navHistory;
+  const isLoading = navLoading ?? query.isLoading;
+  const error = navError ?? query.error;
 
   if (isLoading) return <StateBlock title="加载净值走势" tone="loading">正在读取 {period} 净值历史。</StateBlock>;
   if (error) return <StateBlock title="净值走势加载失败" tone="error">本地暂无净值历史，请先刷新基金数据。</StateBlock>;
+  if (!data) return <StateBlock title="暂无净值走势">本地在 {period} 区间内无可用净值历史。</StateBlock>;
 
-  const points = (data!.navs ?? []).map((p) => ({
+  const points = (data.navs ?? []).map((p) => ({
     date: p.nav_date,
     nav: p.accumulated_nav,
   }));

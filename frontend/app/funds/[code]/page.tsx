@@ -6,7 +6,7 @@ import Link from "next/link";
 import { ArrowLeft, DownloadCloud, GitCompareArrows, MessageSquareText, Plus, Star } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { NavChart, PERIODS } from "@/components/NavChart";
+import { NavChart, PERIODS, periodToStart } from "@/components/NavChart";
 import { MetricCards } from "@/components/MetricCard";
 import { PageHeader, SectionHeader } from "@/components/PageHeader";
 import { HoldingCard } from "@/components/HoldingCard";
@@ -30,17 +30,19 @@ export default function FundDetail({ params }: { params: { code: string } }) {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const toast = useToast();
   const qc = useQueryClient();
+  const start = periodToStart(period);
 
-  const fund = useQuery({ queryKey: ["fund", code], queryFn: () => api.fund(code) });
-  const nav = useQuery({ queryKey: ["nav", code], queryFn: () => api.nav(code) });
-  const metrics = useQuery({
-    queryKey: ["metrics", code, period], queryFn: () => api.metrics(code, period),
+  const summary = useQuery({
+    queryKey: ["fundSummary", code, period, start],
+    queryFn: () => api.fundSummary(code, period, start),
   });
-  // 直接读 ["watchlist"] 缓存,详情页就能立刻判断该基金是否在池中;
-  // 若缓存为空就拉一次。
-  const watchlistQuery = useQuery({ queryKey: ["watchlist"], queryFn: api.watchlist });
-  const inWatchlist = (watchlistQuery.data ?? []).find((r) => r.fund_code === code);
-  const fundName = fund.data?.fund_name ?? code;
+  const summaryData = summary.data;
+  const errors = summaryData?.errors ?? {};
+  const fundData = summaryData?.fund ?? null;
+  const latestNav = summaryData?.latest_nav ?? null;
+  const metricsData = summaryData?.metrics ?? null;
+  const inWatchlist = summaryData?.watchlist ?? null;
+  const fundName = fundData?.fund_name ?? code;
 
   // 当本地无 Fund 数据时,提供"立即拉取"按钮 —— 用户从自选池进来
   // 但还没 refresh_fund 过,详情页会 404。点按钮调 POST /api/funds/{code}/refresh,
@@ -48,6 +50,7 @@ export default function FundDetail({ params }: { params: { code: string } }) {
   const refreshFund = useMutation({
     mutationFn: () => api.refreshFund(code),
     onSuccess: (res) => {
+      qc.invalidateQueries({ queryKey: ["fundSummary", code] });
       qc.invalidateQueries({ queryKey: ["fund", code] });
       qc.invalidateQueries({ queryKey: ["nav", code] });
       qc.invalidateQueries({ queryKey: ["navHistory", code] });
@@ -81,6 +84,7 @@ export default function FundDetail({ params }: { params: { code: string } }) {
       // fund / nav / navHistory / metrics / portfolioPnl 缓存必须一并
       // 失效 —— 后端 `remove_from_watchlist` 已经级联删 Fund 和 FundNav,
       // 详情页留在 React Query 里的旧数据会显示"幽灵信息"。
+      qc.invalidateQueries({ queryKey: ["fundSummary", code] });
       qc.invalidateQueries({ queryKey: ["watchlist"] });
       qc.invalidateQueries({ queryKey: ["fund", code] });
       qc.invalidateQueries({ queryKey: ["nav", code] });
@@ -144,9 +148,9 @@ export default function FundDetail({ params }: { params: { code: string } }) {
             <CardTitle className="text-base">基础信息</CardTitle>
           </CardHeader>
           <CardContent>
-            {fund.isLoading ? (
+            {summary.isLoading ? (
               <StateBlock title="加载基金信息" tone="loading">正在读取本地基金基础资料。</StateBlock>
-            ) : fund.error ? (
+            ) : summary.error || errors.fund ? (
               <div className="space-y-3">
                 <StateBlock title="本地暂无该基金数据" tone="error">
                   <span>
@@ -165,11 +169,11 @@ export default function FundDetail({ params }: { params: { code: string } }) {
               </div>
             ) : (
               <dl className="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
-                <InfoItem label="基金类型">{fund.data?.fund_type ?? "--"}</InfoItem>
-                <InfoItem label="基金经理">{fund.data?.manager ?? "--"}</InfoItem>
-                <InfoItem label="管理人">{fund.data?.company ?? "--"}</InfoItem>
+                <InfoItem label="基金类型">{fundData?.fund_type ?? "--"}</InfoItem>
+                <InfoItem label="基金经理">{fundData?.manager ?? "--"}</InfoItem>
+                <InfoItem label="管理人">{fundData?.company ?? "--"}</InfoItem>
                 <InfoItem label="来源">
-                  {fund.data?.source ?? "--"} · {formatDate(fund.data?.as_of)}
+                  {fundData?.source ?? "--"} · {formatDate(fundData?.as_of)}
                 </InfoItem>
               </dl>
             )}
@@ -180,21 +184,21 @@ export default function FundDetail({ params }: { params: { code: string } }) {
           <CardHeader>
             <div>
               <CardTitle className="text-base">最新净值</CardTitle>
-              <p className="mt-1 text-xs text-gray-500">{formatDate(nav.data?.nav_date)}</p>
+              <p className="mt-1 text-xs text-gray-500">{formatDate(latestNav?.nav_date)}</p>
             </div>
           </CardHeader>
           <CardContent>
-            {nav.isLoading ? (
+            {summary.isLoading ? (
               <StateBlock title="加载最新净值" tone="loading">正在读取最新净值。</StateBlock>
-            ) : nav.error ? (
+            ) : summary.error || errors.latest_nav ? (
               <StateBlock title="最新净值加载失败" tone="error">本地没有该基金最新净值。</StateBlock>
             ) : (
               <div className="space-y-4">
                 <div className="text-4xl font-semibold tracking-tight text-gray-950">
-                  {formatNav(nav.data?.accumulated_nav)}
+                  {formatNav(latestNav?.accumulated_nav)}
                 </div>
                 <div className="rounded-lg bg-gray-50 p-3 text-xs leading-5 text-gray-500">
-                  来源 {nav.data?.source ?? "--"} · 数据日期 {formatDate(nav.data?.nav_date)}
+                  来源 {latestNav?.source ?? "--"} · 数据日期 {formatDate(latestNav?.nav_date)}
                 </div>
               </div>
             )}
@@ -202,11 +206,23 @@ export default function FundDetail({ params }: { params: { code: string } }) {
         </Card>
       </section>
 
-      <HoldingCard fundCode={code} />
+      <HoldingCard
+        fundCode={code}
+        pnlError={summary.error}
+        pnlItem={summaryData?.pnl_item}
+        pnlLoading={summary.isLoading}
+        pnlSkipped={summaryData?.pnl_skipped}
+      />
 
       <section>
         <SectionHeader title="净值走势" description="累计净值历史曲线，按本地数据可用范围绘制。" />
-        <NavChart code={code} period={period} />
+        <NavChart
+          code={code}
+          navError={summary.error ?? errors.nav_history}
+          navHistory={summaryData?.nav_history}
+          navLoading={summary.isLoading}
+          period={period}
+        />
       </section>
 
       <section>
@@ -228,26 +244,26 @@ export default function FundDetail({ params }: { params: { code: string } }) {
             </div>
           }
         />
-        {metrics.isLoading ? (
+        {summary.isLoading ? (
           <StateBlock title="计算阶段指标" tone="loading">正在读取并计算 {PERIOD_LABELS[period]} 指标。</StateBlock>
-        ) : metrics.error ? (
-          <StateBlock title="阶段指标加载失败" tone="error">{String(metrics.error)}</StateBlock>
+        ) : summary.error || errors.metrics ? (
+          <StateBlock title="阶段指标加载失败" tone="error">{String(summary.error ?? errors.metrics)}</StateBlock>
         ) : (
           <div className="space-y-3">
             <MetricCards items={[
-              { label: `${PERIOD_LABELS[period]}收益`, value: formatPct(metrics.data?.period_return) },
-              { label: "累计收益", value: formatPct(metrics.data?.cumulative_return) },
-              { label: "最大回撤", value: formatPct(metrics.data?.max_drawdown) },
+              { label: `${PERIOD_LABELS[period]}收益`, value: formatPct(metricsData?.period_return) },
+              { label: "累计收益", value: formatPct(metricsData?.cumulative_return) },
+              { label: "最大回撤", value: formatPct(metricsData?.max_drawdown) },
               {
                 label: "波动率",
                 value:
-                  metrics.data?.volatility === null || metrics.data?.volatility === undefined
+                  metricsData?.volatility === null || metricsData?.volatility === undefined
                     ? "--"
-                    : `${(metrics.data.volatility * 100).toFixed(2)}%`,
+                    : `${(metricsData.volatility * 100).toFixed(2)}%`,
               },
             ]} />
             <p className="text-xs text-gray-500">
-              来源 {metrics.data?.source ?? "--"} · as_of {formatDate(metrics.data?.as_of)}
+              来源 {metricsData?.source ?? "--"} · as_of {formatDate(metricsData?.as_of)}
             </p>
           </div>
         )}
@@ -255,7 +271,10 @@ export default function FundDetail({ params }: { params: { code: string } }) {
 
       <WatchlistDrawer
         onClose={() => setDrawerOpen(false)}
-        onSaved={() => qc.invalidateQueries({ queryKey: ["watchlist"] })}
+        onSaved={() => {
+          qc.invalidateQueries({ queryKey: ["fundSummary", code] });
+          qc.invalidateQueries({ queryKey: ["watchlist"] });
+        }}
         open={drawerOpen}
         prefillFundCode={code}
       />

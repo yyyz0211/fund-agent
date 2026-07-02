@@ -20,6 +20,8 @@ dist/
 
 # Data & secrets
 *.db
+*.db-shm
+*.db-wal
 backend/data/fund_agent.db
 backend/data/raw_docs/
 backend/data/vector_store/
