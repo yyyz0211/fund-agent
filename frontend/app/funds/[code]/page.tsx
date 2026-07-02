@@ -17,6 +17,7 @@ import { api } from "@/lib/api";
 import { formatPct, formatNav, formatDate } from "@/lib/format";
 import {
   periodDailyReturnRows,
+  summarizePeriodReturns,
   type NavDailyReturnPoint,
 } from "@/lib/nav-daily-return";
 
@@ -227,18 +228,20 @@ export default function FundDetail({ params }: { params: { code: string } }) {
 
       <section>
         <SectionHeader title="净值走势" description="累计净值历史曲线，按本地数据可用范围绘制。" />
-        <NavChart
-          code={code}
-          navError={summary.error ?? errors.nav_history}
-          navHistory={summaryData?.nav_history}
-          navLoading={summary.isLoading}
-          period={period}
-        />
-        <RecentDailyReturns
-          endDate={dailyReturnRows[0]?.date ?? null}
-          periodStart={start}
-          rows={dailyReturnRows}
-        />
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.7fr_1fr]">
+          <NavChart
+            code={code}
+            navError={summary.error ?? errors.nav_history}
+            navHistory={summaryData?.nav_history}
+            navLoading={summary.isLoading}
+            period={period}
+          />
+          <RecentDailyReturns
+            endDate={dailyReturnRows[0]?.date ?? null}
+            periodStart={start}
+            rows={dailyReturnRows}
+          />
+        </div>
       </section>
 
       <section>
@@ -317,41 +320,86 @@ function RecentDailyReturns({
   endDate: string | null;
 }) {
   if (rows.length === 0) return null;
+  const summary = summarizePeriodReturns(rows);
+
   const caption =
     endDate && periodStart
       ? `${formatDate(periodStart)} ~ ${formatDate(endDate)}`
       : endDate
         ? `截至 ${formatDate(endDate)}`
         : formatDate(periodStart);
+
+  const streakLabel =
+    summary.currentStreak &&
+    `${summary.currentStreak.kind === "up" ? "连涨" : summary.currentStreak.kind === "down" ? "连跌" : "走平"}${summary.currentStreak.length}天`;
+
   return (
-    <div className="mt-3 overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
-      <div className="flex items-center justify-between border-b border-gray-100 px-4 py-2 text-xs">
+    <div className="flex h-full flex-col overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
+      {/* Header */}
+      <div className="flex shrink-0 items-center justify-between border-b border-gray-100 px-3 py-2 text-[11px]">
         <span className="font-medium text-gray-700">区间涨跌（{rows.length} 条）</span>
         <span className="text-gray-500">{caption}</span>
       </div>
-      <div className="max-h-96 overflow-y-auto">
-        <div className="sticky top-0 grid grid-cols-3 gap-3 border-b border-gray-100 bg-white px-4 py-1.5 text-[11px] font-medium uppercase tracking-wide text-gray-500">
+
+      {/* Summary KPIs */}
+      <div className="grid shrink-0 grid-cols-2 gap-px border-b border-gray-100 bg-gray-100">
+        <KpiCell
+          label={streakLabel ?? "暂无连涨/跌"}
+          value={streakLabel ? (summary.currentStreak!.kind === "up" ? "↑" : summary.currentStreak!.kind === "down" ? "↓" : "—") : ""}
+          valueColor={summary.currentStreak?.kind === "up" ? "text-red-600" : summary.currentStreak?.kind === "down" ? "text-green-600" : "text-gray-400"}
+        />
+        <KpiCell
+          label={summary.bestDay ? `${formatDate(summary.bestDay.date)}` : "最大单日涨幅"}
+          value={formatPct(summary.bestDay?.dailyReturn)}
+          valueColor="text-red-600"
+        />
+        <KpiCell
+          label={summary.worstDay ? `${formatDate(summary.worstDay.date)}` : "最大单日跌幅"}
+          value={formatPct(summary.worstDay?.dailyReturn)}
+          valueColor="text-green-600"
+        />
+        <KpiCell
+          label="累计净值涨跌"
+          value={formatPct(summary.navChange)}
+          valueColor={summary.navChange !== null && summary.navChange > 0 ? "text-red-600" : summary.navChange !== null && summary.navChange < 0 ? "text-green-600" : "text-gray-600"}
+        />
+      </div>
+
+      {/* Scrollable table */}
+      <div className="max-h-[300px] flex-1 overflow-y-auto">
+        <div className="grid grid-cols-[1fr_auto] gap-x-2 border-b border-gray-100 bg-white px-3 py-1.5 text-[10px] font-medium uppercase tracking-wide text-gray-400 sticky top-0">
           <span>日期</span>
-          <span className="text-right">累计净值</span>
           <span className="text-right">日涨跌</span>
         </div>
-        <div className="divide-y divide-gray-100">
-          {rows.map((row) => (
-            <div
-              className="grid grid-cols-3 items-center gap-3 px-4 py-2 text-xs"
-              key={row.date}
-            >
-              <span className="text-gray-600">{formatDate(row.date)}</span>
-              <span className="text-right font-medium text-gray-900">
-                {formatNav(row.nav)}
-              </span>
-              <span className={`justify-self-end ${trendBadgeClass(row.dailyReturn)}`}>
-                {formatPct(row.dailyReturn)}
-              </span>
-            </div>
-          ))}
-        </div>
+        {rows.map((row) => (
+          <div
+            className="grid grid-cols-[1fr_auto] items-center gap-x-2 border-b border-gray-50 px-3 py-1.5 text-[11px]"
+            key={row.date}
+          >
+            <span className="text-gray-500">{formatDate(row.date)}</span>
+            <span className={`${trendBadgeClass(row.dailyReturn)} whitespace-nowrap`}>
+              {formatPct(row.dailyReturn)}
+            </span>
+          </div>
+        ))}
       </div>
+    </div>
+  );
+}
+
+function KpiCell({
+  label,
+  value,
+  valueColor = "text-gray-900",
+}: {
+  label: string;
+  value: string;
+  valueColor?: string;
+}) {
+  return (
+    <div className="flex items-center justify-between bg-white px-3 py-2">
+      <span className="text-[10px] text-gray-500">{label}</span>
+      <span className={`text-xs font-semibold tabular-nums ${valueColor}`}>{value}</span>
     </div>
   );
 }
