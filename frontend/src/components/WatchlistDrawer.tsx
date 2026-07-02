@@ -15,6 +15,7 @@ import {
   isSixDigitFundCode,
   type AutoTransactionDraft,
 } from "@/lib/auto-transaction";
+import { shouldUseInitialHoldingEndpoint } from "@/lib/watchlist-guards";
 import type {
   FundTransaction, NavPoint, TransactionUpsertPayload,
   WatchlistPatchPayload, WatchlistRow, WatchlistUpsertPayload,
@@ -111,7 +112,13 @@ export function WatchlistDrawer({
   const showTxTab = mode === "edit" && row != null && row.is_holding;
   const fundCodeForTx = row?.fund_code ?? "";
   const currentFundCode = mode === "edit" ? fundCodeForTx : form.fund_code.trim();
-  const needsInitialHolding = form.is_holding && (mode === "add" || row?.is_holding === false);
+  const needsInitialHolding = shouldUseInitialHoldingEndpoint({
+    mode,
+    formIsHolding: form.is_holding,
+    rowIsHolding: row?.is_holding,
+    rowTransactionCount: row?.transaction_count,
+  });
+  const isAlreadyHolding = mode === "edit" && row?.is_holding === true;
   const shouldLoadLatestNav = open && isSixDigitFundCode(currentFundCode) && (
     needsInitialHolding ||
     (showTxTab && activeTab === "transactions" && txFormOpen)
@@ -352,7 +359,12 @@ export function WatchlistDrawer({
                 <div className="grid grid-cols-2 gap-3">
                   <CheckboxField
                     checked={form.is_holding}
-                    hint="标记为已持有"
+                    disabled={isAlreadyHolding}
+                    hint={
+                      isAlreadyHolding
+                        ? "已持仓,请用『加仓记录』tab 追加交易"
+                        : "标记为已持有"
+                    }
                     label="持仓"
                     onChange={(v) => setField("is_holding", v)}
                   />
@@ -363,6 +375,13 @@ export function WatchlistDrawer({
                     onChange={(v) => setField("is_focus", v)}
                   />
                 </div>
+
+                {isAlreadyHolding && (row?.transaction_count ?? 0) > 0 && (
+                  <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                    该基金已有 {row?.transaction_count} 笔交易记录,无法再走"初始建仓"路径;
+                    请切到"加仓记录"tab 继续追加。
+                  </p>
+                )}
 
                 {needsInitialHolding && (
                   <>
@@ -722,13 +741,27 @@ function TransactionsTab({
 }
 
 function CheckboxField({
-  checked, onChange, label, hint,
-}: { checked: boolean; onChange: (v: boolean) => void; label: string; hint?: string }) {
+  checked, onChange, label, hint, disabled,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  label: string;
+  hint?: string;
+  disabled?: boolean;
+}) {
   return (
-    <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-gray-200 bg-white p-2.5 shadow-sm hover:bg-gray-50">
+    <label
+      className={cn(
+        "flex items-start gap-2 rounded-lg border border-gray-200 bg-white p-2.5 shadow-sm",
+        disabled
+          ? "cursor-not-allowed opacity-60"
+          : "cursor-pointer hover:bg-gray-50",
+      )}
+    >
       <input
         checked={checked}
-        className="mt-0.5 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-200"
+        className="mt-0.5 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-200 disabled:cursor-not-allowed"
+        disabled={disabled}
         onChange={(e) => onChange(e.target.checked)}
         type="checkbox"
       />
