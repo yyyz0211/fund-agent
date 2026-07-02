@@ -8,7 +8,8 @@ service 既可以传入测试用的内存 Session,也可以传通过
 - "upsert" 指 insert-if-missing, update-if-present,一次事务搞定。
 - 凡是返回行的函数,返回的都是纯 `dict`(而不是 ORM 实例),
   这样调用方可以直接 JSON 序列化。
-- 写路径都在内部自己 `session.commit()`,调用方不要重复提交。
+- 写路径默认在内部自己 `session.commit()`,调用方不要重复提交;少数需要
+  原子组合的 service 会显式传 `commit=False` 并自行控制事务。
 """
 from sqlalchemy import delete, func, select
 
@@ -246,7 +247,7 @@ def next_tx_seq(session, fund_code: str, tx_date: str) -> int:
     return int(current) + 1
 
 
-def add_transaction(session, fund_code: str, attrs: dict) -> dict:
+def add_transaction(session, fund_code: str, attrs: dict, *, commit: bool = True) -> dict:
     """插入一笔交易并返回序列化结果。
 
     `attrs` 允许的字段:`tx_date`、`amount`、`nav`、`fee`、`note`、
@@ -269,7 +270,11 @@ def add_transaction(session, fund_code: str, attrs: dict) -> dict:
         note=attrs.get("note"),
     )
     session.add(tx)
-    session.commit()
+    if commit:
+        session.commit()
+    else:
+        session.flush()
+        session.refresh(tx)
     return _tx_to_dict(tx)
 
 

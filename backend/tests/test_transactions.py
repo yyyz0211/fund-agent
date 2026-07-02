@@ -16,7 +16,7 @@ from backend.api.app import app
 from backend.db import repository as repo
 from backend.db import session as db_session
 from backend.db.init_db import init_db
-from backend.db.models import FundTransaction
+from backend.db.models import FundTransaction, Watchlist
 from backend.services import transaction_service as ts
 from backend.services import watchlist_service as ws
 
@@ -188,6 +188,102 @@ class TestListEndpoint:
         by_code = {row["fund_code"]: row for row in body}
         assert by_code["110011"]["transaction_count"] == 2
         assert by_code["000001"]["transaction_count"] == 0
+
+
+class TestInitialHoldingApi:
+    def test_initial_holding_creates_watchlist_transaction_and_recalc(self, session):
+        r = client.post("/api/watchlist/110011/initial-holding", json={
+            "tx_date": "2026-03-01",
+            "amount": 1000.0,
+            "nav": 2.0,
+            "fee": 1.0,
+            "note": "first buy",
+            "is_focus": True,
+            "watchlist_note": "core fund",
+        })
+
+        assert r.status_code == 200, r.text
+        body = r.json()
+        tx = body["transaction"]
+        assert tx["amount"] == pytest.approx(1000.0)
+        assert tx["nav"] == pytest.approx(2.0)
+        assert tx["share"] == pytest.approx(500.0)
+        assert tx["fee"] == pytest.approx(1.0)
+        assert tx["note"] == "first buy"
+
+        wl = body["watchlist"]
+        assert wl["fund_code"] == "110011"
+        assert wl["is_holding"] is True
+        assert wl["is_focus"] is True
+        assert wl["note"] == "core fund"
+        assert wl["holding_share"] == pytest.approx(500.0)
+        assert wl["cost_nav"] == pytest.approx(2.0)
+        assert wl["holding_amount"] == pytest.approx(1000.0)
+        assert wl["buy_date"] == "2026-03-01"
+        assert wl["cost_nav_basis"] == "transactions"
+        assert repo.count_transactions(session, "110011") == 1
+
+    def test_initial_holding_converts_existing_watchlist_without_duplicate_row(self, session):
+        repo.add_to_watchlist_full(session, "110011", {
+            "is_focus": True,
+            "note": "old note",
+        })
+
+        r = client.post("/api/watchlist/110011/initial-holding", json={
+            "tx_date": "2026-04-01",
+            "amount": 1200.0,
+            "nav": 3.0,
+            "is_focus": False,
+            "watchlist_note": "converted",
+        })
+
+        assert r.status_code == 200, r.text
+        assert session.scalar(
+            select(func.count()).select_from(Watchlist)
+        ) == 1
+        wl = r.json()["watchlist"]
+        assert wl["is_holding"] is True
+        assert wl["is_focus"] is False
+        assert wl["note"] == "converted"
+        assert wl["holding_share"] == pytest.approx(400.0)
+        assert wl["cost_nav"] == pytest.approx(3.0)
+        assert repo.count_transactions(session, "110011") == 1
+
+    def test_initial_holding_rolls_back_when_recalc_fails(self, session, monkeypatch):
+        def _fail_recalc(*args, **kwargs):
+            raise RuntimeError("recalc failed")
+
+        monkeypatch.setattr(ws, "_recalc", _fail_recalc)
+
+        with pytest.raises(RuntimeError, match="recalc failed"):
+            ws.set_initial_holding("110011", {
+                "tx_date": "2026-05-01",
+                "amount": 1000.0,
+                "nav": 2.0,
+            }, session=session)
+
+        assert session.scalar(
+            select(func.count())
+            .select_from(Watchlist)
+            .where(Watchlist.fund_code == "110011")
+        ) == 0
+        assert session.scalar(
+            select(func.count())
+            .select_from(FundTransaction)
+            .where(FundTransaction.fund_code == "110011")
+        ) == 0
+
+    def test_initial_holding_rejects_unsupported_kind_without_writes(self, session):
+        r = client.post("/api/watchlist/110011/initial-holding", json={
+            "tx_date": "2026-03-01",
+            "amount": 1000.0,
+            "nav": 2.0,
+            "kind": "sell",
+        })
+
+        assert r.status_code == 422
+        assert session.scalar(select(func.count()).select_from(Watchlist)) == 0
+        assert session.scalar(select(func.count()).select_from(FundTransaction)) == 0
 
 
 class TestTransactionApi:

@@ -49,6 +49,17 @@ class TransactionUpsert(BaseModel):
         return v
 
 
+class InitialHoldingUpsert(TransactionUpsert):
+    """POST /api/watchlist/{code}/initial-holding 入参。
+
+    在一笔请求里完成创建/转持仓和首笔 buy 交易;`watchlist_note` 写入
+    自选行备注,`note` 写入交易备注。
+    """
+
+    is_focus: Optional[bool] = None
+    watchlist_note: Optional[str] = Field(default=None, max_length=2000)
+
+
 class TransactionDeleteResponse(BaseModel):
     """DELETE 响应 —— 顺手把 recalc 后的 watchlist 也回传,前端无需
     额外再发一次 PnL 请求即可更新持仓卡。"""
@@ -67,6 +78,13 @@ def _tx_payload(payload: TransactionUpsert) -> dict:
         "note": payload.note,
         "kind": payload.kind or "buy",
     }
+
+
+def _initial_holding_payload(payload: InitialHoldingUpsert) -> dict:
+    data = _tx_payload(payload)
+    data["is_focus"] = payload.is_focus
+    data["watchlist_note"] = payload.watchlist_note
+    return data
 
 
 @router.get("/{fund_code}/transactions")
@@ -89,6 +107,17 @@ def add_transaction(fund_code: str, payload: TransactionUpsert) -> dict:
     if result is None:
         raise HTTPException(status_code=404, detail=f"{fund_code} 不在自选池中")
     return result
+
+
+@router.post("/{fund_code}/initial-holding", status_code=200)
+def set_initial_holding(fund_code: str, payload: InitialHoldingUpsert) -> dict:
+    """原子化创建/转持仓 + 首笔 buy 交易 + recalc。"""
+    if payload.amount == 0 or payload.nav == 0:
+        raise HTTPException(
+            status_code=422,
+            detail="amount 和 nav 必须都大于 0,否则无法反算份额",
+        )
+    return ws.set_initial_holding(fund_code, _initial_holding_payload(payload))
 
 
 @router.delete("/{fund_code}/transactions/{tx_id}")

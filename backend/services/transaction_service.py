@@ -32,7 +32,7 @@ def _round6(x: float) -> float:
     return float(Decimal(str(x)).quantize(_Q, rounding=ROUND_HALF_UP))
 
 
-def recalc_holding(fund_code: str, session=None) -> dict | None:
+def recalc_holding(fund_code: str, session=None, *, commit: bool = True) -> dict | None:
     """从 FundTransaction 表重算并回写 Watchlist.holding_share/cost_nav。
 
     行为:
@@ -64,7 +64,8 @@ def recalc_holding(fund_code: str, session=None) -> dict | None:
                 w.holding_amount = None
             elif w.cost_nav_basis is None:
                 w.cost_nav_basis = "legacy"
-            s.commit()
+            if commit:
+                s.commit()
             return repo.get_watchlist_row(s, fund_code)
 
         # 初始仓位: 已被交易表接管 → 直接从交易表算,不与已经
@@ -103,7 +104,8 @@ def recalc_holding(fund_code: str, session=None) -> dict | None:
         # 首次建仓日期 = 最早一笔 buy 的日期(若还没有 buy_date)
         if not w.buy_date and txs:
             w.buy_date = txs[0]["tx_date"]
-        s.commit()
+        if commit:
+            s.commit()
         return repo.get_watchlist_row(s, fund_code)
     finally:
         if owns:

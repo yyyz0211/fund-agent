@@ -3,8 +3,11 @@
 对 repository 的自选池 CRUD 做一层 session 管理封装，使 watchlist 工具
 保持薄包装。自选池是本地用户数据，返回不带 source/as_of。
 """
+from sqlalchemy import select
+
 from backend.db.session import get_session
 from backend.db import repository as repo
+from backend.db.models import Watchlist
 
 
 def _with_session(session):
@@ -136,6 +139,50 @@ def add_transaction(fund_code: str, attrs: dict, session=None) -> dict | None:
             s.close()
 
 
+def set_initial_holding(fund_code: str, attrs: dict, session=None) -> dict:
+    """原子化创建/转持仓:自选行 + 首笔 buy 交易 + 持仓重算。
+
+    返回 {"transaction": <新交易 dict>, "watchlist": <重算后的行>}。
+    任何一步失败都会 rollback,不会留下 is_holding=true 但无交易/成本的
+    半成品状态。
+    """
+    s = _with_session(session)
+    owns = session is None
+    data = attrs or {}
+    try:
+        w = s.scalar(select(Watchlist).where(Watchlist.fund_code == fund_code))
+        if w is None:
+            w = Watchlist(fund_code=fund_code)
+            s.add(w)
+            s.flush()
+
+        w.is_holding = True
+        if data.get("is_focus") is not None:
+            w.is_focus = bool(data["is_focus"])
+        if data.get("watchlist_note") is not None:
+            w.note = data["watchlist_note"]
+        if data.get("amount") is not None:
+            w.holding_amount = float(data["amount"])
+
+        tx = repo.add_transaction(s, fund_code, {
+            "tx_date": data["tx_date"],
+            "amount": data["amount"],
+            "nav": data["nav"],
+            "fee": data.get("fee"),
+            "note": data.get("note"),
+            "kind": data.get("kind", "buy"),
+        }, commit=False)
+        wl = _recalc(s, fund_code, commit=False)
+        s.commit()
+        return {"transaction": tx, "watchlist": wl}
+    except Exception:
+        s.rollback()
+        raise
+    finally:
+        if owns:
+            s.close()
+
+
 def remove_transaction(fund_code: str, tx_id: int, session=None) -> dict | None:
     """按 `tx_id` 删除一笔交易,删除后用剩余交易重算并回写 Watchlist。
 
@@ -159,7 +206,7 @@ def remove_transaction(fund_code: str, tx_id: int, session=None) -> dict | None:
             s.close()
 
 
-def _recalc(s, fund_code: str) -> dict | None:
+def _recalc(s, fund_code: str, *, commit: bool = True) -> dict | None:
     """薄包装:在当前 session 上调 transaction_service.recalc_holding。"""
     from backend.services.transaction_service import recalc_holding
-    return recalc_holding(fund_code, session=s)
+    return recalc_holding(fund_code, session=s, commit=commit)
