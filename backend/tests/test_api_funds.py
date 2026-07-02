@@ -110,6 +110,7 @@ class TestFundSummaryEndpoint:
         body = r.json()
         assert body["fund"]["fund_name"] == "FundA"
         assert body["latest_nav"]["nav_date"] == "2026-06-30"
+        assert body["latest_nav"]["daily_return"] == pytest.approx(0.01)
         assert body["metrics"]["fund_code"] == "110011"
         assert body["nav_history"]["count"] == 2
         assert body["watchlist"]["fund_code"] == "110011"

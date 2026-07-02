@@ -6,7 +6,8 @@ import {
 } from "recharts";
 import { StateBlock } from "@/components/StateBlock";
 import { api } from "@/lib/api";
-import { formatNav } from "@/lib/format";
+import { formatNav, formatPct } from "@/lib/format";
+import { toNavChartPoints, type NavDailyReturnPoint } from "@/lib/nav-daily-return";
 import type { NavHistory } from "@/types/api";
 
 /** Convert period shorthand to a cutoff date string (YYYY-MM-DD). */
@@ -54,10 +55,7 @@ export function NavChart({
   if (error) return <StateBlock title="净值走势加载失败" tone="error">本地暂无净值历史，请先刷新基金数据。</StateBlock>;
   if (!data) return <StateBlock title="暂无净值走势">本地在 {period} 区间内无可用净值历史。</StateBlock>;
 
-  const points = (data.navs ?? []).map((p) => ({
-    date: p.nav_date,
-    nav: p.accumulated_nav,
-  }));
+  const points = toNavChartPoints(data);
 
   if (points.length === 0) {
     return <StateBlock title="暂无净值走势">本地在 {period} 区间内无可用净值历史。</StateBlock>;
@@ -77,13 +75,45 @@ export function NavChart({
             width={48}
           />
           <Tooltip
-            contentStyle={{ borderColor: "#e5e7eb", borderRadius: 8, boxShadow: "0 8px 24px rgb(15 23 42 / 0.08)" }}
-            formatter={(value) => [formatNav(Number(value)), "累计净值"]}
-            labelFormatter={(label) => `日期 ${label}`}
+            content={<NavTooltip />}
           />
           <Line type="monotone" dataKey="nav" stroke="#2563eb" strokeWidth={2} dot={false} />
         </LineChart>
       </ResponsiveContainer>
     </div>
   );
+}
+
+function NavTooltip({
+  active,
+  payload,
+}: {
+  active?: boolean;
+  payload?: { payload?: NavDailyReturnPoint }[];
+}) {
+  if (!active) return null;
+  const point = payload?.[0]?.payload;
+  if (!point) return null;
+  return (
+    <div className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs shadow-lg">
+      <div className="font-medium text-gray-900">日期 {point.date}</div>
+      <div className="mt-1 flex items-center justify-between gap-6 text-gray-600">
+        <span>累计净值</span>
+        <span className="font-medium text-gray-900">{formatNav(point.nav)}</span>
+      </div>
+      <div className="mt-1 flex items-center justify-between gap-6 text-gray-600">
+        <span>日涨跌</span>
+        <span className={trendTextClass(point.dailyReturn)}>
+          {formatPct(point.dailyReturn)}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function trendTextClass(value: number | null | undefined) {
+  if (value === null || value === undefined) return "font-medium text-gray-600";
+  if (value > 0) return "font-medium text-red-600";
+  if (value < 0) return "font-medium text-green-600";
+  return "font-medium text-gray-600";
 }

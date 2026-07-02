@@ -12,6 +12,7 @@ export interface NavPoint {
   fund_code: string;
   nav_date: string;
   accumulated_nav: number | null;
+  daily_return: number | null;
   source: string;
   as_of: string;
 }

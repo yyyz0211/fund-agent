@@ -111,6 +111,7 @@ def get_latest_nav(fund_code: str, session=None) -> dict:
                     "source": dc.SOURCE}
         return {"fund_code": fund_code, "nav_date": row.nav_date,
                 "accumulated_nav": row.accumulated_nav,
+                "daily_return": row.daily_return,
                 "source": row.source or dc.SOURCE, "as_of": row.source_updated_at}
     finally:
         if owns:

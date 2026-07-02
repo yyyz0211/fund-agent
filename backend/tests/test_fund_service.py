@@ -38,6 +38,7 @@ def test_refresh_then_latest_and_metrics(session, monkeypatch):
 
     latest = fs.get_latest_nav("110011", session=session)
     assert latest["accumulated_nav"] == pytest.approx(1.10)
+    assert latest["daily_return"] == pytest.approx(0.0)
     assert latest["source"] == "akshare"
 
     m = fs.get_metrics("110011", period="1w", session=session)
