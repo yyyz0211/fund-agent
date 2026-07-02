@@ -16,6 +16,7 @@ from typing import Literal, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from backend.services import watchlist_preload_jobs as preload_jobs
 from backend.services import watchlist_service as ws
 
 router = APIRouter(prefix="/api/watchlist", tags=["watchlist"])
@@ -118,7 +119,12 @@ def set_initial_holding(fund_code: str, payload: InitialHoldingUpsert) -> dict:
             detail="amount 和 nav 必须都大于 0,否则无法反算份额",
         )
     try:
-        return ws.set_initial_holding(fund_code, _initial_holding_payload(payload))
+        result = ws.set_initial_holding(fund_code, _initial_holding_payload(payload))
+        job = preload_jobs.start_preload_job(fund_code)
+        if job:
+            result["preload_job"] = job
+            result["watchlist"]["preload_status"] = job.get("status")
+        return result
     except ws.InitialHoldingConflict as e:
         raise HTTPException(
             status_code=409,
@@ -141,6 +147,12 @@ def delete_transaction(fund_code: str, tx_id: int) -> dict:
             detail=f"transaction {tx_id} 不属于 {fund_code}",
         )
     return result
+
+
+@router.get("/{fund_code}/preload/{job_id}")
+def get_preload_job(fund_code: str, job_id: str) -> dict:
+    """查询自选池新增后的后台数据预热任务。"""
+    return preload_jobs.get_preload_job(fund_code, job_id)
 
 
 class WatchlistUpsert(BaseModel):
@@ -281,7 +293,14 @@ def _daily_pnl_abs(
 @router.post("", status_code=200)
 def add_watchlist(payload: WatchlistUpsert) -> dict:
     """幂等添加。已存在的 fund_code 直接返回现有行,不会用 payload 覆盖。"""
-    return ws.add_full(payload.fund_code, _add_payload(payload))
+    existing = ws.get_one(payload.fund_code)
+    row = ws.add_full(payload.fund_code, _add_payload(payload))
+    if existing is None:
+        job = preload_jobs.start_preload_job(payload.fund_code)
+        if job:
+            row["preload_job"] = job
+            row["preload_status"] = job.get("status")
+    return row
 
 
 @router.patch("/{fund_code}")

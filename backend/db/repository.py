@@ -31,6 +31,7 @@ def _watchlist_to_dict(w: Watchlist) -> dict:
         "holding_share": w.holding_share,
         "cost_nav": w.cost_nav,
         "buy_date": w.buy_date,
+        "preload_status": w.preload_status,
         "note": w.note,
         "cost_nav_basis": w.cost_nav_basis,
         "created_at": w.created_at.isoformat() if w.created_at else None,
@@ -166,6 +167,21 @@ def update_watchlist(session, fund_code: str, patch: dict) -> dict | None:
     for k, v in _patch_to_set(patch).items():
         setattr(w, k, v)
     session.commit()
+    return _watchlist_to_dict(w)
+
+
+def update_watchlist_preload(session, fund_code: str, *,
+                             status: str | None = None,
+                             commit: bool = True) -> dict | None:
+    """后台预热任务专用更新入口。
+    """
+    w = session.scalar(select(Watchlist).where(Watchlist.fund_code == fund_code))
+    if not w:
+        return None
+    if status is not None:
+        w.preload_status = status
+    if commit:
+        session.commit()
     return _watchlist_to_dict(w)
 
 

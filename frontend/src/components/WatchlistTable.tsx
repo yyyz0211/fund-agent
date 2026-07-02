@@ -176,6 +176,11 @@ function TypeBadges({ row }: { row: WatchlistRow }) {
   const badges: { label: string; cls: string }[] = [];
   if (row.is_holding) badges.push({ label: "持仓", cls: "bg-green-50 text-green-700 ring-green-200" });
   if (row.is_focus) badges.push({ label: "关注", cls: "bg-blue-50 text-blue-700 ring-blue-200" });
+  if (row.preload_status === "pending" || row.preload_status === "running") {
+    badges.push({ label: "同步中", cls: "bg-amber-50 text-amber-700 ring-amber-200" });
+  } else if (row.preload_status === "partial" || row.preload_status === "failed") {
+    badges.push({ label: "部分缺失", cls: "bg-gray-50 text-gray-500 ring-gray-200" });
+  }
   if (badges.length === 0) {
     return (
       <span className="inline-flex items-center rounded-md bg-gray-50 px-2 py-0.5 text-xs text-gray-500 ring-1 ring-gray-200">

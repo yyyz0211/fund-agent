@@ -24,7 +24,6 @@ import { PageHeader } from "@/components/PageHeader";
 import { StateBlock } from "@/components/StateBlock";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import {
   LANGGRAPH_URL,
   getLangGraphClient,
@@ -332,26 +331,113 @@ export default function QaPage({ searchParams }: { searchParams: { prefill?: str
       : "LangGraph Server 未连通";
 
   return (
-    <main className="mx-auto max-w-6xl space-y-6 px-4 py-8 sm:px-6">
+    <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6">
       <PageHeader
         eyebrow="LangGraph QA"
         title="基金问答"
         description="直接连接 Phase 4 LangGraph Server。适合查询公开信息、历史净值和市场数据；买卖、推荐和收益预测类问题会被合规策略拦截。"
       />
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_320px]">
+      <div
+        data-testid="qa-workbench"
+        className="mt-6 grid min-h-[calc(100vh-220px)] grid-cols-1 gap-4 lg:grid-cols-[280px_minmax(0,1fr)]"
+      >
+        <aside className="space-y-4 lg:sticky lg:top-6 lg:self-start">
+          <Card className="overflow-hidden p-0">
+            <CardHeader className="mb-0 border-b border-gray-100 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <CardTitle className="text-base">对话</CardTitle>
+                  <p className="mt-1 text-xs text-gray-500">本地保存 UI 历史，服务端保留 thread 上下文。</p>
+                </div>
+                <Button variant="outline" size="sm" type="button" onClick={newThread}>
+                  <Plus className="mr-1.5 h-3.5 w-3.5" />
+                  新建
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="max-h-[420px] overflow-y-auto p-3">
+              {threads.length === 0 ? (
+                <p className="rounded-lg bg-gray-50 p-3 text-xs text-gray-500">尚无对话，发个问题开始。</p>
+              ) : (
+                <ul className="space-y-1.5">
+                  {threads.map((t) => {
+                    const active = t.id === threadId;
+                    return (
+                      <li
+                        key={t.id}
+                        className={`group flex items-center gap-2 rounded-lg border px-3 py-2 text-sm transition ${
+                          active
+                            ? "border-blue-200 bg-blue-50 text-blue-800"
+                            : "border-transparent bg-white text-gray-700 hover:border-gray-200 hover:bg-gray-50"
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => switchThread(t.id)}
+                          className="min-w-0 flex-1 text-left"
+                          title={t.title}
+                        >
+                          <span className="block truncate font-medium">{t.title}</span>
+                          <span className="mt-0.5 block text-[10px] text-gray-400">
+                            {formatDate(t.updatedAt)}
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          aria-label="删除对话"
+                          onClick={() => deleteThread(t.id)}
+                          className="rounded p-1 text-gray-400 opacity-0 transition hover:bg-gray-100 hover:text-red-500 group-hover:opacity-100"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card className="p-4">
+            <CardHeader>
+              <CardTitle className="text-base">服务状态</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="flex items-center justify-between rounded-lg bg-gray-50 p-3">
+                <span className="inline-flex items-center gap-2 text-sm text-gray-600">
+                  <Server className="h-4 w-4" />
+                  LangGraph
+                </span>
+                <StatusPill loading={health.isLoading} online={health.data === true} />
+              </div>
+              <div className="rounded-lg bg-gray-50 p-3 text-xs leading-5 text-gray-500">
+                <div>
+                  Assistant:
+                  <code className="ml-1 rounded bg-white px-1 py-0.5">{LANGGRAPH_ASSISTANT}</code>
+                </div>
+                <div className="mt-1 truncate" title={LANGGRAPH_URL}>
+                  URL: <code className="rounded bg-white px-1 py-0.5">{LANGGRAPH_URL}</code>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </aside>
+
         <section className="min-w-0">
-          <Card className="flex min-h-[560px] flex-col overflow-hidden p-0">
-            <CardHeader className="mb-0 flex-row items-center justify-between gap-3 border-b border-gray-200 p-4">
+          <Card className="flex h-[calc(100vh-190px)] min-h-[680px] flex-col overflow-hidden p-0">
+            <CardHeader className="mb-0 flex-row items-center justify-between gap-3 border-b border-gray-200 bg-white p-4">
               <div className="flex items-center gap-3">
-                <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-50 text-blue-700">
+                <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-gray-950 text-white">
                   <MessageSquareText className="h-5 w-5" />
                 </span>
                 <div>
                   <CardTitle className="text-base">
                     {threads.find((t) => t.id === threadId)?.title ?? "新对话"}
                   </CardTitle>
-                  <p className="mt-1 text-xs text-gray-500">{statusText}</p>
+                  <p className="mt-1 text-xs text-gray-500">
+                    {statusText} · {LANGGRAPH_ASSISTANT}
+                  </p>
                 </div>
               </div>
               <Button variant="outline" size="sm" type="button" onClick={newThread}>
@@ -360,8 +446,8 @@ export default function QaPage({ searchParams }: { searchParams: { prefill?: str
               </Button>
             </CardHeader>
 
-            <CardContent className="flex flex-1 flex-col p-0">
-              <div className="flex-1 space-y-4 p-4">
+            <CardContent className="flex min-h-0 flex-1 flex-col p-0">
+              <div className="min-h-0 flex-1 space-y-5 overflow-y-auto bg-gray-50/70 p-4 sm:p-6">
                 {error && (
                   <StateBlock title="连接失败" tone="error">
                     <span className="break-words">{error}</span>
@@ -369,13 +455,16 @@ export default function QaPage({ searchParams }: { searchParams: { prefill?: str
                 )}
 
                 {history.length === 0 && (
-                  <div className="rounded-lg border border-dashed border-gray-200 bg-gray-50 p-5">
-                    <p className="text-sm font-medium text-gray-900">可以先试这些信息查询</p>
-                    <div className="mt-3 flex flex-wrap gap-2">
+                  <div className="rounded-xl border border-dashed border-gray-200 bg-white p-5 shadow-sm">
+                    <p className="text-sm font-semibold text-gray-950">常用查询</p>
+                    <p className="mt-1 text-xs leading-5 text-gray-500">
+                      适合查公开信息、历史净值、市场和本地体检结果；买卖、推荐和收益预测会被拒答。
+                    </p>
+                    <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3">
                       {SUGGESTIONS.map((suggestion) => (
                         <button
                           key={suggestion}
-                          className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 shadow-sm transition hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
+                          className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-3 text-left text-sm text-gray-700 transition hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
                           type="button"
                           onClick={() => setInput(suggestion)}
                         >
@@ -398,93 +487,36 @@ export default function QaPage({ searchParams }: { searchParams: { prefill?: str
                 }}
                 className="border-t border-gray-200 bg-white p-4"
               >
-                <div className="flex gap-2">
-                  <Input
+                <div className="rounded-xl border border-gray-200 bg-white p-2 shadow-sm focus-within:border-blue-300 focus-within:ring-2 focus-within:ring-blue-50">
+                  <textarea
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
-                    placeholder="输入基金代码、指标或市场问题..."
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !e.shiftKey) {
+                        e.preventDefault();
+                        send();
+                      }
+                    }}
+                    rows={2}
+                    placeholder="输入基金代码、指标或市场问题，Shift+Enter 换行..."
+                    className="max-h-40 min-h-[56px] w-full resize-y border-0 bg-transparent px-2 py-2 text-sm leading-6 text-gray-900 outline-none placeholder:text-gray-400"
                   />
-                  <Button type="submit" disabled={!input.trim() || streaming}>
-                    <Send className="mr-2 h-4 w-4" />
-                    发送
-                  </Button>
+                  <div className="flex items-center justify-between gap-3 border-t border-gray-100 px-2 pt-2">
+                    <span className="text-xs text-gray-400">仅整理公开信息与历史数据，不构成投资建议。</span>
+                    <Button type="submit" disabled={!input.trim() || streaming}>
+                      {streaming ? (
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      ) : (
+                        <Send className="mr-2 h-4 w-4" />
+                      )}
+                      发送
+                    </Button>
+                  </div>
                 </div>
               </form>
             </CardContent>
           </Card>
         </section>
-
-        <aside className="space-y-4">
-          <Card className="p-5">
-            <CardHeader>
-              <CardTitle className="text-base">对话列表</CardTitle>
-              <p className="mt-1 text-xs text-gray-500">
-                thread_id 由前端管理,LangGraph Server 用它维持多轮上下文。
-                重启服务或清缓存会清空。
-              </p>
-            </CardHeader>
-            <CardContent>
-              {threads.length === 0 ? (
-                <p className="rounded-lg bg-gray-50 p-3 text-xs text-gray-500">尚无对话,发个问题开始。</p>
-              ) : (
-                <ul className="space-y-1.5">
-                  {threads.map((t) => {
-                    const active = t.id === threadId;
-                    return (
-                      <li
-                        key={t.id}
-                        className={`group flex items-center gap-2 rounded-lg border px-3 py-2 text-sm ${
-                          active
-                            ? "border-blue-200 bg-blue-50 text-blue-800"
-                            : "border-gray-200 bg-white text-gray-700 hover:border-gray-300"
-                        }`}
-                      >
-                        <button
-                          type="button"
-                          onClick={() => switchThread(t.id)}
-                          className="flex-1 truncate text-left"
-                          title={t.title}
-                        >
-                          {t.title}
-                        </button>
-                        <span className="text-[10px] text-gray-400">
-                          {formatDate(t.updatedAt).slice(5)}
-                        </span>
-                        <button
-                          type="button"
-                          aria-label="删除对话"
-                          onClick={() => deleteThread(t.id)}
-                          className="rounded p-1 text-gray-400 opacity-0 transition hover:bg-gray-100 hover:text-red-500 group-hover:opacity-100"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-            </CardContent>
-          </Card>
-
-          <Card className="p-5">
-            <CardHeader>
-              <CardTitle className="text-base">服务状态</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="flex items-center justify-between rounded-lg bg-gray-50 p-3">
-                <span className="inline-flex items-center gap-2 text-sm text-gray-600">
-                  <Server className="h-4 w-4" />
-                  LangGraph
-                </span>
-                <StatusPill loading={health.isLoading} online={health.data === true} />
-              </div>
-              <p className="text-xs leading-5 text-gray-500">
-                本页使用 <code className="rounded bg-gray-100 px-1 py-0.5">{LANGGRAPH_ASSISTANT}</code> assistant，
-                地址来自 <code className="rounded bg-gray-100 px-1 py-0.5">NEXT_PUBLIC_LANGGRAPH_URL</code>。
-              </p>
-            </CardContent>
-          </Card>
-        </aside>
       </div>
     </main>
   );
@@ -501,10 +533,10 @@ function MarkdownBody({ content }: { content: string }) {
 function ToolStepList({ steps }: { steps: ToolStep[] }) {
   if (steps.length === 0) return null;
   return (
-    <div className="mt-3 space-y-2 border-t border-gray-100 pt-3">
+    <div className="mt-3 space-y-2 rounded-lg border border-gray-200 bg-gray-50 p-3">
       <div className="flex items-center gap-1.5 text-xs font-medium text-gray-500">
         <Database className="h-3.5 w-3.5" />
-        数据来源 ({steps.length})
+        已查询的数据 ({steps.length})
       </div>
       <ul className="space-y-1.5">
         {steps.map((s) => (
@@ -585,18 +617,18 @@ function ChatMessage({ message, streaming }: { message: UiMessage; streaming: bo
   return (
     <div className={`flex gap-3 ${isUser ? "justify-end" : "justify-start"}`}>
       {!isUser && (
-        <span className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gray-100 text-gray-600">
+        <span className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white text-gray-700 shadow-sm ring-1 ring-gray-200">
           <Icon className="h-4 w-4" />
         </span>
       )}
       <div
-        className={`max-w-[82%] rounded-lg px-4 py-3 text-sm shadow-sm ${
+        className={`max-w-[88%] rounded-2xl px-4 py-3 text-sm shadow-sm ${
           isUser
-            ? "bg-blue-600 text-white"
-            : "border border-gray-200 bg-white text-gray-800"
+            ? "rounded-br-md bg-blue-600 text-white"
+            : "rounded-bl-md border border-gray-200 bg-white text-gray-800"
         }`}
       >
-        <div className={`mb-1 text-xs ${isUser ? "text-blue-100" : "text-gray-500"}`}>
+        <div className={`mb-1 text-[11px] ${isUser ? "text-blue-100" : "text-gray-500"}`}>
           {isUser ? "你" : "助手"} · {formatDate(message.ts)}
         </div>
         <div className={isUser ? "whitespace-pre-wrap leading-6" : "leading-6"}>
@@ -605,13 +637,16 @@ function ChatMessage({ message, streaming }: { message: UiMessage; streaming: bo
           ) : message.content ? (
             <MarkdownBody content={message.content} />
           ) : streaming ? (
-            <span className="text-gray-400">▍</span>
+            <span className="inline-flex items-center gap-2 text-gray-400">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              正在生成
+            </span>
           ) : null}
         </div>
         {!isUser && <ToolStepList steps={message.toolSteps} />}
       </div>
       {isUser && (
-        <span className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-blue-700">
+        <span className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-blue-700 ring-1 ring-blue-100">
           <Icon className="h-4 w-4" />
         </span>
       )}

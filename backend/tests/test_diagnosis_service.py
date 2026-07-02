@@ -114,7 +114,7 @@ def test_diagnosis_uses_basic_manager_when_profile_manager_missing(session, monk
     assert "manager" not in out["missing_data"]
 
 
-def test_get_peers_filters_codes_without_local_nav(session):
+def test_get_peers_returns_candidates_without_local_nav(session):
     from backend.services import diagnosis_service as ds
 
     repo.upsert_fund_profile(session, "110011", {
@@ -134,12 +134,61 @@ def test_get_peers_filters_codes_without_local_nav(session):
 
     peers = ds.get_peers("110011", limit=5, period="1w", session=session)
 
-    assert [peer["fund_code"] for peer in peers] == ["000001"]
+    assert [peer["fund_code"] for peer in peers] == ["000001", "000002"]
     assert peers[0]["period_return"] is not None
     assert peers[0]["max_drawdown"] is not None
     assert peers[0]["volatility"] is not None
     assert peers[0]["scale"] == pytest.approx(20.0)
     assert peers[0]["has_local_nav"] is True
+    assert peers[1]["period_return"] is None
+    assert peers[1]["max_drawdown"] is None
+    assert peers[1]["volatility"] is None
+    assert peers[1]["scale"] is None
+    assert peers[1]["has_local_nav"] is False
+
+
+def test_diagnosis_marks_peer_metrics_not_peers_when_candidates_exist(session, monkeypatch):
+    from backend.services import diagnosis_service as ds
+
+    monkeypatch.setattr(ds.fs, "get_summary", lambda code, period="1y", start_date="", session=None: {
+        "fund_code": code,
+        "fund": {"fund_code": code, "fund_name": "FundA", "fund_type": "偏股混合",
+                 "manager": "Manager A", "source": "akshare", "as_of": "2026-07-02"},
+        "latest_nav": {"fund_code": code, "nav_date": "2026-06-30", "source": "akshare",
+                       "as_of": "2026-06-30"},
+        "metrics": {"fund_code": code, "period": period, "period_return": 0.05,
+                    "max_drawdown": -0.08, "volatility": 0.10,
+                    "source": "akshare", "as_of": "2026-07-02"},
+        "errors": {},
+        "source": "akshare",
+        "as_of": "2026-07-02",
+    })
+    monkeypatch.setattr(ds.profile_service, "get_profile", lambda code, session=None: {
+        "scale": 10.0,
+        "rank_total": 100,
+        "rank_position": 20,
+        "peer_candidates_json": json.dumps([{"fund_code": "000001", "fund_name": "PeerA"}]),
+        "top10_holding_pct": 0.2,
+        "top_industry_pct": 0.2,
+        "manager_summary": None,
+        "source": "akshare",
+        "as_of": "2026-07-02",
+    })
+    monkeypatch.setattr(ds, "get_peers", lambda code, limit=5, period="1y", session=None: [{
+        "fund_code": "000001",
+        "fund_name": "PeerA",
+        "fund_type": "偏股混合",
+        "period_return": None,
+        "max_drawdown": None,
+        "volatility": None,
+        "scale": None,
+        "has_local_nav": False,
+    }])
+
+    out = ds.diagnose_fund("110011", period="1y", session=session)
+
+    assert "peers" not in out["missing_data"]
+    assert "peer_metrics" in out["missing_data"]
 
 
 def test_get_peers_does_not_call_akshare(session, monkeypatch):

@@ -149,7 +149,7 @@ export function FundDiagnosisCard({
           <div className="mb-3 flex items-center justify-between gap-3">
             <div>
               <p className="text-sm font-medium text-gray-900">同类候选</p>
-              <p className="mt-1 text-xs text-gray-500">只展示本地有 NAV 且能计算指标的候选。</p>
+              <p className="mt-1 text-xs text-gray-500">优先展示同类候选；缺少本地 NAV 时指标显示 --。</p>
             </div>
             {data.peers.length > 0 && (
               <Link href={compareHref}>

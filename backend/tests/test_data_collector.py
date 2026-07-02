@@ -245,6 +245,84 @@ def test_fetch_fund_profile_parses_profile_sources(monkeypatch):
     assert out["as_of"] == "2026-07-02"
 
 
+def test_fetch_fund_profile_falls_back_to_sina_scale(monkeypatch):
+    class _ProfileAkshare:
+        def fund_scale_change_em(self):
+            return pd.DataFrame({
+                "基金代码": ["000001"],
+                "截止日期": ["2026-06-30"],
+                "基金规模": [99.0],
+            })
+
+        def fund_scale_open_sina(self, symbol="股票型基金"):
+            if symbol == "混合型基金":
+                return pd.DataFrame({
+                    "基金代码": ["110011"],
+                    "日期": ["2026-06-30"],
+                    "基金规模(亿元)": ["12.30"],
+                })
+            return pd.DataFrame({"基金代码": ["000001"], "基金规模(亿元)": [99.0]})
+
+        def fund_open_fund_rank_em(self, symbol="全部"):
+            return pd.DataFrame()
+
+        def fund_portfolio_hold_em(self, symbol: str, date: str):
+            return pd.DataFrame()
+
+        def fund_portfolio_industry_allocation_em(self, symbol: str, date: str):
+            return pd.DataFrame()
+
+        def fund_manager_em(self):
+            return pd.DataFrame()
+
+    monkeypatch.setattr(dc, "ak", _ProfileAkshare())
+
+    out = dc.fetch_fund_profile("110011")
+
+    assert out["scale"] == pytest.approx(12.3)
+    assert out["scale_date"] == "2026-06-30"
+    assert "scale" not in out["missing_data"]
+
+
+def test_fetch_fund_profile_parses_combined_rank_format(monkeypatch):
+    class _ProfileAkshare:
+        def fund_scale_change_em(self):
+            return pd.DataFrame({
+                "基金代码": ["110011"],
+                "基金规模": [12.3],
+            })
+
+        def fund_open_fund_rank_em(self, symbol="全部"):
+            return pd.DataFrame({
+                "基金代码": ["110011", "000001", "000002"],
+                "基金简称": ["目标基金", "PeerA", "PeerB"],
+                "基金类型": ["偏股混合", "偏股混合", "偏股混合"],
+                "近1年排名": ["25/100", "10 | 100", "第30名/共100只"],
+            })
+
+        def fund_portfolio_hold_em(self, symbol: str, date: str):
+            return pd.DataFrame()
+
+        def fund_portfolio_industry_allocation_em(self, symbol: str, date: str):
+            return pd.DataFrame()
+
+        def fund_manager_em(self):
+            return pd.DataFrame()
+
+    monkeypatch.setattr(dc, "ak", _ProfileAkshare())
+
+    out = dc.fetch_fund_profile("110011")
+
+    assert out["rank_position"] == 25
+    assert out["rank_total"] == 100
+    assert out["peer_candidates"] == [
+        {"fund_code": "000001", "fund_name": "PeerA", "fund_type": "偏股混合", "rank_position": 10},
+        {"fund_code": "000002", "fund_name": "PeerB", "fund_type": "偏股混合", "rank_position": 30},
+    ]
+    assert "rank" not in out["missing_data"]
+    assert "peers" not in out["missing_data"]
+
+
 def test_fetch_fund_profile_degrades_when_source_fails(monkeypatch):
     class _BrokenProfileAkshare:
         def fund_scale_change_em(self):

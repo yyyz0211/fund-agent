@@ -101,3 +101,23 @@ test("api.fundDiagnosisRefreshJob calls job status endpoint", async () => {
     "http://api.test/api/funds/110011/diagnosis/refresh/job-1",
   );
 });
+
+test("api.watchlistPreloadJob calls watchlist preload endpoint", async () => {
+  const urls = [];
+  const fetch = async (url) => {
+    urls.push(String(url));
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ job_id: "job-1", status: "done" }),
+    };
+  };
+  const { api } = await loadModule("../src/lib/api.ts", { fetch });
+
+  await api.watchlistPreloadJob("110011", "job-1");
+
+  assert.equal(
+    urls[0],
+    "http://api.test/api/watchlist/110011/preload/job-1",
+  );
+});

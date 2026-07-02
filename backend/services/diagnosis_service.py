@@ -26,7 +26,11 @@ def _json_list(value: str | None) -> list[dict]:
 
 
 def get_peers(fund_code: str, limit: int = 5, period: str = "1y", session=None) -> list[dict]:
-    """Return peer candidates from local profile cache and local NAV only."""
+    """Return peer candidates from local profile cache.
+
+    候选基金即使没有本地 NAV 也返回,指标字段置为 None;这样前端不会
+    因本地未刷新候选 NAV 而把同类候选整块隐藏。
+    """
     s = _with_session(session)
     owns = session is None
     try:
@@ -38,21 +42,29 @@ def get_peers(fund_code: str, limit: int = 5, period: str = "1y", session=None) 
             if not code:
                 continue
             navs = repo.get_accumulated_navs(s, code)
+            has_local_nav = len(navs) >= 2
+            period_return = None
+            max_drawdown = None
+            volatility = None
+            if has_local_nav:
+                try:
+                    period_return = metrics.period_return(navs, period)
+                except ValueError:
+                    period_return = None
+                max_drawdown = metrics.max_drawdown(navs)
+                volatility = metrics.volatility(navs)
             if len(navs) < 2:
-                continue
-            period_return = metrics.period_return(navs, period)
-            if period_return is None:
-                continue
+                has_local_nav = False
             peer_profile = profile_service.get_profile(code, session=s) or {}
             peers.append({
                 "fund_code": code,
                 "fund_name": candidate.get("fund_name"),
                 "fund_type": candidate.get("fund_type"),
                 "period_return": period_return,
-                "max_drawdown": metrics.max_drawdown(navs),
-                "volatility": metrics.volatility(navs),
+                "max_drawdown": max_drawdown,
+                "volatility": volatility,
                 "scale": peer_profile.get("scale"),
-                "has_local_nav": True,
+                "has_local_nav": has_local_nav,
             })
             if len(peers) >= limit:
                 break
@@ -203,6 +215,14 @@ def diagnose_fund(fund_code: str, period: str = "1y", session=None) -> dict:
         missing_data.extend(_profile_missing(profile, fund_payload))
         if not peers:
             missing_data.append("peers")
+        elif any(
+            not peer.get("has_local_nav")
+            or peer.get("period_return") is None
+            or peer.get("max_drawdown") is None
+            or peer.get("volatility") is None
+            for peer in peers
+        ):
+            missing_data.append("peer_metrics")
         missing_data = list(dict.fromkeys(missing_data))
         category = (
             (profile or {}).get("peer_category")
@@ -273,7 +293,15 @@ def diagnose_fund(fund_code: str, period: str = "1y", session=None) -> dict:
         core_complete = bool(summary.get("latest_nav")) and bool(summary.get("metrics"))
         profile_complete = not _profile_missing(profile, fund_payload)
         label = rules.choose_decision_label(lights, missing_data)
-        confidence = rules.confidence_for(core_complete, profile_complete, len(peers))
+        metric_peer_count = sum(
+            1
+            for peer in peers
+            if peer.get("has_local_nav")
+            and peer.get("period_return") is not None
+            and peer.get("max_drawdown") is not None
+            and peer.get("volatility") is not None
+        )
+        confidence = rules.confidence_for(core_complete, profile_complete, metric_peer_count)
         if not core_complete:
             label = "暂不碰"
             confidence = "low"

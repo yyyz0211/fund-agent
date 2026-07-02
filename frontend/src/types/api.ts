@@ -47,6 +47,7 @@ export interface WatchlistRow {
   holding_share: number | null;
   cost_nav: number | null;
   buy_date: string | null;
+  preload_status?: WatchlistPreloadStatus | null;
   cost_nav_basis: "legacy" | "transactions" | null;
   transaction_count?: number;
   latest_nav?: number | null;
@@ -57,6 +58,23 @@ export interface WatchlistRow {
   created_at?: string | null;
   updated_at?: string | null;
 }
+
+export type WatchlistPreloadStatus = "pending" | "running" | "done" | "partial" | "failed" | "missing";
+
+export interface WatchlistPreloadJob {
+  job_id: string;
+  fund_code: string;
+  status: WatchlistPreloadStatus;
+  started_at?: string | null;
+  finished_at?: string | null;
+  missing_data?: string[];
+  errors?: string[];
+  as_of?: string | null;
+}
+
+export type WatchlistAddResponse = WatchlistRow & {
+  preload_job?: WatchlistPreloadJob | null;
+};
 
 export interface FundTransaction {
   id: number;
@@ -84,6 +102,12 @@ export interface TransactionUpsertPayload {
 export interface InitialHoldingPayload extends TransactionUpsertPayload {
   is_focus?: boolean | null;
   watchlist_note?: string | null;
+}
+
+export interface InitialHoldingResponse {
+  transaction: FundTransaction;
+  watchlist: WatchlistRow;
+  preload_job?: WatchlistPreloadJob | null;
 }
 
 export interface WatchlistUpsertPayload {

@@ -35,6 +35,7 @@ def init_db(engine: Engine | None = None) -> None:
     eng = engine or default_engine
     Base.metadata.create_all(eng)
     _apply_missing_columns(eng)
+    _drop_obsolete_columns(eng)
     # create_all 不冲突,再跑一次只是补 sanity(新表的索引等)。
     Base.metadata.create_all(eng)
 
@@ -63,6 +64,27 @@ def _apply_missing_columns(eng: Engine) -> None:
                 conn.execute(text(
                     f"ALTER TABLE {table.name} ADD COLUMN {col.name} {col_type}"
                 ))
+
+
+def _drop_obsolete_columns(eng: Engine) -> None:
+    """清理已经从 ORM 模型移除的 SQLite 旧列。
+
+    当前只处理 `watchlist.peer_category`。同类分类的权威缓存保留在
+    `fund_profiles.peer_category`,自选池表不再冗余存一份。
+    """
+    insp = inspect(eng)
+    if eng.dialect.name != "sqlite" or not insp.has_table("watchlist"):
+        return
+    existing = {c["name"] for c in insp.get_columns("watchlist")}
+    if "peer_category" not in existing:
+        return
+    with eng.begin() as conn:
+        try:
+            conn.execute(text("ALTER TABLE watchlist DROP COLUMN peer_category"))
+        except Exception:
+            # 旧 SQLite 版本不支持 DROP COLUMN 时,至少运行时代码已经
+            # 不再读写该列;不让启动因为历史冗余列失败。
+            pass
 
 
 if __name__ == "__main__":

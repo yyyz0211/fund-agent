@@ -7,12 +7,14 @@
 - GET /api/watchlist 端点附带 transaction_count
 """
 import pytest
+from types import SimpleNamespace
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from backend.api.app import app
+from backend.api.routes import watchlist as watchlist_routes
 from backend.db import repository as repo
 from backend.db import session as db_session
 from backend.db.init_db import init_db
@@ -40,6 +42,12 @@ def session(monkeypatch):
     monkeypatch.setattr(db_session, "get_session", _get_session)
     monkeypatch.setattr(ws, "get_session", _get_session)
     monkeypatch.setattr(ts, "get_session", _get_session)
+    monkeypatch.setattr(
+        watchlist_routes,
+        "preload_jobs",
+        SimpleNamespace(start_preload_job=lambda fund_code: None),
+        raising=False,
+    )
     yield s
     s.close()
 
@@ -248,6 +256,35 @@ class TestInitialHoldingApi:
         assert wl["holding_share"] == pytest.approx(400.0)
         assert wl["cost_nav"] == pytest.approx(3.0)
         assert repo.count_transactions(session, "110011") == 1
+
+    def test_initial_holding_starts_preload_after_success(self, session, monkeypatch):
+        calls = []
+
+        def _fake_start(fund_code):
+            calls.append(fund_code)
+            return {"job_id": "job-110011", "fund_code": fund_code, "status": "pending"}
+
+        monkeypatch.setattr(
+            watchlist_routes,
+            "preload_jobs",
+            SimpleNamespace(start_preload_job=_fake_start),
+            raising=False,
+        )
+
+        r = client.post("/api/watchlist/110011/initial-holding", json={
+            "tx_date": "2026-04-01",
+            "amount": 1200.0,
+            "nav": 3.0,
+        })
+
+        assert r.status_code == 200, r.text
+        assert r.json()["preload_job"] == {
+            "job_id": "job-110011",
+            "fund_code": "110011",
+            "status": "pending",
+        }
+        assert r.json()["watchlist"]["preload_status"] == "pending"
+        assert calls == ["110011"]
 
     def test_initial_holding_rolls_back_when_recalc_fails(self, session, monkeypatch):
         def _fail_recalc(*args, **kwargs):

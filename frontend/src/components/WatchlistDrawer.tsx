@@ -18,7 +18,7 @@ import {
 import { shouldUseInitialHoldingEndpoint } from "@/lib/watchlist-guards";
 import type {
   FundTransaction, NavPoint, TransactionUpsertPayload,
-  WatchlistPatchPayload, WatchlistRow, WatchlistUpsertPayload,
+  WatchlistPatchPayload, WatchlistPreloadJob, WatchlistRow, WatchlistUpsertPayload,
 } from "@/types/api";
 
 interface WatchlistDrawerProps {
@@ -187,6 +187,45 @@ export function WatchlistDrawer({
     onError: (err) => toast.push(`删除加仓失败：${String(err)}`, "error"),
   });
 
+  function invalidateFundCaches(code: string) {
+    qc.invalidateQueries({ queryKey: ["watchlist"] });
+    qc.invalidateQueries({ queryKey: ["fundSummary", code] });
+    qc.invalidateQueries({ queryKey: ["fund", code] });
+    qc.invalidateQueries({ queryKey: ["nav", code] });
+    qc.invalidateQueries({ queryKey: ["navHistory", code] });
+    qc.invalidateQueries({ queryKey: ["metrics", code] });
+    qc.invalidateQueries({ queryKey: ["portfolioPnl", [code]] });
+    qc.invalidateQueries({ queryKey: ["fundDiagnosis", code] });
+  }
+
+  function startPreloadPolling(job: WatchlistPreloadJob | null | undefined) {
+    if (!job || typeof window === "undefined") return;
+    const terminal = new Set(["done", "partial", "failed", "missing"]);
+    let attempts = 0;
+    const maxAttempts = 120;
+    const code = job.fund_code;
+    const timer = window.setInterval(async () => {
+      attempts += 1;
+      try {
+        const snapshot = await api.watchlistPreloadJob(code, job.job_id);
+        if (!terminal.has(snapshot.status) && attempts < maxAttempts) return;
+        window.clearInterval(timer);
+        invalidateFundCaches(code);
+        if (snapshot.status === "done") {
+          toast.push(`${code} 基金数据已同步`, "success");
+        } else if (snapshot.status === "partial") {
+          toast.push(`${code} 基金数据部分同步完成，仍有字段缺失`, "info");
+        } else if (snapshot.status === "failed") {
+          toast.push(`${code} 自动同步失败，可稍后刷新`, "error");
+        }
+      } catch (err) {
+        window.clearInterval(timer);
+        invalidateFundCaches(code);
+        toast.push(`同步状态查询失败：${String(err)}`, "error");
+      }
+    }, 1500);
+  }
+
   if (!open) return null;
 
   async function submit(e: React.FormEvent) {
@@ -208,6 +247,7 @@ export function WatchlistDrawer({
     setSubmitting(true);
     try {
       let saved: WatchlistRow;
+      let preloadJob: WatchlistPreloadJob | null | undefined;
       if (mode === "add") {
         if (needsInitialHolding && initialHoldingDraft) {
           const txResult = await api.watchlistSetInitialHolding(fundCode, {
@@ -216,6 +256,7 @@ export function WatchlistDrawer({
             watchlist_note: form.note || null,
           });
           saved = txResult.watchlist;
+          preloadJob = txResult.preload_job;
           qc.invalidateQueries({ queryKey: ["watchlistTransactions", fundCode] });
           qc.invalidateQueries({ queryKey: ["fundSummary", fundCode] });
           qc.invalidateQueries({ queryKey: ["portfolioPnl", [fundCode]] });
@@ -227,7 +268,9 @@ export function WatchlistDrawer({
             is_focus: form.is_focus,
             holding_amount: null,
           };
-          saved = await api.watchlistAdd(payload);
+          const addResult = await api.watchlistAdd(payload);
+          saved = addResult;
+          preloadJob = addResult.preload_job;
         }
         toast.push(`${fundCode} 已加入自选池`, "success");
       } else {
@@ -238,6 +281,7 @@ export function WatchlistDrawer({
             watchlist_note: form.note || null,
           });
           saved = txResult.watchlist;
+          preloadJob = txResult.preload_job;
           qc.invalidateQueries({ queryKey: ["watchlistTransactions", fundCode] });
           qc.invalidateQueries({ queryKey: ["fundSummary", fundCode] });
           qc.invalidateQueries({ queryKey: ["portfolioPnl", [fundCode]] });
@@ -252,6 +296,10 @@ export function WatchlistDrawer({
         toast.push(`已更新 ${fundCode}`, "success");
       }
       onSaved?.(saved);
+      if (preloadJob) {
+        toast.push(`${fundCode} 正在后台同步基金数据`, "info");
+        startPreloadPolling(preloadJob);
+      }
       onClose();
     } catch (err) {
       toast.push(`保存失败：${String(err)}`, "error");

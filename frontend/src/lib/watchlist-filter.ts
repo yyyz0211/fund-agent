@@ -8,6 +8,8 @@ export function filterWatchlistRows(rows: WatchlistRow[], query: string): Watchl
     const code = row.fund_code.toLowerCase();
     const name = (row.fund_name ?? "").toLowerCase();
     const note = (row.note ?? "").toLowerCase();
-    return code.includes(keyword) || name.includes(keyword) || note.includes(keyword);
+    return code.includes(keyword)
+      || name.includes(keyword)
+      || note.includes(keyword);
   });
 }

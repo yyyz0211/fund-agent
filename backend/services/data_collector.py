@@ -13,12 +13,14 @@
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from datetime import date
+import re
 
 import akshare as ak
 
 SOURCE = "akshare"
 _PROFILE_FETCH_WORKERS = 3
 _PROFILE_SOURCE_TIMEOUT_SECONDS = 5.0
+_SINA_SCALE_CATEGORIES = ("股票型基金", "混合型基金", "债券型基金", "QDII基金", "货币型基金")
 
 
 def today_str() -> str:
@@ -237,11 +239,14 @@ def _find_code_row(df, fund_code: str):
     if df is None or getattr(df, "empty", False):
         return None
     code_cols = ("基金代码", "代码", "fund_code")
+    has_code_col = False
     for _, row in df.iterrows():
         for col in code_cols:
-            if col in row and _norm_code(row.get(col)) == fund_code:
-                return row
-    if len(df) == 1:
+            if col in row:
+                has_code_col = True
+                if _norm_code(row.get(col)) == fund_code:
+                    return row
+    if len(df) == 1 and not has_code_col:
         return next(df.iterrows())[1]
     return None
 
@@ -251,17 +256,55 @@ def _parse_scale_frame(fund_code: str, df) -> dict:
     if row is None:
         return {"scale": None, "scale_date": None}
     return {
-        "scale": _to_float(_pick(row, "基金规模", "期末净资产", "净资产", "规模")),
-        "scale_date": str(_pick(row, "截止日期", "报告期", "日期") or "") or None,
+        "scale": _to_float(_pick(
+            row,
+            "基金规模", "基金规模(亿元)", "基金规模(亿)",
+            "期末净资产", "净资产", "规模", "最新规模", "份额规模",
+        )),
+        "scale_date": str(_pick(row, "截止日期", "报告期", "日期", "更新日期") or "") or None,
     }
 
 
+def _rank_parts(value) -> tuple[int | None, int | None]:
+    """解析组合排名字段,例如 `25/100`、`25 | 100`、`第25名/共100只`。"""
+    if _is_missing(value):
+        return None, None
+    text = str(value).replace(",", "").strip()
+    nums = [int(x) for x in re.findall(r"\d+", text)]
+    if not nums:
+        return None, None
+    if len(nums) >= 2:
+        return nums[0], nums[1]
+    return nums[0], None
+
+
 def _rank_position(row) -> int | None:
-    return _to_int(_pick(row, "同类排名", "排名", "近1年同类排名", "近1年排名", "今年来排名"))
+    value = _pick(
+        row,
+        "同类排名", "排名", "近1年同类排名", "近1年排名", "今年来排名",
+        "近一年排名", "近1年同类排名走势", "近1年排名走势",
+    )
+    direct = _to_int(value)
+    if direct is not None:
+        return direct
+    position, _total = _rank_parts(value)
+    return position
 
 
 def _rank_total(row) -> int | None:
-    return _to_int(_pick(row, "同类总数", "总数", "近1年同类总数", "今年来同类总数"))
+    direct = _to_int(_pick(
+        row,
+        "同类总数", "总数", "近1年同类总数", "今年来同类总数",
+        "近一年同类总数",
+    ))
+    if direct is not None:
+        return direct
+    _position, total = _rank_parts(_pick(
+        row,
+        "同类排名", "排名", "近1年同类排名", "近1年排名", "今年来排名",
+        "近一年排名", "近1年同类排名走势", "近1年排名走势",
+    ))
+    return total
 
 
 def _peer_category(row) -> str | None:
@@ -303,6 +346,20 @@ def _parse_rank_frame(fund_code: str, df) -> dict:
         "rank_position": _rank_position(row),
         "peer_candidates": peers[:5],
     }
+
+
+def _fetch_scale_from_sina(fund_code: str) -> tuple[dict, list[str]]:
+    """用新浪开放式基金规模做低频 fallback。返回规模结果和错误列表。"""
+    errors: list[str] = []
+    for category in _SINA_SCALE_CATEGORIES:
+        try:
+            df = _call_with_typeerror_fallback(ak.fund_scale_open_sina, symbol=category)
+            parsed = _parse_scale_frame(fund_code, df)
+            if parsed.get("scale") is not None:
+                return parsed, errors
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"scale fallback {category} failed: {exc}")
+    return {"scale": None, "scale_date": None}, errors
 
 
 def _parse_holdings_frame(df) -> float | None:
@@ -411,7 +468,13 @@ def fetch_fund_profile(fund_code: str) -> dict:
     }
 
     try:
-        out.update(_parse_scale_frame(fund_code, frames.get("scale")))
+        scale_payload = _parse_scale_frame(fund_code, frames.get("scale"))
+        if scale_payload.get("scale") is None:
+            fallback_payload, fallback_errors = _fetch_scale_from_sina(fund_code)
+            out["errors"].extend(fallback_errors)
+            if fallback_payload.get("scale") is not None:
+                scale_payload = fallback_payload
+        out.update(scale_payload)
     except Exception as exc:  # noqa: BLE001
         out["errors"].append(f"scale parse failed: {exc}")
         out["missing_data"].append("scale")

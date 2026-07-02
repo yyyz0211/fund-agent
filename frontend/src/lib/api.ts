@@ -2,8 +2,9 @@ import type {
   AnnouncementList, Fund, FundMetrics, FundSummary, MarketLatest,
   NavHistory, NavPoint, PortfolioPnl, ComparisonSeries,
   DiagnosisRefreshJob, FundDiagnosis, PeerFund,
-  FundTransaction, InitialHoldingPayload, TransactionUpsertPayload,
-  WatchlistPatchPayload, WatchlistRow, WatchlistUpsertPayload,
+  FundTransaction, InitialHoldingPayload, InitialHoldingResponse, TransactionUpsertPayload,
+  WatchlistAddResponse, WatchlistPatchPayload, WatchlistPreloadJob,
+  WatchlistRow, WatchlistUpsertPayload,
 } from "@/types/api";
 
 const BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
@@ -76,7 +77,7 @@ export const api = {
     }>("POST", `/api/funds/${encodeURIComponent(code)}/refresh`),
   watchlist: () => get<WatchlistRow[]>("/api/watchlist"),
   watchlistAdd: (payload: WatchlistUpsertPayload) =>
-    send<WatchlistRow>("POST", "/api/watchlist", payload),
+    send<WatchlistAddResponse>("POST", "/api/watchlist", payload),
   watchlistUpdate: (fundCode: string, payload: WatchlistPatchPayload) =>
     send<WatchlistRow>("PATCH", `/api/watchlist/${encodeURIComponent(fundCode)}`, payload),
   watchlistRemove: (fundCode: string) =>
@@ -95,10 +96,14 @@ export const api = {
       body,
     ),
   watchlistSetInitialHolding: (fundCode: string, body: InitialHoldingPayload) =>
-    send<{ transaction: FundTransaction; watchlist: WatchlistRow }>(
+    send<InitialHoldingResponse>(
       "POST",
       `/api/watchlist/${encodeURIComponent(fundCode)}/initial-holding`,
       body,
+    ),
+  watchlistPreloadJob: (fundCode: string, jobId: string) =>
+    get<WatchlistPreloadJob>(
+      `/api/watchlist/${encodeURIComponent(fundCode)}/preload/${encodeURIComponent(jobId)}`,
     ),
   watchlistRemoveTransaction: (fundCode: string, txId: number) =>
     send<{ removed: boolean; transaction: FundTransaction; watchlist: WatchlistRow | null }>(

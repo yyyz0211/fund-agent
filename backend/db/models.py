@@ -80,6 +80,7 @@ class Watchlist(Base):
     holding_share: Mapped[float | None] = mapped_column(Float)
     cost_nav: Mapped[float | None] = mapped_column(Float)
     buy_date: Mapped[str | None] = mapped_column(String)
+    preload_status: Mapped[str | None] = mapped_column(String)
     note: Mapped[str | None] = mapped_column(String)
     cost_nav_basis: Mapped[str | None] = mapped_column(String, default="legacy")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

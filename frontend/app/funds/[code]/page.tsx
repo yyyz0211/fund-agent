@@ -269,17 +269,6 @@ export default function FundDetail({ params }: { params: { code: string } }) {
         </Card>
       </section>
 
-      <FundDiagnosisCard
-        code={code}
-        data={diagnosis.data}
-        error={diagnosis.error}
-        isLoading={diagnosis.isLoading}
-        onRefresh={() => refreshDiagnosis.mutate()}
-        refreshing={refreshDiagnosis.isPending || Boolean(refreshJobId)}
-      />
-
-      <HoldingCard fundCode={code} />
-
       <section>
         <SectionHeader
           title="净值走势与区间涨跌"
@@ -318,6 +307,17 @@ export default function FundDetail({ params }: { params: { code: string } }) {
           />
         </div>
       </section>
+
+      <FundDiagnosisCard
+        code={code}
+        data={diagnosis.data}
+        error={diagnosis.error}
+        isLoading={diagnosis.isLoading}
+        onRefresh={() => refreshDiagnosis.mutate()}
+        refreshing={refreshDiagnosis.isPending || Boolean(refreshJobId)}
+      />
+
+      <HoldingCard fundCode={code} />
 
       <WatchlistDrawer
         onClose={() => setDrawerOpen(false)}

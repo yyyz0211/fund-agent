@@ -1,10 +1,12 @@
 import pytest
+from types import SimpleNamespace
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from backend.api.app import app
+from backend.api.routes import watchlist as watchlist_routes
 from backend.db import session as db_session
 from backend.db.init_db import init_db
 import backend.db.models  # noqa: F401
@@ -32,6 +34,11 @@ def session(monkeypatch):
     # watchlist_service 已经在 import 时把 get_session 名字绑定到 module-level
     monkeypatch.setattr(db_session, "get_session", _get_session)
     monkeypatch.setattr(ws, "get_session", _get_session)
+    monkeypatch.setattr(
+        watchlist_routes,
+        "preload_jobs",
+        SimpleNamespace(start_preload_job=lambda fund_code: None),
+    )
 
     yield s
     s.close()
@@ -50,6 +57,11 @@ def test_watchlist_with_rows(session):
         "holding_share": 1000.0,
         "cost_nav": 1.0,
     })
+    repo.update_watchlist_preload(
+        session,
+        "110011",
+        status="done",
+    )
     repo.add_to_watchlist(session, "000001", note="watch")
     session.add_all([
         Fund(fund_code="110011", fund_name="易方达优质精选",
@@ -78,12 +90,25 @@ def test_watchlist_with_rows(session):
     assert by_code["110011"]["daily_return"] == pytest.approx(0.02)
     assert by_code["110011"]["daily_pnl_pct"] == pytest.approx(0.02)
     assert by_code["110011"]["daily_pnl_abs"] == pytest.approx(23.5294)
+    assert "peer_category" not in by_code["110011"]
+    assert by_code["110011"]["preload_status"] == "done"
     assert by_code["000001"]["fund_name"] == "华夏成长"
     assert by_code["000001"]["daily_return"] == pytest.approx(-0.01)
     assert by_code["000001"]["daily_pnl_abs"] is None
 
 
-def test_post_adds_row_with_full_attrs(session):
+def test_post_adds_row_with_full_attrs(session, monkeypatch):
+    calls = []
+
+    def _fake_start(fund_code):
+        calls.append(fund_code)
+        return {"job_id": "job-110011", "fund_code": fund_code, "status": "pending"}
+
+    monkeypatch.setattr(
+        watchlist_routes,
+        "preload_jobs",
+        SimpleNamespace(start_preload_job=_fake_start),
+    )
     payload = {
         "fund_code": "110011",
         "note": "long term",
@@ -102,13 +127,29 @@ def test_post_adds_row_with_full_attrs(session):
     assert body["holding_amount"] == 12000.5
     assert body["buy_date"] == "2026-01-15"
     assert body["note"] == "long term"
+    assert "peer_category" not in body
+    assert body["preload_status"] == "pending"
+    assert body["preload_job"] == {
+        "job_id": "job-110011",
+        "fund_code": "110011",
+        "status": "pending",
+    }
+    assert calls == ["110011"]
 
 
-def test_post_is_idempotent_and_does_not_overwrite(session):
+def test_post_is_idempotent_and_does_not_overwrite(session, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        watchlist_routes,
+        "preload_jobs",
+        SimpleNamespace(start_preload_job=lambda fund_code: calls.append(fund_code)),
+    )
     repo.add_to_watchlist(session, "110011", note="original")
     r = client.post("/api/watchlist", json={"fund_code": "110011", "note": "new"})
     assert r.status_code == 200
     assert r.json()["note"] == "original"  # 幂等,不覆盖
+    assert "preload_job" not in r.json()
+    assert calls == []
 
 
 def test_patch_updates_only_supplied_fields(session):
