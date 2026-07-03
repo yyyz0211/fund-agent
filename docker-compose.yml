@@ -1,0 +1,113 @@
+name: fund-agent
+
+# ---------------------------------------------------------------------------
+# Fund Agent — 本地 / 闲置电脑部署
+#
+# 把所有 .env 变量集中管理,不会进 git。
+# 启动:   docker compose up -d --build
+# 停止:   docker compose down
+# 重启:   docker compose restart <service>
+# 重建:   docker compose up -d --build <service>
+# 看日志: docker compose logs -f <service>
+# ---------------------------------------------------------------------------
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: fund-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      # 时区跟随宿主机
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # 端口不暴露公网,只在 docker 网络内给 backend / langgraph 用
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: fund-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # pydantic-settings 自动读取 DATABASE_URL,字段名→环境变量名映射:
+      #   database_url   → DATABASE_URL
+      #   deepseek_api_key → DEEPSEEK_API_KEY
+      #   deepseek_base_url → DEEPSEEK_BASE_URL
+      #   deepseek_model  → DEEPSEEK_MODEL
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-chat}
+      # 逗号分隔的 CORS 白名单;前端 Next.js 走 Tailscale IP 时也要写进去
+      # 空 fallback 让本地首次启动也可用,但生产一定要在 .env 里覆盖。
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
+      TZ: ${TZ:-Asia/Shanghai}
+    ports:
+      # 宿主端口:容器端口
+      # 把 8000 暴露给宿主,朋友通过 Tailscale IP:8000 访问
+      - "${BACKEND_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  langgraph:
+    build:
+      context: .
+      dockerfile: langgraph/Dockerfile
+    container_name: fund-langgraph
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      # LangGraph CLI 读取这套变量来切换 checkpointer 后端。
+      LANGGRAPH_DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      BACKEND_URL: http://backend:8000
+      TZ: ${TZ:-Asia/Shanghai}
+    ports:
+      - "${LANGGRAPH_PORT:-2024}:2024"
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # 这些是 build-time 注入,会被嵌入到客户端 bundle 里。
+        # 用 :- 给个 fallback,避免 .env 没填时 build 失败。
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
+        NEXT_PUBLIC_LANGGRAPH_URL: ${NEXT_PUBLIC_LANGGRAPH_URL:-http://localhost:2024}
+    container_name: fund-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+      - langgraph
+    environment:
+      # 运行时再设一遍,确保 dev 模式下也能拿到(standalone 模式主要靠 build-time)
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL}
+      NEXT_PUBLIC_LANGGRAPH_URL: ${NEXT_PUBLIC_LANGGRAPH_URL}
+      TZ: ${TZ:-Asia/Shanghai}
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+
+volumes:
+  pgdata:
+    # 命名卷,Docker 自动管理;备份由 scripts/backup-db.ps1 做 pg_dump。
+    # 删除卷: docker compose down -v

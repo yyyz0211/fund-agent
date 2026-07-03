@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.coverage
+htmlcov/
+data/*.db
+data/*.sqlite
+data/*.sqlite-journal
+tests/
+.env
+.env.local
+.git/
+.idea/
+.vscode/
+README.md

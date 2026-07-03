@@ -34,6 +34,19 @@ npm run dev
 
 打开 `http://localhost:3000`，按 `frontend/README.md` 中的 manual smoke checklist 验证五个页面。
 
+## 部署到闲置电脑（Docker + Tailscale）
+
+适合"几个朋友小圈子"使用：0 公网端口、0 域名、0 月费。
+
+详见 [DOCKER.md](./DOCKER.md)。
+
+核心流程：
+1. 闲置电脑装 Docker Desktop + Tailscale
+2. `git clone` 拉代码
+3. `cp .env.example .env`，填 DeepSeek key
+4. `.\scripts\start.ps1` 一键拉起 4 个容器
+5. 把 Tailscale IP 发给朋友，他们也能访问
+
 ## Boundaries
 
 Information assistant only — no buy/sell advice, no return predictions, no trading.

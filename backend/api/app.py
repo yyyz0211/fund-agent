@@ -1,8 +1,9 @@
 """FastAPI 应用入口。
 
-只做最小骨架：注册 CORS、四个业务 router、健康检查端点。
+只做最小骨架：注册 CORS、五个业务 router、健康检查端点。
 业务由 `routes/` 拆分，本文件不应承载任何业务函数。
 """
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -14,9 +15,15 @@ from backend.api.routes import portfolio as portfolio_routes
 
 app = FastAPI(title="Fund Agent API", version="0.1.0")
 
+# CORS 白名单从环境变量 ALLOWED_ORIGINS 读,逗号分隔。
+# 本地开发默认 http://localhost:3000;部署时通过 .env / docker-compose 注入 Tailscale IP。
+# 空字符串 / 没设 → fallback 到 localhost,保证本地启动可用。
+_allowed = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000")
+allow_origins = [o.strip() for o in _allowed.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=allow_origins,
     allow_credentials=False,
     # 自选池的 POST/PATCH/DELETE 走浏览器预检,必须显式放行;
     # OPTIONS 留给浏览器自动处理(不在这里列出,FastAPI 也能响应)。

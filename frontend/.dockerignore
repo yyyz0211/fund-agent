@@ -1,0 +1,15 @@
+node_modules/
+.next/
+out/
+build/
+.env.local
+.env.production.local
+.env.development.local
+*.tsbuildinfo
+next-env.d.ts
+tests/
+coverage/
+.git/
+.idea/
+.vscode/
+README.md
