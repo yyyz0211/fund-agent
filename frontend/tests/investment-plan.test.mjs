@@ -78,3 +78,29 @@ test("validateInvestmentPlanDraft rejects invalid amount frequency and date rang
     note: "",
   }).ok, false);
 });
+
+test("validateInvestmentPlanDraft accepts daily plan rules", async () => {
+  const { validateInvestmentPlanDraft } = await loadModule("../src/lib/investment-plan.ts");
+
+  const result = validateInvestmentPlanDraft({
+    amount: "100",
+    frequency: "daily",
+    day_rule: "交易日",
+    start_date: "2026-07-01",
+    end_date: "",
+    note: "",
+  });
+
+  assert.deepEqual(normalize(result), {
+    ok: true,
+    payload: {
+      amount: 100,
+      frequency: "daily",
+      day_rule: "交易日",
+      start_date: "2026-07-01",
+      end_date: null,
+      status: "active",
+      note: null,
+    },
+  });
+});

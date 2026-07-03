@@ -17,7 +17,7 @@ export interface NavPoint {
   as_of: string;
 }
 
-export type InvestmentPlanFrequency = "weekly" | "monthly";
+export type InvestmentPlanFrequency = "daily" | "weekly" | "monthly";
 export type InvestmentPlanStatus = "active" | "paused";
 
 export interface InvestmentPlan {
@@ -45,6 +45,39 @@ export interface InvestmentPlanPayload {
 }
 
 export type InvestmentPlanPatchPayload = Partial<InvestmentPlanPayload>;
+
+export interface PendingBuy {
+  id: number;
+  fund_code: string;
+  request_date: string;
+  amount: number;
+  fee: number | null;
+  note: string | null;
+  status: "pending" | "confirmed" | "cancelled";
+  nav_date: string | null;
+  nav: number | null;
+  share: number | null;
+  transaction_id: number | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface PendingBuyPayload {
+  request_date: string;
+  amount: number;
+  fee?: number | null;
+  note?: string | null;
+}
+
+export interface PendingBuyConfirmPayload {
+  tx_date: string;
+}
+
+export interface PendingBuyConfirmResponse {
+  pending_buy: PendingBuy;
+  transaction: FundTransaction;
+  watchlist: WatchlistRow;
+}
 
 export interface NavHistory {
   fund_code: string;

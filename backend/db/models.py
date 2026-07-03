@@ -133,6 +133,29 @@ class FundInvestmentPlan(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
+class FundPendingBuy(Base):
+    """待确认申购记录。
+
+    这类记录代表用户已经发起或计划记录了一笔买入,但还没有确认 NAV
+    和份额。它不参与 Watchlist 持仓重算,确认后才转换成
+    `FundTransaction`。
+    """
+    __tablename__ = "fund_pending_buys"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    fund_code: Mapped[str] = mapped_column(String, index=True)
+    request_date: Mapped[str] = mapped_column(String)
+    amount: Mapped[float] = mapped_column(Float)
+    fee: Mapped[float | None] = mapped_column(Float)
+    note: Mapped[str | None] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, default="pending")
+    nav_date: Mapped[str | None] = mapped_column(String)
+    nav: Mapped[float | None] = mapped_column(Float)
+    share: Mapped[float | None] = mapped_column(Float)
+    transaction_id: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
 class FundNav(Base):
     """基金日级净值快照。
 

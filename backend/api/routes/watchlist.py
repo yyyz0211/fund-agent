@@ -76,7 +76,7 @@ class InvestmentPlanUpsert(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     amount: float = Field(gt=0)
-    frequency: Literal["weekly", "monthly"]
+    frequency: Literal["daily", "weekly", "monthly"]
     day_rule: str = Field(min_length=1, max_length=32)
     start_date: str
     end_date: Optional[str] = None
@@ -107,7 +107,7 @@ class InvestmentPlanPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     amount: Optional[float] = Field(default=None, gt=0)
-    frequency: Optional[Literal["weekly", "monthly"]] = None
+    frequency: Optional[Literal["daily", "weekly", "monthly"]] = None
     day_rule: Optional[str] = Field(default=None, min_length=1, max_length=32)
     start_date: Optional[str] = None
     end_date: Optional[str] = None
@@ -123,6 +123,43 @@ class InvestmentPlanPatch(BaseModel):
             date.fromisoformat(v)
         except ValueError as exc:
             raise ValueError(f"date must be ISO YYYY-MM-DD, got {v!r}") from exc
+        return v
+
+
+class PendingBuyUpsert(BaseModel):
+    """待确认申购入参。不会直接计入市值。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    request_date: str
+    amount: float = Field(gt=0)
+    fee: Optional[float] = Field(default=None, ge=0)
+    note: Optional[str] = Field(default=None, max_length=2000)
+
+    @field_validator("request_date")
+    @classmethod
+    def _validate_request_date(cls, v: str) -> str:
+        try:
+            date.fromisoformat(v)
+        except ValueError as exc:
+            raise ValueError(f"request_date must be ISO YYYY-MM-DD, got {v!r}") from exc
+        return v
+
+
+class PendingBuyConfirm(BaseModel):
+    """确认待申购时只传确认日期,NAV 由后端本地库精确读取。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tx_date: str
+
+    @field_validator("tx_date")
+    @classmethod
+    def _validate_tx_date(cls, v: str) -> str:
+        try:
+            date.fromisoformat(v)
+        except ValueError as exc:
+            raise ValueError(f"tx_date must be ISO YYYY-MM-DD, got {v!r}") from exc
         return v
 
 
@@ -168,6 +205,15 @@ def _raise_nav_mismatch(exc: ws.TransactionNavMismatch) -> None:
             f"expected {exc.expected}, got {exc.got}"
         ),
     ) from exc
+
+
+def _pending_buy_payload(payload: PendingBuyUpsert) -> dict:
+    return {
+        "request_date": payload.request_date,
+        "amount": payload.amount,
+        "fee": payload.fee,
+        "note": payload.note,
+    }
 
 
 @router.get("/{fund_code}/transactions")
@@ -276,6 +322,50 @@ def delete_investment_plan(fund_code: str, plan_id: int) -> dict:
     if result is None:
         raise HTTPException(status_code=404, detail=f"investment plan {plan_id} 不存在")
     return result
+
+
+@router.get("/{fund_code}/pending-buys")
+def list_pending_buys(fund_code: str) -> list[dict]:
+    rows = ws.list_pending_buys(fund_code)
+    if rows is None:
+        raise HTTPException(status_code=404, detail=f"{fund_code} 不在自选池中")
+    return rows
+
+
+@router.post("/{fund_code}/pending-buys", status_code=200)
+def add_pending_buy(fund_code: str, payload: PendingBuyUpsert) -> dict:
+    row = ws.add_pending_buy(fund_code, _pending_buy_payload(payload))
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"{fund_code} 不在自选池中")
+    return row
+
+
+@router.post("/{fund_code}/pending-buys/{pending_id}/confirm", status_code=200)
+def confirm_pending_buy(fund_code: str, pending_id: int,
+                        payload: PendingBuyConfirm) -> dict:
+    try:
+        result = ws.confirm_pending_buy(fund_code, pending_id, payload.tx_date)
+    except ws.PendingBuyNavMissing as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=f"{exc.fund_code} {exc.tx_date} 本地无确认 NAV",
+        ) from exc
+    except ws.PendingBuyConflict as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"pending buy {exc.pending_id} 当前状态为 {exc.status},不能确认",
+        ) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"pending buy {pending_id} 不存在")
+    return result
+
+
+@router.post("/{fund_code}/pending-buys/{pending_id}/cancel", status_code=200)
+def cancel_pending_buy(fund_code: str, pending_id: int) -> dict:
+    row = ws.cancel_pending_buy(fund_code, pending_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"pending buy {pending_id} 不存在")
+    return row
 
 
 class WatchlistUpsert(BaseModel):

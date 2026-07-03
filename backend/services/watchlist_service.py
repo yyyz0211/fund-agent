@@ -33,6 +33,25 @@ class TransactionNavMismatch(Exception):
         self.got = got
 
 
+class PendingBuyConflict(Exception):
+    """待确认申购当前状态不允许继续确认。"""
+
+    def __init__(self, fund_code: str, pending_id: int, status: str):
+        super().__init__(fund_code, pending_id, status)
+        self.fund_code = fund_code
+        self.pending_id = pending_id
+        self.status = status
+
+
+class PendingBuyNavMissing(Exception):
+    """确认申购时缺少确认日 NAV。"""
+
+    def __init__(self, fund_code: str, tx_date: str):
+        super().__init__(fund_code, tx_date)
+        self.fund_code = fund_code
+        self.tx_date = tx_date
+
+
 def _with_session(session):
     return session or get_session()
 
@@ -321,6 +340,102 @@ def remove_investment_plan(fund_code: str, plan_id: int, session=None) -> dict |
         if plan is None:
             return None
         return {"removed": True, "plan": plan}
+    finally:
+        if owns:
+            s.close()
+
+
+def list_pending_buys(fund_code: str, session=None) -> list[dict] | None:
+    """列出待确认申购记录;基金不在自选池中返回 None。"""
+    s = _with_session(session)
+    owns = session is None
+    try:
+        if repo.get_watchlist_row(s, fund_code) is None:
+            return None
+        return repo.list_pending_buys(s, fund_code)
+    finally:
+        if owns:
+            s.close()
+
+
+def add_pending_buy(fund_code: str, attrs: dict, session=None) -> dict | None:
+    """新增待确认申购;它不影响持仓份额和 PnL。"""
+    s = _with_session(session)
+    owns = session is None
+    try:
+        if repo.get_watchlist_row(s, fund_code) is None:
+            return None
+        return repo.add_pending_buy(s, fund_code, attrs or {})
+    finally:
+        if owns:
+            s.close()
+
+
+def cancel_pending_buy(fund_code: str, pending_id: int, session=None) -> dict | None:
+    """把待确认申购标记为 cancelled。"""
+    s = _with_session(session)
+    owns = session is None
+    try:
+        if repo.get_watchlist_row(s, fund_code) is None:
+            return None
+        current = repo.get_pending_buy(s, fund_code, pending_id)
+        if current is None:
+            return None
+        return repo.update_pending_buy(s, fund_code, pending_id, {"status": "cancelled"})
+    finally:
+        if owns:
+            s.close()
+
+
+def confirm_pending_buy(fund_code: str, pending_id: int, tx_date: str,
+                        session=None) -> dict | None:
+    """把待确认申购转换为正式 buy 交易并重算持仓。
+
+    确认日 NAV 必须已经存在于本地库;确认后该笔才进入
+    `FundTransaction` 和 PnL。
+    """
+    s = _with_session(session)
+    owns = session is None
+    try:
+        if repo.get_watchlist_row(s, fund_code) is None:
+            return None
+        pending = repo.get_pending_buy(s, fund_code, pending_id)
+        if pending is None:
+            return None
+        if pending["status"] != "pending":
+            raise PendingBuyConflict(fund_code, pending_id, pending["status"])
+        nav = repo.get_nav_by_date(s, fund_code, tx_date)
+        if nav is None or nav.get("accumulated_nav") is None:
+            raise PendingBuyNavMissing(fund_code, tx_date)
+        nav_value = float(nav["accumulated_nav"])
+        if nav_value <= 0:
+            raise PendingBuyNavMissing(fund_code, tx_date)
+        try:
+            tx = repo.add_transaction(s, fund_code, {
+                "tx_date": tx_date,
+                "amount": pending["amount"],
+                "nav": nav_value,
+                "fee": pending.get("fee"),
+                "note": pending.get("note"),
+                "kind": "buy",
+            }, commit=False)
+            confirmed = repo.update_pending_buy(s, fund_code, pending_id, {
+                "status": "confirmed",
+                "nav_date": tx_date,
+                "nav": nav_value,
+                "share": tx.get("share"),
+                "transaction_id": tx.get("id"),
+            }, commit=False)
+            wl = _recalc(s, fund_code, commit=False)
+            s.commit()
+            return {
+                "pending_buy": confirmed,
+                "transaction": tx,
+                "watchlist": wl,
+            }
+        except Exception:
+            s.rollback()
+            raise
     finally:
         if owns:
             s.close()

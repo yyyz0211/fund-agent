@@ -3,6 +3,7 @@ import type {
   NavHistory, NavPoint, PortfolioPnl, ComparisonSeries,
   DiagnosisRefreshJob, FundDiagnosis, PeerFund,
   InvestmentPlan, InvestmentPlanPatchPayload, InvestmentPlanPayload,
+  PendingBuy, PendingBuyConfirmPayload, PendingBuyConfirmResponse, PendingBuyPayload,
   FundTransaction, InitialHoldingPayload, InitialHoldingResponse, TransactionUpsertPayload,
   WatchlistAddResponse, WatchlistPatchPayload, WatchlistPreloadJob,
   WatchlistRow, WatchlistUpsertPayload,
@@ -135,6 +136,31 @@ export const api = {
     send<{ removed: boolean; plan: InvestmentPlan }>(
       "DELETE",
       `/api/watchlist/${encodeURIComponent(fundCode)}/investment-plans/${planId}`,
+    ),
+  pendingBuys: (fundCode: string) =>
+    get<PendingBuy[]>(
+      `/api/watchlist/${encodeURIComponent(fundCode)}/pending-buys`,
+    ),
+  pendingBuyAdd: (fundCode: string, payload: PendingBuyPayload) =>
+    send<PendingBuy>(
+      "POST",
+      `/api/watchlist/${encodeURIComponent(fundCode)}/pending-buys`,
+      payload,
+    ),
+  pendingBuyConfirm: (
+    fundCode: string,
+    pendingId: number,
+    payload: PendingBuyConfirmPayload,
+  ) =>
+    send<PendingBuyConfirmResponse>(
+      "POST",
+      `/api/watchlist/${encodeURIComponent(fundCode)}/pending-buys/${pendingId}/confirm`,
+      payload,
+    ),
+  pendingBuyCancel: (fundCode: string, pendingId: number) =>
+    send<PendingBuy>(
+      "POST",
+      `/api/watchlist/${encodeURIComponent(fundCode)}/pending-buys/${pendingId}/cancel`,
     ),
   marketLatest: () => get<MarketLatest>("/api/market/latest"),
   announcements: (fundCode = "", limit = 20) =>

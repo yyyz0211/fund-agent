@@ -17,6 +17,7 @@ from backend.db.models import (
     Fund,
     FundInvestmentPlan,
     FundNav,
+    FundPendingBuy,
     FundProfile,
     FundTransaction,
     Watchlist,
@@ -81,6 +82,25 @@ def _investment_plan_to_dict(plan: FundInvestmentPlan) -> dict:
         "note": plan.note,
         "created_at": plan.created_at.isoformat() if plan.created_at else None,
         "updated_at": plan.updated_at.isoformat() if plan.updated_at else None,
+    }
+
+
+def _pending_buy_to_dict(row: FundPendingBuy) -> dict:
+    """FundPendingBuy 的可序列化投影。"""
+    return {
+        "id": row.id,
+        "fund_code": row.fund_code,
+        "request_date": row.request_date,
+        "amount": row.amount,
+        "fee": row.fee,
+        "note": row.note,
+        "status": row.status,
+        "nav_date": row.nav_date,
+        "nav": row.nav,
+        "share": row.share,
+        "transaction_id": row.transaction_id,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
 
 
@@ -150,6 +170,7 @@ def remove_from_watchlist(session, fund_code: str) -> bool:
     # delete 一条 SQL 不读 ORM,大表更快。
     session.execute(delete(FundTransaction).where(FundTransaction.fund_code == fund_code))
     session.execute(delete(FundInvestmentPlan).where(FundInvestmentPlan.fund_code == fund_code))
+    session.execute(delete(FundPendingBuy).where(FundPendingBuy.fund_code == fund_code))
     session.execute(delete(FundNav).where(FundNav.fund_code == fund_code))
     session.execute(delete(FundProfile).where(FundProfile.fund_code == fund_code))
     session.execute(delete(Fund).where(Fund.fund_code == fund_code))
@@ -520,3 +541,64 @@ def delete_investment_plan(session, fund_code: str, plan_id: int) -> dict | None
     session.delete(plan)
     session.commit()
     return snap
+
+
+def list_pending_buys(session, fund_code: str) -> list[dict]:
+    """按创建顺序列出某只基金的待确认申购记录。"""
+    rows = session.scalars(
+        select(FundPendingBuy)
+        .where(FundPendingBuy.fund_code == fund_code)
+        .order_by(FundPendingBuy.id)
+    ).all()
+    return [_pending_buy_to_dict(row) for row in rows]
+
+
+def get_pending_buy(session, fund_code: str, pending_id: int) -> dict | None:
+    """按 fund_code + id 读取一条待确认申购。"""
+    row = session.scalar(
+        select(FundPendingBuy)
+        .where(FundPendingBuy.id == pending_id)
+        .where(FundPendingBuy.fund_code == fund_code)
+    )
+    return _pending_buy_to_dict(row) if row else None
+
+
+def add_pending_buy(session, fund_code: str, attrs: dict, *,
+                    commit: bool = True) -> dict:
+    """新增一条待确认申购记录。"""
+    row = FundPendingBuy(
+        fund_code=fund_code,
+        request_date=attrs["request_date"],
+        amount=float(attrs["amount"]),
+        fee=float(attrs["fee"]) if attrs.get("fee") is not None else None,
+        note=attrs.get("note"),
+        status="pending",
+    )
+    session.add(row)
+    if commit:
+        session.commit()
+    else:
+        session.flush()
+    session.refresh(row)
+    return _pending_buy_to_dict(row)
+
+
+def update_pending_buy(session, fund_code: str, pending_id: int,
+                       patch: dict, *, commit: bool = True) -> dict | None:
+    """更新待确认申购;fund_code 不匹配时视为不存在。"""
+    row = session.scalar(
+        select(FundPendingBuy)
+        .where(FundPendingBuy.id == pending_id)
+        .where(FundPendingBuy.fund_code == fund_code)
+    )
+    if row is None:
+        return None
+    for key in ("status", "nav_date", "nav", "share", "transaction_id"):
+        if key in patch:
+            setattr(row, key, patch[key])
+    if commit:
+        session.commit()
+    else:
+        session.flush()
+    session.refresh(row)
+    return _pending_buy_to_dict(row)

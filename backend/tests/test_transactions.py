@@ -514,6 +514,19 @@ class TestInvestmentPlanApi:
         assert listed.status_code == 200
         assert listed.json() == [body]
 
+    def test_daily_investment_plan_is_supported(self, session):
+        repo.add_to_watchlist(session, "110011")
+
+        r = client.post("/api/watchlist/110011/investment-plans", json={
+            "amount": 100.0,
+            "frequency": "daily",
+            "day_rule": "交易日",
+            "start_date": "2026-07-01",
+        })
+
+        assert r.status_code == 200, r.text
+        assert r.json()["frequency"] == "daily"
+
     def test_update_pause_and_delete_investment_plan(self, session):
         repo.add_to_watchlist(session, "110011")
         created = client.post("/api/watchlist/110011/investment-plans", json={
@@ -560,6 +573,101 @@ class TestInvestmentPlanApi:
         })
 
         assert r.status_code == 422
+
+
+class TestPendingBuyApi:
+    def test_create_and_list_pending_buy_without_affecting_pnl(self, session):
+        from backend.services import pnl_service as psvc
+
+        repo.add_to_watchlist_full(session, "110011", {"is_holding": True})
+        session.add(FundNav(
+            fund_code="110011",
+            nav_date="2026-07-01",
+            accumulated_nav=2.0,
+            source="akshare",
+        ))
+        session.commit()
+
+        r = client.post("/api/watchlist/110011/pending-buys", json={
+            "request_date": "2026-07-01",
+            "amount": 1000.0,
+            "fee": 1.0,
+            "note": "daily plan buy",
+        })
+
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["fund_code"] == "110011"
+        assert body["status"] == "pending"
+        assert body["amount"] == pytest.approx(1000.0)
+
+        listed = client.get("/api/watchlist/110011/pending-buys")
+        assert listed.status_code == 200
+        assert listed.json() == [body]
+        assert repo.list_transactions(session, "110011") == []
+
+        pnl = psvc.calculate_pnl(session=session)
+        assert pnl["items"] == []
+        assert pnl["totals"]["market_value"] == 0
+
+    def test_confirm_pending_buy_creates_transaction_and_recalcs(self, session):
+        repo.add_to_watchlist_full(session, "110011", {"is_holding": True})
+        session.add(FundNav(
+            fund_code="110011",
+            nav_date="2026-07-02",
+            accumulated_nav=2.5,
+            source="akshare",
+        ))
+        session.commit()
+        created = client.post("/api/watchlist/110011/pending-buys", json={
+            "request_date": "2026-07-01",
+            "amount": 1000.0,
+            "fee": 1.0,
+            "note": "confirm later",
+        }).json()
+
+        r = client.post(
+            f"/api/watchlist/110011/pending-buys/{created['id']}/confirm",
+            json={"tx_date": "2026-07-02"},
+        )
+
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["pending_buy"]["status"] == "confirmed"
+        assert body["pending_buy"]["nav"] == pytest.approx(2.5)
+        assert body["transaction"]["tx_date"] == "2026-07-02"
+        assert body["transaction"]["nav"] == pytest.approx(2.5)
+        assert body["transaction"]["share"] == pytest.approx(400.0)
+        assert body["watchlist"]["holding_share"] == pytest.approx(400.0)
+        assert body["watchlist"]["cost_nav"] == pytest.approx(2.5)
+
+    def test_confirm_pending_buy_requires_local_nav_for_confirm_date(self, session):
+        repo.add_to_watchlist(session, "110011")
+        created = client.post("/api/watchlist/110011/pending-buys", json={
+            "request_date": "2026-07-01",
+            "amount": 1000.0,
+        }).json()
+
+        r = client.post(
+            f"/api/watchlist/110011/pending-buys/{created['id']}/confirm",
+            json={"tx_date": "2026-07-02"},
+        )
+
+        assert r.status_code == 404
+        assert repo.list_transactions(session, "110011") == []
+
+    def test_cancel_pending_buy_does_not_create_transaction(self, session):
+        repo.add_to_watchlist(session, "110011")
+        created = client.post("/api/watchlist/110011/pending-buys", json={
+            "request_date": "2026-07-01",
+            "amount": 1000.0,
+        }).json()
+
+        r = client.post(f"/api/watchlist/110011/pending-buys/{created['id']}/cancel")
+
+        assert r.status_code == 200
+        assert r.json()["status"] == "cancelled"
+        assert repo.list_transactions(session, "110011") == []
 
 
 # --------------------------------------------------------------------------- #

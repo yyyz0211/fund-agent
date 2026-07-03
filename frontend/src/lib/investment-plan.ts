@@ -26,7 +26,7 @@ function isIsoDate(value: string): boolean {
 }
 
 function isFrequency(value: string): value is InvestmentPlanFrequency {
-  return value === "weekly" || value === "monthly";
+  return value === "daily" || value === "weekly" || value === "monthly";
 }
 
 export function blankInvestmentPlanForm(): InvestmentPlanFormState {

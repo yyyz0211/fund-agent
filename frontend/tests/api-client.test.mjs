@@ -101,6 +101,41 @@ test("api investment plan methods call watchlist plan endpoints", async () => {
   assert.equal(calls[3].init.method, "DELETE");
 });
 
+test("api pending buy methods call pending buy endpoints", async () => {
+  const calls = [];
+  const fetch = async (url, init = {}) => {
+    calls.push({ url: String(url), init });
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ id: 9, fund_code: "110011" }),
+    };
+  };
+  const { api } = await loadModule("../src/lib/api.ts", { fetch });
+
+  await api.pendingBuys("110011");
+  await api.pendingBuyAdd("110011", {
+    request_date: "2026-07-01",
+    amount: 1000,
+  });
+  await api.pendingBuyConfirm("110011", 9, { tx_date: "2026-07-02" });
+  await api.pendingBuyCancel("110011", 9);
+
+  assert.equal(calls[0].url, "http://api.test/api/watchlist/110011/pending-buys");
+  assert.equal(calls[1].url, "http://api.test/api/watchlist/110011/pending-buys");
+  assert.equal(calls[1].init.method, "POST");
+  assert.equal(
+    calls[2].url,
+    "http://api.test/api/watchlist/110011/pending-buys/9/confirm",
+  );
+  assert.equal(calls[2].init.method, "POST");
+  assert.equal(
+    calls[3].url,
+    "http://api.test/api/watchlist/110011/pending-buys/9/cancel",
+  );
+  assert.equal(calls[3].init.method, "POST");
+});
+
 test("api.fundDiagnosis calls diagnosis endpoint with period", async () => {
   const urls = [];
   const fetch = async (url) => {

@@ -22,7 +22,7 @@ import {
 } from "@/lib/investment-plan";
 import { shouldUseInitialHoldingEndpoint } from "@/lib/watchlist-guards";
 import type {
-  FundTransaction, InvestmentPlan, NavPoint, TransactionUpsertPayload,
+  FundTransaction, InvestmentPlan, NavPoint, PendingBuy, TransactionUpsertPayload,
   WatchlistPatchPayload, WatchlistPreloadJob, WatchlistRow, WatchlistUpsertPayload,
 } from "@/types/api";
 
@@ -38,7 +38,7 @@ interface WatchlistDrawerProps {
 }
 
 type Mode = "add" | "edit";
-type Tab = "basic" | "transactions" | "plans";
+type Tab = "basic" | "transactions" | "plans" | "pending";
 
 interface FormState {
   fund_code: string;
@@ -51,6 +51,13 @@ interface FormState {
 
 interface TxFormState {
   tx_date: string;
+  amount: string;
+  fee: string;
+  note: string;
+}
+
+interface PendingBuyFormState {
+  request_date: string;
   amount: string;
   fee: string;
   note: string;
@@ -82,6 +89,16 @@ function blankTxForm(): TxFormState {
   return { tx_date: "", amount: "", fee: "", note: "" };
 }
 
+function blankPendingBuyForm(): PendingBuyFormState {
+  return { request_date: "", amount: "", fee: "", note: "" };
+}
+
+function parsePositiveNumber(value: string): number | null {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return n;
+}
+
 export function WatchlistDrawer({
   row, prefillFundCode, open, onClose, onSaved,
 }: WatchlistDrawerProps) {
@@ -95,6 +112,9 @@ export function WatchlistDrawer({
   const [activeTab, setActiveTab] = useState<Tab>("basic");
   const [txForm, setTxForm] = useState<TxFormState>(blankTxForm);
   const [txFormOpen, setTxFormOpen] = useState(false);
+  const [pendingForm, setPendingForm] = useState<PendingBuyFormState>(blankPendingBuyForm);
+  const [pendingFormOpen, setPendingFormOpen] = useState(false);
+  const [confirmDates, setConfirmDates] = useState<Record<number, string>>({});
   const [planForm, setPlanForm] = useState<InvestmentPlanFormState>(blankInvestmentPlanForm);
   const [editingPlanId, setEditingPlanId] = useState<number | null>(null);
 
@@ -106,6 +126,9 @@ export function WatchlistDrawer({
     setActiveTab("basic");
     setTxForm(blankTxForm());
     setTxFormOpen(false);
+    setPendingForm(blankPendingBuyForm());
+    setPendingFormOpen(false);
+    setConfirmDates({});
     setPlanForm(blankInvestmentPlanForm());
     setEditingPlanId(null);
   }, [open, row, prefillFundCode]);
@@ -124,7 +147,8 @@ export function WatchlistDrawer({
   // 先在基础表单里创建首笔交易,保存后再出现加仓 tab。
   const showTxTab = mode === "edit" && row != null && row.is_holding;
   const showPlanTab = mode === "edit" && row != null;
-  const hasTabs = showTxTab || showPlanTab;
+  const showPendingTab = mode === "edit" && row != null;
+  const hasTabs = showTxTab || showPlanTab || showPendingTab;
   const fundCodeForTx = row?.fund_code ?? "";
   const currentFundCode = mode === "edit" ? fundCodeForTx : form.fund_code.trim();
   const needsInitialHolding = shouldUseInitialHoldingEndpoint({
@@ -158,6 +182,12 @@ export function WatchlistDrawer({
     queryKey: ["investmentPlans", fundCodeForTx],
     queryFn: () => api.investmentPlans(fundCodeForTx),
     enabled: showPlanTab && activeTab === "plans",
+  });
+
+  const pendingBuysQuery = useQuery({
+    queryKey: ["pendingBuys", fundCodeForTx],
+    queryFn: () => api.pendingBuys(fundCodeForTx),
+    enabled: showPendingTab && activeTab === "pending",
   });
 
   const initialHoldingDraft = buildAutoTransactionDraft({
@@ -288,6 +318,64 @@ export function WatchlistDrawer({
       toast.push("定投计划状态已更新", "success");
     },
     onError: (err) => toast.push(`更新定投计划状态失败：${String(err)}`, "error"),
+  });
+
+  const addPendingBuy = useMutation({
+    mutationFn: () => {
+      const amount = parsePositiveNumber(pendingForm.amount);
+      const fee = pendingForm.fee.trim() ? parsePositiveNumber(pendingForm.fee) : null;
+      if (!pendingForm.request_date) throw new Error("请选择申购日期");
+      if (amount == null) throw new Error("请填写大于 0 的申购金额");
+      if (pendingForm.fee.trim() && fee == null) throw new Error("请填写有效手续费");
+      return api.pendingBuyAdd(fundCodeForTx, {
+        request_date: pendingForm.request_date,
+        amount,
+        fee,
+        note: pendingForm.note.trim() || null,
+      });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["pendingBuys", fundCodeForTx] });
+      setPendingForm(blankPendingBuyForm());
+      setPendingFormOpen(false);
+      toast.push("已记录申购中金额", "success");
+    },
+    onError: (err) => toast.push(`记录申购中失败：${String(err)}`, "error"),
+  });
+
+  const confirmPendingBuy = useMutation({
+    mutationFn: ({ pendingId, txDate }: { pendingId: number; txDate: string }) =>
+      api.pendingBuyConfirm(fundCodeForTx, pendingId, { tx_date: txDate }),
+    onSuccess: (res) => {
+      qc.setQueryData<WatchlistRow[]>(["watchlist"], (prev) => {
+        if (!prev) return prev;
+        return prev.map((r) =>
+          r.fund_code === res.watchlist.fund_code ? res.watchlist : r,
+        );
+      });
+      qc.invalidateQueries({ queryKey: ["pendingBuys", fundCodeForTx] });
+      qc.invalidateQueries({ queryKey: ["watchlistTransactions", fundCodeForTx] });
+      qc.invalidateQueries({ queryKey: ["watchlist"] });
+      qc.invalidateQueries({ queryKey: ["fundSummary", fundCodeForTx] });
+      qc.invalidateQueries({ queryKey: ["portfolioPnl", [fundCodeForTx]] });
+      qc.invalidateQueries({ queryKey: ["portfolioPnl", []] });
+      setConfirmDates((prev) => {
+        const next = { ...prev };
+        delete next[res.pending_buy.id];
+        return next;
+      });
+      toast.push("申购已确认并写入持仓", "success");
+    },
+    onError: (err) => toast.push(`确认申购失败：${String(err)}`, "error"),
+  });
+
+  const cancelPendingBuy = useMutation({
+    mutationFn: (pendingId: number) => api.pendingBuyCancel(fundCodeForTx, pendingId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["pendingBuys", fundCodeForTx] });
+      toast.push("申购中记录已取消", "success");
+    },
+    onError: (err) => toast.push(`取消申购失败：${String(err)}`, "error"),
   });
 
   function invalidateFundCaches(code: string) {
@@ -422,6 +510,22 @@ export function WatchlistDrawer({
     setTxForm((prev) => ({ ...prev, [key]: value }));
   }
 
+  function setPendingField<K extends keyof PendingBuyFormState>(
+    key: K,
+    value: PendingBuyFormState[K],
+  ) {
+    setPendingForm((prev) => ({ ...prev, [key]: value }));
+  }
+
+  function confirmPending(id: number) {
+    const txDate = confirmDates[id];
+    if (!txDate) {
+      toast.push("请选择确认日期", "error");
+      return;
+    }
+    confirmPendingBuy.mutate({ pendingId: id, txDate });
+  }
+
   function setPlanField<K extends keyof InvestmentPlanFormState>(
     key: K,
     value: InvestmentPlanFormState[K],
@@ -533,6 +637,14 @@ export function WatchlistDrawer({
                 onClick={() => setActiveTab("plans")}
               >
                 定投计划
+              </TabButton>
+            )}
+            {showPendingTab && (
+              <TabButton
+                active={activeTab === "pending"}
+                onClick={() => setActiveTab("pending")}
+              >
+                申购中
               </TabButton>
             )}
           </div>
@@ -692,6 +804,30 @@ export function WatchlistDrawer({
                 state={{
                   isLoading: plansQuery.isLoading,
                   error: plansQuery.error,
+                }}
+              />
+            )}
+
+            {showPendingTab && activeTab === "pending" && (
+              <PendingBuysTab
+                confirmDates={confirmDates}
+                isAdding={addPendingBuy.isPending}
+                isCancelling={cancelPendingBuy.isPending}
+                isConfirming={confirmPendingBuy.isPending}
+                isPendingFormOpen={pendingFormOpen}
+                onCancel={(id) => cancelPendingBuy.mutate(id)}
+                onChangeConfirmDate={(id, value) =>
+                  setConfirmDates((prev) => ({ ...prev, [id]: value }))
+                }
+                onChangePendingField={setPendingField}
+                onConfirm={confirmPending}
+                onOpenPendingForm={() => setPendingFormOpen((v) => !v)}
+                onSubmitPending={() => addPendingBuy.mutate()}
+                pendingBuys={pendingBuysQuery.data ?? []}
+                pendingForm={pendingForm}
+                state={{
+                  isLoading: pendingBuysQuery.isLoading,
+                  error: pendingBuysQuery.error,
                 }}
               />
             )}
@@ -994,6 +1130,207 @@ function TransactionsTab({
   );
 }
 
+function pendingStatusLabel(status: PendingBuy["status"]): string {
+  if (status === "confirmed") return "已确认";
+  if (status === "cancelled") return "已取消";
+  return "申购中";
+}
+
+function frequencyLabel(frequency: InvestmentPlan["frequency"]): string {
+  if (frequency === "daily") return "每日";
+  if (frequency === "weekly") return "每周";
+  return "每月";
+}
+
+function PendingBuysTab({
+  confirmDates,
+  isAdding,
+  isCancelling,
+  isConfirming,
+  isPendingFormOpen,
+  onCancel,
+  onChangeConfirmDate,
+  onChangePendingField,
+  onConfirm,
+  onOpenPendingForm,
+  onSubmitPending,
+  pendingBuys,
+  pendingForm,
+  state,
+}: {
+  confirmDates: Record<number, string>;
+  isAdding: boolean;
+  isCancelling: boolean;
+  isConfirming: boolean;
+  isPendingFormOpen: boolean;
+  onCancel: (id: number) => void;
+  onChangeConfirmDate: (id: number, value: string) => void;
+  onChangePendingField: <K extends keyof PendingBuyFormState>(
+    k: K,
+    v: PendingBuyFormState[K],
+  ) => void;
+  onConfirm: (id: number) => void;
+  onOpenPendingForm: () => void;
+  onSubmitPending: () => void;
+  pendingBuys: PendingBuy[];
+  pendingForm: PendingBuyFormState;
+  state: { isLoading: boolean; error: unknown };
+}) {
+  const activePendingAmount = pendingBuys
+    .filter((row) => row.status === "pending")
+    .reduce((sum, row) => sum + row.amount, 0);
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-lg bg-amber-50 p-3 text-xs text-amber-900">
+        <div className="font-medium">申购中金额不计入当前市值</div>
+        <p className="mt-1 text-amber-800">
+          等确认 NAV 和份额后,再从这里转成正式加仓记录,届时才进入持仓市值和浮盈浮亏。
+        </p>
+        {activePendingAmount > 0 && (
+          <p className="mt-2 font-medium">当前申购中 ¥ {formatMoney(activePendingAmount)}</p>
+        )}
+      </div>
+
+      <div className="flex items-center justify-between">
+        <div className="text-xs text-gray-500">
+          {pendingBuys.length === 0 ? "暂无申购中记录" : `共 ${pendingBuys.length} 条记录`}
+        </div>
+        <Button onClick={onOpenPendingForm} size="sm" type="button" variant="outline">
+          <Plus className="mr-1 h-3.5 w-3.5" />
+          {isPendingFormOpen ? "收起" : "记录申购中"}
+        </Button>
+      </div>
+
+      {isPendingFormOpen && (
+        <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="mb-1 block text-[11px] font-medium text-gray-700">申购日期</label>
+              <Input
+                onChange={(e) => onChangePendingField("request_date", e.target.value)}
+                type="date"
+                value={pendingForm.request_date}
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-[11px] font-medium text-gray-700">申购金额 ¥</label>
+              <Input
+                inputMode="decimal"
+                min={0}
+                onChange={(e) => onChangePendingField("amount", e.target.value)}
+                placeholder="1000"
+                step="0.01"
+                type="number"
+                value={pendingForm.amount}
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-[11px] font-medium text-gray-700">手续费(可选)</label>
+              <Input
+                inputMode="decimal"
+                min={0}
+                onChange={(e) => onChangePendingField("fee", e.target.value)}
+                placeholder="0.00"
+                step="0.01"
+                type="number"
+                value={pendingForm.fee}
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-[11px] font-medium text-gray-700">备注(可选)</label>
+              <Input
+                onChange={(e) => onChangePendingField("note", e.target.value)}
+                placeholder="如:定投发起"
+                value={pendingForm.note}
+              />
+            </div>
+          </div>
+          <div className="mt-3 flex justify-end gap-2">
+            <Button onClick={onOpenPendingForm} size="sm" type="button" variant="ghost">
+              取消
+            </Button>
+            <Button
+              disabled={isAdding}
+              onClick={onSubmitPending}
+              size="sm"
+              type="button"
+            >
+              {isAdding ? "保存中..." : "保存申购中"}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {state.isLoading && (
+        <StateBlock title="读取申购中记录" tone="loading">正在拉取待确认申购。</StateBlock>
+      )}
+      {state.error != null && (
+        <StateBlock title="申购中记录加载失败" tone="error">{`${state.error}`}</StateBlock>
+      )}
+      {!state.isLoading && !state.error && pendingBuys.length === 0 && (
+        <StateBlock title="暂无申购中记录" tone="empty">
+          记录后不会影响当前市值;确认后才会写入加仓记录。
+        </StateBlock>
+      )}
+      {!state.isLoading && !state.error && pendingBuys.length > 0 && (
+        <div className="space-y-2">
+          {pendingBuys.map((row) => (
+            <div className="rounded-lg border border-gray-200 bg-white p-3 text-xs" key={row.id}>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="font-medium text-gray-900">
+                    ¥ {formatMoney(row.amount)} · {pendingStatusLabel(row.status)}
+                  </div>
+                  <div className="mt-1 text-gray-500">
+                    申购 {formatDate(row.request_date)}
+                    {row.nav_date ? ` · 确认 ${formatDate(row.nav_date)}` : ""}
+                  </div>
+                  {row.nav != null && (
+                    <div className="mt-1 text-gray-500">
+                      NAV {formatNav(row.nav)}
+                      {row.share != null ? ` · ${row.share.toFixed(2)} 份` : ""}
+                    </div>
+                  )}
+                  {row.note && <div className="mt-1 text-gray-500">{row.note}</div>}
+                </div>
+                {row.status === "pending" && (
+                  <div className="flex shrink-0 items-center gap-1">
+                    <Input
+                      className="h-8 w-[132px]"
+                      onChange={(e) => onChangeConfirmDate(row.id, e.target.value)}
+                      type="date"
+                      value={confirmDates[row.id] ?? ""}
+                    />
+                    <Button
+                      disabled={isConfirming}
+                      onClick={() => onConfirm(row.id)}
+                      size="sm"
+                      type="button"
+                      variant="outline"
+                    >
+                      确认
+                    </Button>
+                    <Button
+                      disabled={isCancelling}
+                      onClick={() => onCancel(row.id)}
+                      size="sm"
+                      type="button"
+                      variant="ghost"
+                    >
+                      取消
+                    </Button>
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function InvestmentPlansTab({
   editingPlanId,
   isSaving,
@@ -1058,6 +1395,7 @@ function InvestmentPlansTab({
               onChange={(e) => onChangePlanField("frequency", e.target.value)}
               value={planForm.frequency}
             >
+              <option value="daily">每日</option>
               <option value="monthly">每月</option>
               <option value="weekly">每周</option>
             </select>
@@ -1066,7 +1404,11 @@ function InvestmentPlansTab({
             <label className="mb-1 block text-[11px] font-medium text-gray-700">日期规则</label>
             <Input
               onChange={(e) => onChangePlanField("day_rule", e.target.value)}
-              placeholder={planForm.frequency === "weekly" ? "例如 周一" : "例如 5"}
+              placeholder={
+                planForm.frequency === "daily"
+                  ? "例如 交易日"
+                  : planForm.frequency === "weekly" ? "例如 周一" : "例如 5"
+              }
               value={planForm.day_rule}
             />
           </div>
@@ -1136,7 +1478,7 @@ function InvestmentPlansTab({
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <div className="font-medium text-gray-900">
-                    ¥ {formatMoney(plan.amount)} · {plan.frequency === "monthly" ? "每月" : "每周"}
+                    ¥ {formatMoney(plan.amount)} · {frequencyLabel(plan.frequency)}
                     <span className="ml-1 text-gray-500">{plan.day_rule}</span>
                   </div>
                   <div className="mt-1 text-gray-500">
