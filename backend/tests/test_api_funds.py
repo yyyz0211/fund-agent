@@ -78,6 +78,44 @@ def test_refresh_failure_returns_502(monkeypatch):
 
 
 class TestFundSummaryEndpoint:
+    def test_nav_endpoint_returns_exact_date_when_date_query_is_set(self, session):
+        session.add_all([
+            FundNav(fund_code="110011", nav_date="2026-06-01",
+                    accumulated_nav=1.0, daily_return=0.0, source="akshare",
+                    source_updated_at="2026-06-01"),
+            FundNav(fund_code="110011", nav_date="2026-06-30",
+                    accumulated_nav=1.2, daily_return=0.01, source="akshare",
+                    source_updated_at="2026-06-30"),
+        ])
+        session.commit()
+
+        r = client.get("/api/funds/110011/nav", params={"date": "2026-06-01"})
+
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["nav_date"] == "2026-06-01"
+        assert body["accumulated_nav"] == pytest.approx(1.0)
+
+    def test_nav_endpoint_returns_404_for_missing_exact_date(self, session):
+        session.add(FundNav(
+            fund_code="110011",
+            nav_date="2026-06-30",
+            accumulated_nav=1.2,
+            source="akshare",
+        ))
+        session.commit()
+
+        r = client.get("/api/funds/110011/nav", params={"date": "2026-06-01"})
+
+        assert r.status_code == 404
+        assert "2026-06-01" in r.json()["detail"]
+
+    def test_nav_endpoint_rejects_invalid_date_query(self, session):
+        r = client.get("/api/funds/110011/nav", params={"date": "2026/06/01"})
+
+        assert r.status_code == 400
+        assert "invalid date" in r.json()["detail"]
+
     def test_summary_returns_local_detail_payload(self, session):
         session.add(Fund(
             fund_code="110011",

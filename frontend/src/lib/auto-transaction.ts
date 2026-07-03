@@ -28,16 +28,19 @@ export function buildAutoTransactionDraft({
   amountInput,
   feeInput = "",
   note = "",
+  navPoint,
   latestNav,
 }: {
   amountInput: string;
   feeInput?: string;
   note?: string;
-  latestNav: LatestNavLike | null | undefined;
+  navPoint?: LatestNavLike | null | undefined;
+  latestNav?: LatestNavLike | null | undefined;
 }): AutoTransactionDraft | null {
   const amount = parsePositiveNumber(amountInput);
-  const nav = latestNav?.accumulated_nav ?? null;
-  const navDate = latestNav?.nav_date ?? "";
+  const selectedNav = navPoint ?? latestNav;
+  const nav = selectedNav?.accumulated_nav ?? null;
+  const navDate = selectedNav?.nav_date ?? "";
   if (amount == null || nav == null || nav <= 0 || !navDate) return null;
 
   const fee = feeInput.trim() ? parsePositiveNumber(feeInput) : null;

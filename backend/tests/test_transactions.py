@@ -18,7 +18,7 @@ from backend.api.routes import watchlist as watchlist_routes
 from backend.db import repository as repo
 from backend.db import session as db_session
 from backend.db.init_db import init_db
-from backend.db.models import FundTransaction, Watchlist
+from backend.db.models import FundNav, FundTransaction, Watchlist
 from backend.services import transaction_service as ts
 from backend.services import watchlist_service as ws
 
@@ -394,6 +394,26 @@ class TestTransactionApi:
             select(func.count()).select_from(FundTransaction)
         ) == 0
 
+    def test_post_rejects_nav_that_does_not_match_local_nav_date(self, session):
+        repo.add_to_watchlist(session, "110011")
+        session.add(FundNav(
+            fund_code="110011",
+            nav_date="2026-03-01",
+            accumulated_nav=2.0,
+            source="akshare",
+        ))
+        session.commit()
+
+        r = client.post("/api/watchlist/110011/transactions", json={
+            "tx_date": "2026-03-01",
+            "amount": 1000.0,
+            "nav": 2.1,
+        })
+
+        assert r.status_code == 400
+        assert "NAV" in r.json()["detail"]
+        assert repo.list_transactions(session, "110011") == []
+
     def test_post_rejects_unsupported_kind(self, session):
         repo.add_to_watchlist(session, "110011")
         r = client.post("/api/watchlist/110011/transactions", json={
@@ -467,6 +487,79 @@ class TestTransactionApi:
         dates = [t["tx_date"] for t in r.json()]
         # 应按日期升序
         assert dates == sorted(dates)
+
+
+class TestInvestmentPlanApi:
+    def test_create_and_list_investment_plan(self, session):
+        repo.add_to_watchlist(session, "110011")
+
+        r = client.post("/api/watchlist/110011/investment-plans", json={
+            "amount": 1000.0,
+            "frequency": "monthly",
+            "day_rule": "5",
+            "start_date": "2026-07-01",
+            "end_date": "2026-12-31",
+            "note": "monthly dca",
+        })
+
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["fund_code"] == "110011"
+        assert body["amount"] == pytest.approx(1000.0)
+        assert body["frequency"] == "monthly"
+        assert body["day_rule"] == "5"
+        assert body["status"] == "active"
+
+        listed = client.get("/api/watchlist/110011/investment-plans")
+        assert listed.status_code == 200
+        assert listed.json() == [body]
+
+    def test_update_pause_and_delete_investment_plan(self, session):
+        repo.add_to_watchlist(session, "110011")
+        created = client.post("/api/watchlist/110011/investment-plans", json={
+            "amount": 1000.0,
+            "frequency": "monthly",
+            "day_rule": "5",
+            "start_date": "2026-07-01",
+        }).json()
+
+        patched = client.patch(
+            f"/api/watchlist/110011/investment-plans/{created['id']}",
+            json={"status": "paused", "amount": 1200.0, "note": "pause once"},
+        )
+
+        assert patched.status_code == 200, patched.text
+        body = patched.json()
+        assert body["status"] == "paused"
+        assert body["amount"] == pytest.approx(1200.0)
+        assert body["note"] == "pause once"
+
+        deleted = client.delete(f"/api/watchlist/110011/investment-plans/{created['id']}")
+        assert deleted.status_code == 200
+        assert deleted.json()["removed"] is True
+        assert client.get("/api/watchlist/110011/investment-plans").json() == []
+
+    def test_investment_plan_requires_watchlist_row(self, session):
+        r = client.post("/api/watchlist/999999/investment-plans", json={
+            "amount": 1000.0,
+            "frequency": "monthly",
+            "day_rule": "5",
+            "start_date": "2026-07-01",
+        })
+
+        assert r.status_code == 404
+
+    def test_investment_plan_rejects_bad_payload(self, session):
+        repo.add_to_watchlist(session, "110011")
+
+        r = client.post("/api/watchlist/110011/investment-plans", json={
+            "amount": 0,
+            "frequency": "yearly",
+            "day_rule": "",
+            "start_date": "2026/07/01",
+        })
+
+        assert r.status_code == 422
 
 
 # --------------------------------------------------------------------------- #

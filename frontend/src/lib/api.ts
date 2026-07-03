@@ -2,6 +2,7 @@ import type {
   AnnouncementList, Fund, FundMetrics, FundSummary, MarketLatest,
   NavHistory, NavPoint, PortfolioPnl, ComparisonSeries,
   DiagnosisRefreshJob, FundDiagnosis, PeerFund,
+  InvestmentPlan, InvestmentPlanPatchPayload, InvestmentPlanPayload,
   FundTransaction, InitialHoldingPayload, InitialHoldingResponse, TransactionUpsertPayload,
   WatchlistAddResponse, WatchlistPatchPayload, WatchlistPreloadJob,
   WatchlistRow, WatchlistUpsertPayload,
@@ -46,7 +47,7 @@ async function send<T>(
 
 export const api = {
   fund: (code: string) => get<Fund>(`/api/funds/${code}`),
-  nav: (code: string) => get<NavPoint>(`/api/funds/${code}/nav`),
+  nav: (code: string, date = "") => get<NavPoint>(`/api/funds/${code}/nav`, { date }),
   navHistory: (code: string, start = "", end = "") =>
     get<NavHistory>(`/api/funds/${code}/nav-history`, { start, end }),
   metrics: (code: string, period = "1m") =>
@@ -109,6 +110,31 @@ export const api = {
     send<{ removed: boolean; transaction: FundTransaction; watchlist: WatchlistRow | null }>(
       "DELETE",
       `/api/watchlist/${encodeURIComponent(fundCode)}/transactions/${txId}`,
+    ),
+  investmentPlans: (fundCode: string) =>
+    get<InvestmentPlan[]>(
+      `/api/watchlist/${encodeURIComponent(fundCode)}/investment-plans`,
+    ),
+  investmentPlanAdd: (fundCode: string, payload: InvestmentPlanPayload) =>
+    send<InvestmentPlan>(
+      "POST",
+      `/api/watchlist/${encodeURIComponent(fundCode)}/investment-plans`,
+      payload,
+    ),
+  investmentPlanUpdate: (
+    fundCode: string,
+    planId: number,
+    payload: InvestmentPlanPatchPayload,
+  ) =>
+    send<InvestmentPlan>(
+      "PATCH",
+      `/api/watchlist/${encodeURIComponent(fundCode)}/investment-plans/${planId}`,
+      payload,
+    ),
+  investmentPlanRemove: (fundCode: string, planId: number) =>
+    send<{ removed: boolean; plan: InvestmentPlan }>(
+      "DELETE",
+      `/api/watchlist/${encodeURIComponent(fundCode)}/investment-plans/${planId}`,
     ),
   marketLatest: () => get<MarketLatest>("/api/market/latest"),
   announcements: (fundCode = "", limit = 20) =>

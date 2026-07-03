@@ -1,7 +1,8 @@
 "use client";
+import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
-import { Pencil, Trash2 } from "lucide-react";
+import { Pencil, RefreshCw, Trash2 } from "lucide-react";
 import { StateBlock } from "@/components/StateBlock";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
@@ -63,7 +64,7 @@ export function WatchlistTable({
         <TBody>
           {rows.map((r) => (
             <RowActions key={r.fund_code} row={r} onEdit={onEdit}>
-              {(handleEdit, handleDelete) => (
+              {(handleEdit, handleDelete, handleRefresh, isRefreshing) => (
                 <TR
                   className="cursor-pointer transition hover:bg-blue-50/50 focus-within:bg-blue-50/50"
                   onClick={() => router.push(`/funds/${r.fund_code}`)}
@@ -110,6 +111,18 @@ export function WatchlistTable({
                           <Pencil className="h-3.5 w-3.5" />
                         </Button>
                       )}
+                      <Button
+                        aria-label={`更新 ${r.fund_code}`}
+                        disabled={isRefreshing}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          handleRefresh();
+                        }}
+                        size="sm"
+                        variant="ghost"
+                      >
+                        <RefreshCw className={cn("h-3.5 w-3.5 text-blue-600", isRefreshing && "animate-spin")} />
+                      </Button>
                       <Button
                         aria-label={`删除 ${r.fund_code}`}
                         onClick={(event) => {
@@ -246,13 +259,43 @@ function RowActions({
   children: (
     handleEdit: () => void,
     handleDelete: () => void,
+    handleRefresh: () => void,
+    isRefreshing: boolean,
   ) => React.ReactNode;
 }) {
   const qc = useQueryClient();
   const toast = useToast();
+  const [isRefreshing, setRefreshing] = useState(false);
 
   function handleEdit() {
     if (onEdit) onEdit(row);
+  }
+
+  async function handleRefresh() {
+    if (isRefreshing) return;
+    setRefreshing(true);
+    const code = row.fund_code;
+    try {
+      const result = await api.refreshFund(row.fund_code);
+      qc.invalidateQueries({ queryKey: ["watchlist"] });
+      qc.invalidateQueries({ queryKey: ["fund", code] });
+      qc.invalidateQueries({ queryKey: ["nav", code] });
+      qc.invalidateQueries({ queryKey: ["navHistory", code] });
+      qc.invalidateQueries({ queryKey: ["metrics", code] });
+      qc.invalidateQueries({ queryKey: ["fundSummary", code] });
+      qc.invalidateQueries({ queryKey: ["fundDiagnosis", code] });
+      qc.invalidateQueries({ queryKey: ["portfolioPnl", [code]] });
+      qc.invalidateQueries({ queryKey: ["portfolioPnl", []] });
+      if (result.already_up_to_date) {
+        toast.push(`${row.fund_code} 已是最新`, "success");
+      } else {
+        toast.push(`${row.fund_code} 已更新，新增 ${result.navs_inserted} 条净值`, "success");
+      }
+    } catch (err) {
+      toast.push(`更新失败：${String(err)}`, "error");
+    } finally {
+      setRefreshing(false);
+    }
   }
 
   async function handleDelete() {
@@ -272,11 +315,12 @@ function RowActions({
       qc.invalidateQueries({ queryKey: ["navHistory", code] });
       qc.invalidateQueries({ queryKey: ["metrics", code] });
       qc.invalidateQueries({ queryKey: ["portfolioPnl", [code]] });
+      qc.invalidateQueries({ queryKey: ["portfolioPnl", []] });
       toast.push(`已从自选池移除 ${row.fund_code}`, "success");
     } catch (err) {
       toast.push(`移除失败：${String(err)}`, "error");
     }
   }
 
-  return <>{children(handleEdit, handleDelete)}</>;
+  return <>{children(handleEdit, handleDelete, handleRefresh, isRefreshing)}</>;
 }

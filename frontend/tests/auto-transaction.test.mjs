@@ -52,6 +52,32 @@ test("buildAutoTransactionDraft uses latest accumulated NAV and nav_date", async
   });
 });
 
+test("buildAutoTransactionDraft can use a selected historical NAV point", async () => {
+  const { buildAutoTransactionDraft } = await loadModule("../src/lib/auto-transaction.ts");
+
+  const draft = buildAutoTransactionDraft({
+    amountInput: "600",
+    feeInput: "",
+    note: "selected date buy",
+    navPoint: {
+      ...latestNav,
+      nav_date: "2026-06-01",
+      accumulated_nav: 2.0,
+    },
+  });
+
+  assert.deepEqual(normalize(draft), {
+    payload: {
+      tx_date: "2026-06-01",
+      amount: 600,
+      nav: 2,
+      fee: null,
+      note: "selected date buy",
+    },
+    estimatedShare: 300,
+  });
+});
+
 test("buildAutoTransactionDraft trims optional note and fee", async () => {
   const { buildAutoTransactionDraft } = await loadModule("../src/lib/auto-transaction.ts");
 

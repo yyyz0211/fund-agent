@@ -14,7 +14,7 @@ from datetime import date
 from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from backend.services import watchlist_preload_jobs as preload_jobs
 from backend.services import watchlist_service as ws
@@ -70,6 +70,62 @@ class TransactionDeleteResponse(BaseModel):
     watchlist: dict | None = None
 
 
+class InvestmentPlanUpsert(BaseModel):
+    """定投计划规则入参。v1 只保存规则,不自动生成交易。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    amount: float = Field(gt=0)
+    frequency: Literal["weekly", "monthly"]
+    day_rule: str = Field(min_length=1, max_length=32)
+    start_date: str
+    end_date: Optional[str] = None
+    status: Literal["active", "paused"] = "active"
+    note: Optional[str] = Field(default=None, max_length=2000)
+
+    @field_validator("start_date", "end_date")
+    @classmethod
+    def _validate_plan_date(cls, v: Optional[str]) -> Optional[str]:
+        if v in (None, ""):
+            return None
+        try:
+            date.fromisoformat(v)
+        except ValueError as exc:
+            raise ValueError(f"date must be ISO YYYY-MM-DD, got {v!r}") from exc
+        return v
+
+    @model_validator(mode="after")
+    def _validate_range(self):
+        if self.end_date and self.end_date < self.start_date:
+            raise ValueError("end_date must be greater than or equal to start_date")
+        return self
+
+
+class InvestmentPlanPatch(BaseModel):
+    """定投计划局部更新入参。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    amount: Optional[float] = Field(default=None, gt=0)
+    frequency: Optional[Literal["weekly", "monthly"]] = None
+    day_rule: Optional[str] = Field(default=None, min_length=1, max_length=32)
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    status: Optional[Literal["active", "paused"]] = None
+    note: Optional[str] = Field(default=None, max_length=2000)
+
+    @field_validator("start_date", "end_date")
+    @classmethod
+    def _validate_plan_date(cls, v: Optional[str]) -> Optional[str]:
+        if v in (None, ""):
+            return None
+        try:
+            date.fromisoformat(v)
+        except ValueError as exc:
+            raise ValueError(f"date must be ISO YYYY-MM-DD, got {v!r}") from exc
+        return v
+
+
 def _tx_payload(payload: TransactionUpsert) -> dict:
     return {
         "tx_date": payload.tx_date,
@@ -88,6 +144,32 @@ def _initial_holding_payload(payload: InitialHoldingUpsert) -> dict:
     return data
 
 
+def _investment_plan_payload(payload: InvestmentPlanUpsert) -> dict:
+    return {
+        "amount": payload.amount,
+        "frequency": payload.frequency,
+        "day_rule": payload.day_rule,
+        "start_date": payload.start_date,
+        "end_date": payload.end_date,
+        "status": payload.status,
+        "note": payload.note,
+    }
+
+
+def _investment_plan_patch(payload: InvestmentPlanPatch) -> dict:
+    return payload.model_dump(exclude_unset=True)
+
+
+def _raise_nav_mismatch(exc: ws.TransactionNavMismatch) -> None:
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            f"{exc.fund_code} {exc.tx_date} NAV mismatch: "
+            f"expected {exc.expected}, got {exc.got}"
+        ),
+    ) from exc
+
+
 @router.get("/{fund_code}/transactions")
 def list_transactions(fund_code: str) -> list[dict]:
     """列出一只基金的全部买入记录。基金不在自选里时返回空列表(不报错),
@@ -104,7 +186,10 @@ def add_transaction(fund_code: str, payload: TransactionUpsert) -> dict:
             status_code=422,
             detail="amount 和 nav 必须都大于 0,否则无法反算份额",
         )
-    result = ws.add_transaction(fund_code, _tx_payload(payload))
+    try:
+        result = ws.add_transaction(fund_code, _tx_payload(payload))
+    except ws.TransactionNavMismatch as exc:
+        _raise_nav_mismatch(exc)
     if result is None:
         raise HTTPException(status_code=404, detail=f"{fund_code} 不在自选池中")
     return result
@@ -133,6 +218,8 @@ def set_initial_holding(fund_code: str, payload: InitialHoldingUpsert) -> dict:
                 "不能再次走 initial-holding;请改用 /transactions 端点加仓"
             ),
         ) from e
+    except ws.TransactionNavMismatch as exc:
+        _raise_nav_mismatch(exc)
 
 
 @router.delete("/{fund_code}/transactions/{tx_id}")
@@ -153,6 +240,42 @@ def delete_transaction(fund_code: str, tx_id: int) -> dict:
 def get_preload_job(fund_code: str, job_id: str) -> dict:
     """查询自选池新增后的后台数据预热任务。"""
     return preload_jobs.get_preload_job(fund_code, job_id)
+
+
+@router.get("/{fund_code}/investment-plans")
+def list_investment_plans(fund_code: str) -> list[dict]:
+    plans = ws.list_investment_plans(fund_code)
+    if plans is None:
+        raise HTTPException(status_code=404, detail=f"{fund_code} 不在自选池中")
+    return plans
+
+
+@router.post("/{fund_code}/investment-plans", status_code=200)
+def add_investment_plan(fund_code: str, payload: InvestmentPlanUpsert) -> dict:
+    plan = ws.add_investment_plan(fund_code, _investment_plan_payload(payload))
+    if plan is None:
+        raise HTTPException(status_code=404, detail=f"{fund_code} 不在自选池中")
+    return plan
+
+
+@router.patch("/{fund_code}/investment-plans/{plan_id}")
+def patch_investment_plan(
+    fund_code: str,
+    plan_id: int,
+    payload: InvestmentPlanPatch,
+) -> dict:
+    plan = ws.update_investment_plan(fund_code, plan_id, _investment_plan_patch(payload))
+    if plan is None:
+        raise HTTPException(status_code=404, detail=f"investment plan {plan_id} 不存在")
+    return plan
+
+
+@router.delete("/{fund_code}/investment-plans/{plan_id}")
+def delete_investment_plan(fund_code: str, plan_id: int) -> dict:
+    result = ws.remove_investment_plan(fund_code, plan_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"investment plan {plan_id} 不存在")
+    return result
 
 
 class WatchlistUpsert(BaseModel):

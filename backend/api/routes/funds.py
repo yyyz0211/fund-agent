@@ -83,8 +83,9 @@ def get_fund(code: str):
 
 
 @router.get("/{code}/nav")
-def get_nav(code: str):
-    body = fs.get_latest_nav(code)
+def get_nav(code: str, nav_date: str = Query(default="", alias="date")):
+    _validate_date(nav_date)
+    body = fs.get_nav_by_date(code, nav_date) if nav_date else fs.get_latest_nav(code)
     _http_from_service(body)
     return body
 

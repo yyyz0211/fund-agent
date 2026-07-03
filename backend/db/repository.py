@@ -13,7 +13,14 @@ service 既可以传入测试用的内存 Session,也可以传通过
 """
 from sqlalchemy import and_, delete, func, select
 
-from backend.db.models import Fund, FundNav, FundProfile, FundTransaction, Watchlist
+from backend.db.models import (
+    Fund,
+    FundInvestmentPlan,
+    FundNav,
+    FundProfile,
+    FundTransaction,
+    Watchlist,
+)
 
 
 def _watchlist_to_dict(w: Watchlist) -> dict:
@@ -57,6 +64,23 @@ def _profile_to_dict(p: FundProfile) -> dict:
         "raw_errors": p.raw_errors,
         "created_at": p.created_at.isoformat() if p.created_at else None,
         "updated_at": p.updated_at.isoformat() if p.updated_at else None,
+    }
+
+
+def _investment_plan_to_dict(plan: FundInvestmentPlan) -> dict:
+    """FundInvestmentPlan 的可序列化投影。"""
+    return {
+        "id": plan.id,
+        "fund_code": plan.fund_code,
+        "amount": plan.amount,
+        "frequency": plan.frequency,
+        "day_rule": plan.day_rule,
+        "start_date": plan.start_date,
+        "end_date": plan.end_date,
+        "status": plan.status,
+        "note": plan.note,
+        "created_at": plan.created_at.isoformat() if plan.created_at else None,
+        "updated_at": plan.updated_at.isoformat() if plan.updated_at else None,
     }
 
 
@@ -125,6 +149,7 @@ def remove_from_watchlist(session, fund_code: str) -> bool:
     # 顺序:交易明细 → FundNav(行最多) → Fund/Profile → Watchlist,统一一次 commit。
     # delete 一条 SQL 不读 ORM,大表更快。
     session.execute(delete(FundTransaction).where(FundTransaction.fund_code == fund_code))
+    session.execute(delete(FundInvestmentPlan).where(FundInvestmentPlan.fund_code == fund_code))
     session.execute(delete(FundNav).where(FundNav.fund_code == fund_code))
     session.execute(delete(FundProfile).where(FundProfile.fund_code == fund_code))
     session.execute(delete(Fund).where(Fund.fund_code == fund_code))
@@ -360,6 +385,16 @@ def get_latest_navs_for_funds(session, fund_codes: list[str]) -> dict[str, dict]
     return {row.fund_code: _nav_to_dict(row) for row in rows}
 
 
+def get_nav_by_date(session, fund_code: str, nav_date: str) -> dict | None:
+    """按基金代码和净值日精确读取 NAV。"""
+    row = session.scalar(
+        select(FundNav)
+        .where(FundNav.fund_code == fund_code)
+        .where(FundNav.nav_date == nav_date)
+    )
+    return _nav_to_dict(row) if row else None
+
+
 def get_transaction(session, tx_id: int) -> dict | None:
     """按主键取单笔交易,不在则 None。"""
     tx = session.get(FundTransaction, tx_id)
@@ -414,5 +449,74 @@ def delete_transaction(session, tx_id: int) -> dict | None:
         return None
     snap = _tx_to_dict(tx)
     session.delete(tx)
+    session.commit()
+    return snap
+
+
+_INVESTMENT_PLAN_PATCH_FIELDS = {
+    "amount", "frequency", "day_rule", "start_date", "end_date", "status", "note",
+}
+
+
+def list_investment_plans(session, fund_code: str) -> list[dict]:
+    """按创建顺序列出某只基金的定投计划。"""
+    rows = session.scalars(
+        select(FundInvestmentPlan)
+        .where(FundInvestmentPlan.fund_code == fund_code)
+        .order_by(FundInvestmentPlan.id)
+    ).all()
+    return [_investment_plan_to_dict(plan) for plan in rows]
+
+
+def add_investment_plan(session, fund_code: str, attrs: dict, *,
+                        commit: bool = True) -> dict:
+    """新增一条定投计划规则。"""
+    plan = FundInvestmentPlan(
+        fund_code=fund_code,
+        amount=float(attrs["amount"]),
+        frequency=attrs["frequency"],
+        day_rule=attrs["day_rule"],
+        start_date=attrs["start_date"],
+        end_date=attrs.get("end_date"),
+        status=attrs.get("status") or "active",
+        note=attrs.get("note"),
+    )
+    session.add(plan)
+    if commit:
+        session.commit()
+    else:
+        session.flush()
+    session.refresh(plan)
+    return _investment_plan_to_dict(plan)
+
+
+def update_investment_plan(session, fund_code: str, plan_id: int,
+                           patch: dict) -> dict | None:
+    """更新一条定投计划;fund_code 不匹配时视为不存在。"""
+    plan = session.scalar(
+        select(FundInvestmentPlan)
+        .where(FundInvestmentPlan.id == plan_id)
+        .where(FundInvestmentPlan.fund_code == fund_code)
+    )
+    if plan is None:
+        return None
+    for key, value in (patch or {}).items():
+        if key in _INVESTMENT_PLAN_PATCH_FIELDS:
+            setattr(plan, key, value)
+    session.commit()
+    return _investment_plan_to_dict(plan)
+
+
+def delete_investment_plan(session, fund_code: str, plan_id: int) -> dict | None:
+    """删除一条定投计划,返回删除前快照。"""
+    plan = session.scalar(
+        select(FundInvestmentPlan)
+        .where(FundInvestmentPlan.id == plan_id)
+        .where(FundInvestmentPlan.fund_code == fund_code)
+    )
+    if plan is None:
+        return None
+    snap = _investment_plan_to_dict(plan)
+    session.delete(plan)
     session.commit()
     return snap

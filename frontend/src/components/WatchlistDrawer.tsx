@@ -15,9 +15,14 @@ import {
   isSixDigitFundCode,
   type AutoTransactionDraft,
 } from "@/lib/auto-transaction";
+import {
+  blankInvestmentPlanForm,
+  validateInvestmentPlanDraft,
+  type InvestmentPlanFormState,
+} from "@/lib/investment-plan";
 import { shouldUseInitialHoldingEndpoint } from "@/lib/watchlist-guards";
 import type {
-  FundTransaction, NavPoint, TransactionUpsertPayload,
+  FundTransaction, InvestmentPlan, NavPoint, TransactionUpsertPayload,
   WatchlistPatchPayload, WatchlistPreloadJob, WatchlistRow, WatchlistUpsertPayload,
 } from "@/types/api";
 
@@ -33,7 +38,7 @@ interface WatchlistDrawerProps {
 }
 
 type Mode = "add" | "edit";
-type Tab = "basic" | "transactions";
+type Tab = "basic" | "transactions" | "plans";
 
 interface FormState {
   fund_code: string;
@@ -41,9 +46,11 @@ interface FormState {
   is_holding: boolean;
   is_focus: boolean;
   holding_amount: string;
+  holding_date: string;
 }
 
 interface TxFormState {
+  tx_date: string;
   amount: string;
   fee: string;
   note: string;
@@ -56,6 +63,7 @@ function rowToForm(row: WatchlistRow): FormState {
     is_holding: !!row.is_holding,
     is_focus: !!row.is_focus,
     holding_amount: row.holding_amount?.toString() ?? "",
+    holding_date: row.buy_date ?? "",
   };
 }
 
@@ -66,11 +74,12 @@ function blankForm(fundCode = ""): FormState {
     is_holding: false,
     is_focus: false,
     holding_amount: "",
+    holding_date: "",
   };
 }
 
 function blankTxForm(): TxFormState {
-  return { amount: "", fee: "", note: "" };
+  return { tx_date: "", amount: "", fee: "", note: "" };
 }
 
 export function WatchlistDrawer({
@@ -86,6 +95,8 @@ export function WatchlistDrawer({
   const [activeTab, setActiveTab] = useState<Tab>("basic");
   const [txForm, setTxForm] = useState<TxFormState>(blankTxForm);
   const [txFormOpen, setTxFormOpen] = useState(false);
+  const [planForm, setPlanForm] = useState<InvestmentPlanFormState>(blankInvestmentPlanForm);
+  const [editingPlanId, setEditingPlanId] = useState<number | null>(null);
 
   // 每次打开抽屉或 row/prefill 变化时重置表单 —— 避免上一次的脏值
   // 留在字段里。
@@ -95,6 +106,8 @@ export function WatchlistDrawer({
     setActiveTab("basic");
     setTxForm(blankTxForm());
     setTxFormOpen(false);
+    setPlanForm(blankInvestmentPlanForm());
+    setEditingPlanId(null);
   }, [open, row, prefillFundCode]);
 
   // Esc 关闭
@@ -110,6 +123,8 @@ export function WatchlistDrawer({
   // 只有已经保存为持仓的行才显示交易明细 tab;从关注切换为持仓时,
   // 先在基础表单里创建首笔交易,保存后再出现加仓 tab。
   const showTxTab = mode === "edit" && row != null && row.is_holding;
+  const showPlanTab = mode === "edit" && row != null;
+  const hasTabs = showTxTab || showPlanTab;
   const fundCodeForTx = row?.fund_code ?? "";
   const currentFundCode = mode === "edit" ? fundCodeForTx : form.fund_code.trim();
   const needsInitialHolding = shouldUseInitialHoldingEndpoint({
@@ -123,6 +138,9 @@ export function WatchlistDrawer({
     needsInitialHolding ||
     (showTxTab && activeTab === "transactions" && txFormOpen)
   );
+  const selectedNavDate = needsInitialHolding
+    ? form.holding_date
+    : (showTxTab && activeTab === "transactions" && txFormOpen ? txForm.tx_date : "");
 
   const txQuery = useQuery({
     queryKey: ["watchlistTransactions", fundCodeForTx],
@@ -130,23 +148,56 @@ export function WatchlistDrawer({
     enabled: showTxTab,
   });
 
-  const latestNavQuery = useQuery({
-    queryKey: ["nav", currentFundCode],
-    queryFn: () => api.nav(currentFundCode),
+  const selectedNavQuery = useQuery({
+    queryKey: ["nav", currentFundCode, selectedNavDate],
+    queryFn: () => api.nav(currentFundCode, selectedNavDate),
     enabled: shouldLoadLatestNav,
+  });
+
+  const plansQuery = useQuery({
+    queryKey: ["investmentPlans", fundCodeForTx],
+    queryFn: () => api.investmentPlans(fundCodeForTx),
+    enabled: showPlanTab && activeTab === "plans",
   });
 
   const initialHoldingDraft = buildAutoTransactionDraft({
     amountInput: form.holding_amount,
-    latestNav: latestNavQuery.data,
+    navPoint: selectedNavQuery.data,
     note: "初始持仓",
   });
   const txDraft = buildAutoTransactionDraft({
     amountInput: txForm.amount,
     feeInput: txForm.fee,
     note: txForm.note,
-    latestNav: latestNavQuery.data,
+    navPoint: selectedNavQuery.data,
   });
+  const planDraft = validateInvestmentPlanDraft(planForm);
+
+  useEffect(() => {
+    const navDate = selectedNavQuery.data?.nav_date;
+    if (!open || !needsInitialHolding || !navDate || form.holding_date) return;
+    setForm((prev) => prev.holding_date ? prev : { ...prev, holding_date: navDate });
+  }, [form.holding_date, needsInitialHolding, open, selectedNavQuery.data?.nav_date]);
+
+  useEffect(() => {
+    const navDate = selectedNavQuery.data?.nav_date;
+    if (
+      !open ||
+      !showTxTab ||
+      activeTab !== "transactions" ||
+      !txFormOpen ||
+      !navDate ||
+      txForm.tx_date
+    ) return;
+    setTxForm((prev) => prev.tx_date ? prev : { ...prev, tx_date: navDate });
+  }, [
+    activeTab,
+    open,
+    selectedNavQuery.data?.nav_date,
+    showTxTab,
+    txForm.tx_date,
+    txFormOpen,
+  ]);
 
   const addTx = useMutation({
     mutationFn: (payload: TransactionUpsertPayload) =>
@@ -162,6 +213,7 @@ export function WatchlistDrawer({
       qc.invalidateQueries({ queryKey: ["watchlistTransactions", fundCodeForTx] });
       qc.invalidateQueries({ queryKey: ["fundSummary", fundCodeForTx] });
       qc.invalidateQueries({ queryKey: ["portfolioPnl", [fundCodeForTx]] });
+      qc.invalidateQueries({ queryKey: ["portfolioPnl", []] });
       setTxForm(blankTxForm());
       setTxFormOpen(false);
       toast.push(`已添加加仓 ¥${res.transaction.amount.toFixed(2)}`, "success");
@@ -182,9 +234,60 @@ export function WatchlistDrawer({
       qc.invalidateQueries({ queryKey: ["watchlistTransactions", fundCodeForTx] });
       qc.invalidateQueries({ queryKey: ["fundSummary", fundCodeForTx] });
       qc.invalidateQueries({ queryKey: ["portfolioPnl", [fundCodeForTx]] });
+      qc.invalidateQueries({ queryKey: ["portfolioPnl", []] });
       toast.push("已删除加仓记录", "success");
     },
     onError: (err) => toast.push(`删除加仓失败：${String(err)}`, "error"),
+  });
+
+  const addPlan = useMutation({
+    mutationFn: () => {
+      if (!planDraft.ok) throw new Error(planDraft.error);
+      return api.investmentPlanAdd(fundCodeForTx, planDraft.payload);
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["investmentPlans", fundCodeForTx] });
+      setPlanForm(blankInvestmentPlanForm());
+      setEditingPlanId(null);
+      toast.push("定投计划已保存", "success");
+    },
+    onError: (err) => toast.push(`保存定投计划失败：${String(err)}`, "error"),
+  });
+
+  const updatePlan = useMutation({
+    mutationFn: ({ planId }: { planId: number }) => {
+      if (!planDraft.ok) throw new Error(planDraft.error);
+      const { status: _status, ...patch } = planDraft.payload;
+      return api.investmentPlanUpdate(fundCodeForTx, planId, patch);
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["investmentPlans", fundCodeForTx] });
+      setPlanForm(blankInvestmentPlanForm());
+      setEditingPlanId(null);
+      toast.push("定投计划已更新", "success");
+    },
+    onError: (err) => toast.push(`更新定投计划失败：${String(err)}`, "error"),
+  });
+
+  const removePlan = useMutation({
+    mutationFn: (planId: number) => api.investmentPlanRemove(fundCodeForTx, planId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["investmentPlans", fundCodeForTx] });
+      toast.push("定投计划已删除", "success");
+    },
+    onError: (err) => toast.push(`删除定投计划失败：${String(err)}`, "error"),
+  });
+
+  const togglePlanStatus = useMutation({
+    mutationFn: (plan: InvestmentPlan) =>
+      api.investmentPlanUpdate(fundCodeForTx, plan.id, {
+        status: plan.status === "active" ? "paused" : "active",
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["investmentPlans", fundCodeForTx] });
+      toast.push("定投计划状态已更新", "success");
+    },
+    onError: (err) => toast.push(`更新定投计划状态失败：${String(err)}`, "error"),
   });
 
   function invalidateFundCaches(code: string) {
@@ -195,6 +298,7 @@ export function WatchlistDrawer({
     qc.invalidateQueries({ queryKey: ["navHistory", code] });
     qc.invalidateQueries({ queryKey: ["metrics", code] });
     qc.invalidateQueries({ queryKey: ["portfolioPnl", [code]] });
+    qc.invalidateQueries({ queryKey: ["portfolioPnl", []] });
     qc.invalidateQueries({ queryKey: ["fundDiagnosis", code] });
   }
 
@@ -236,12 +340,12 @@ export function WatchlistDrawer({
       toast.push("请填写基金代码", "error");
       return;
     }
-    if (needsInitialHolding && latestNavQuery.isLoading) {
-      toast.push("正在读取最新 NAV,请稍后再保存", "error");
+    if (needsInitialHolding && selectedNavQuery.isLoading) {
+      toast.push("正在读取所选日期 NAV,请稍后再保存", "error");
       return;
     }
     if (needsInitialHolding && !initialHoldingDraft) {
-      toast.push("请填写有效持仓金额，并确认本地已有最新 NAV", "error");
+      toast.push("请填写有效持仓金额，并确认所选日期本地已有 NAV", "error");
       return;
     }
     setSubmitting(true);
@@ -260,6 +364,7 @@ export function WatchlistDrawer({
           qc.invalidateQueries({ queryKey: ["watchlistTransactions", fundCode] });
           qc.invalidateQueries({ queryKey: ["fundSummary", fundCode] });
           qc.invalidateQueries({ queryKey: ["portfolioPnl", [fundCode]] });
+          qc.invalidateQueries({ queryKey: ["portfolioPnl", []] });
         } else {
           const payload: WatchlistUpsertPayload = {
             fund_code: fundCode,
@@ -285,6 +390,7 @@ export function WatchlistDrawer({
           qc.invalidateQueries({ queryKey: ["watchlistTransactions", fundCode] });
           qc.invalidateQueries({ queryKey: ["fundSummary", fundCode] });
           qc.invalidateQueries({ queryKey: ["portfolioPnl", [fundCode]] });
+          qc.invalidateQueries({ queryKey: ["portfolioPnl", []] });
         } else {
           const patch: WatchlistPatchPayload = {
             note: form.note || null,
@@ -316,14 +422,45 @@ export function WatchlistDrawer({
     setTxForm((prev) => ({ ...prev, [key]: value }));
   }
 
+  function setPlanField<K extends keyof InvestmentPlanFormState>(
+    key: K,
+    value: InvestmentPlanFormState[K],
+  ) {
+    setPlanForm((prev) => ({ ...prev, [key]: value }));
+  }
+
+  function editPlan(plan: InvestmentPlan) {
+    setEditingPlanId(plan.id);
+    setPlanForm({
+      amount: String(plan.amount),
+      frequency: plan.frequency,
+      day_rule: plan.day_rule,
+      start_date: plan.start_date,
+      end_date: plan.end_date ?? "",
+      note: plan.note ?? "",
+    });
+  }
+
+  function submitPlan() {
+    if (!planDraft.ok) {
+      toast.push(planDraft.error, "error");
+      return;
+    }
+    if (editingPlanId != null) {
+      updatePlan.mutate({ planId: editingPlanId });
+    } else {
+      addPlan.mutate();
+    }
+  }
+
   function submitTx(e: React.FormEvent) {
     e.preventDefault();
-    if (latestNavQuery.isLoading) {
-      toast.push("正在读取最新 NAV,请稍后再提交", "error");
+    if (selectedNavQuery.isLoading) {
+      toast.push("正在读取所选日期 NAV,请稍后再提交", "error");
       return;
     }
     if (!txDraft) {
-      toast.push("请填写有效投入金额，并确认本地已有最新 NAV", "error");
+      toast.push("请填写有效投入金额，并确认所选日期本地已有 NAV", "error");
       return;
     }
     addTx.mutate(txDraft.payload);
@@ -331,7 +468,7 @@ export function WatchlistDrawer({
 
   const saveDisabled = submitting || (
     needsInitialHolding && (
-      latestNavQuery.isLoading || initialHoldingDraft == null
+      selectedNavQuery.isLoading || initialHoldingDraft == null
     )
   );
 
@@ -369,7 +506,7 @@ export function WatchlistDrawer({
           </Button>
         </header>
 
-        {showTxTab && (
+        {hasTabs && (
           <div className="flex border-b border-gray-200 px-5">
             <TabButton
               active={activeTab === "basic"}
@@ -377,23 +514,33 @@ export function WatchlistDrawer({
             >
               基础
             </TabButton>
-            <TabButton
-              active={activeTab === "transactions"}
-              onClick={() => setActiveTab("transactions")}
-            >
-              加仓记录
-              {row && row.transaction_count != null && row.transaction_count > 0 && (
-                <span className="ml-1 inline-flex items-center rounded-full bg-blue-100 px-1.5 text-[10px] font-semibold text-blue-700">
-                  {row.transaction_count}
-                </span>
-              )}
-            </TabButton>
+            {showTxTab && (
+              <TabButton
+                active={activeTab === "transactions"}
+                onClick={() => setActiveTab("transactions")}
+              >
+                加仓记录
+                {row && row.transaction_count != null && row.transaction_count > 0 && (
+                  <span className="ml-1 inline-flex items-center rounded-full bg-blue-100 px-1.5 text-[10px] font-semibold text-blue-700">
+                    {row.transaction_count}
+                  </span>
+                )}
+              </TabButton>
+            )}
+            {showPlanTab && (
+              <TabButton
+                active={activeTab === "plans"}
+                onClick={() => setActiveTab("plans")}
+              >
+                定投计划
+              </TabButton>
+            )}
           </div>
         )}
 
         <form className="flex flex-1 flex-col" onSubmit={submit}>
           <div className="flex-1 space-y-4 overflow-y-auto px-5 py-4">
-            {(!showTxTab || activeTab === "basic") && (
+            {(!hasTabs || activeTab === "basic") && (
               <>
                 <div>
                   <label className="mb-1 block text-xs font-medium text-gray-700">基金代码</label>
@@ -438,6 +585,17 @@ export function WatchlistDrawer({
                 {needsInitialHolding && (
                   <>
                     <div>
+                      <label className="mb-1 block text-xs font-medium text-gray-700">建仓日期</label>
+                      <Input
+                        onChange={(e) => setField("holding_date", e.target.value)}
+                        type="date"
+                        value={form.holding_date}
+                      />
+                      <p className="mt-1 text-[11px] text-gray-500">
+                        系统会精确读取该日期的本地 NAV；该日无净值时不能保存。
+                      </p>
+                    </div>
+                    <div>
                       <label className="mb-1 block text-xs font-medium text-gray-700">持仓金额</label>
                       <Input
                         inputMode="decimal"
@@ -451,10 +609,11 @@ export function WatchlistDrawer({
                     </div>
                     <AutoNavSummary
                       draft={initialHoldingDraft}
-                      latestNav={latestNavQuery.data}
-                      navError={latestNavQuery.error}
-                      navLoading={latestNavQuery.isLoading}
+                      latestNav={selectedNavQuery.data}
+                      navError={selectedNavQuery.error}
+                      navLoading={selectedNavQuery.isLoading}
                       purpose="initial"
+                      selectedDate={form.holding_date}
                     />
                   </>
                 )}
@@ -486,10 +645,10 @@ export function WatchlistDrawer({
               <TransactionsTab
                 costNav={row?.cost_nav}
                 holdingShare={row?.holding_share}
-                latestNav={latestNavQuery.data}
+                latestNav={selectedNavQuery.data}
                 navDraft={txDraft}
-                navError={latestNavQuery.error}
-                navLoading={latestNavQuery.isLoading}
+                navError={selectedNavQuery.error}
+                navLoading={selectedNavQuery.isLoading}
                 isSubmitting={addTx.isPending}
                 isTxFormOpen={txFormOpen}
                 onDelete={(id) => removeTx.mutate(id)}
@@ -505,15 +664,48 @@ export function WatchlistDrawer({
                 }}
               />
             )}
+
+            {showPlanTab && activeTab === "plans" && (
+              <InvestmentPlansTab
+                editingPlanId={editingPlanId}
+                isSaving={addPlan.isPending || updatePlan.isPending}
+                onCancelEdit={() => {
+                  setEditingPlanId(null);
+                  setPlanForm(blankInvestmentPlanForm());
+                }}
+                onChangePlanField={setPlanField}
+                onDelete={(id) => {
+                  if (typeof window !== "undefined") {
+                    const ok = window.confirm("确认删除这条定投计划?");
+                    if (!ok) return;
+                  }
+                  removePlan.mutate(id);
+                }}
+                onEdit={editPlan}
+                onSubmit={submitPlan}
+                onToggle={togglePlanStatus.mutate}
+                planDraft={planDraft}
+                planForm={planForm}
+                plans={plansQuery.data ?? []}
+                removePending={removePlan.isPending}
+                togglePending={togglePlanStatus.isPending}
+                state={{
+                  isLoading: plansQuery.isLoading,
+                  error: plansQuery.error,
+                }}
+              />
+            )}
           </div>
 
           <footer className="flex items-center justify-end gap-2 border-t border-gray-200 bg-gray-50 px-5 py-3">
             <Button onClick={onClose} type="button" variant="outline" disabled={submitting}>
               取消
             </Button>
-            <Button disabled={saveDisabled} type="submit">
-              {submitting ? "保存中..." : "保存"}
-            </Button>
+            {(!hasTabs || activeTab === "basic") && (
+              <Button disabled={saveDisabled} type="submit">
+                {submitting ? "保存中..." : "保存"}
+              </Button>
+            )}
           </footer>
         </form>
       </aside>
@@ -554,46 +746,47 @@ function HoldingSnapshot({ row }: { row: WatchlistRow }) {
         <SummaryItem label="建仓日期" value={row.buy_date ? formatDate(row.buy_date) : "—"} />
       </div>
       <p className="mt-2 text-[11px] text-gray-500">
-        追加投入请使用“加仓记录”,系统会按最新 NAV 自动重算份额和成本。
+        追加投入请使用“加仓记录”,系统会按所选交易日期 NAV 自动重算份额和成本。
       </p>
     </div>
   );
 }
 
 function AutoNavSummary({
-  draft, latestNav, navError, navLoading, purpose,
+  draft, latestNav, navError, navLoading, purpose, selectedDate,
 }: {
   draft: AutoTransactionDraft | null;
   latestNav: NavPoint | undefined;
   navError: unknown;
   navLoading: boolean;
   purpose: "initial" | "add";
+  selectedDate?: string;
 }) {
   if (navLoading) {
     return (
-      <StateBlock title="读取最新 NAV" tone="loading">
-        正在读取本地最新净值。
+      <StateBlock title={selectedDate ? "读取所选日期 NAV" : "读取最新 NAV"} tone="loading">
+        {selectedDate ? "正在读取所选日期的本地净值。" : "正在读取本地最新净值。"}
       </StateBlock>
     );
   }
   if (navError != null) {
     return (
-      <StateBlock title="缺少最新 NAV" tone="error">
-        {`${navError}`}。请先刷新基金数据。
+      <StateBlock title={selectedDate ? "该日期无本地 NAV" : "缺少最新 NAV"} tone="error">
+        {`${navError}`}。请刷新基金数据或选择有净值的交易日。
       </StateBlock>
     );
   }
   if (!latestNav || latestNav.accumulated_nav == null || latestNav.accumulated_nav <= 0) {
     return (
-      <StateBlock title="等待最新 NAV" tone="empty">
-        填写基金代码后会自动读取最新 NAV；没有本地数据时请先刷新基金。
+      <StateBlock title={selectedDate ? "等待所选日期 NAV" : "等待最新 NAV"} tone="empty">
+        填写基金代码和交易日期后会自动读取本地 NAV；没有本地数据时请先刷新基金。
       </StateBlock>
     );
   }
   const label = purpose === "initial" ? "首笔持仓" : "本次加仓";
   return (
     <div className="rounded-lg bg-blue-50 p-3 text-xs text-blue-900">
-      <div className="font-medium">{label}将使用本地最新 NAV</div>
+      <div className="font-medium">{label}将使用本地 NAV</div>
       <div className="mt-2 grid grid-cols-3 gap-2">
         <SummaryItem label="净值日期" value={formatDate(latestNav.nav_date)} />
         <SummaryItem label="成本 NAV" value={formatNav(latestNav.accumulated_nav)} />
@@ -671,6 +864,14 @@ function TransactionsTab({
         <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
           <div className="space-y-3">
             <div>
+              <label className="mb-1 block text-[11px] font-medium text-gray-700">加仓日期</label>
+              <Input
+                onChange={(e) => onChangeTxField("tx_date", e.target.value)}
+                type="date"
+                value={txForm.tx_date}
+              />
+            </div>
+            <div>
               <label className="mb-1 block text-[11px] font-medium text-gray-700">投入金额 ¥</label>
               <Input
                 inputMode="decimal"
@@ -688,6 +889,7 @@ function TransactionsTab({
               navError={navError}
               navLoading={navLoading}
               purpose="add"
+              selectedDate={txForm.tx_date}
             />
             <div className="grid grid-cols-2 gap-2">
               <div>
@@ -786,6 +988,191 @@ function TransactionsTab({
               ))}
             </TBody>
           </Table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function InvestmentPlansTab({
+  editingPlanId,
+  isSaving,
+  onCancelEdit,
+  onChangePlanField,
+  onDelete,
+  onEdit,
+  onSubmit,
+  onToggle,
+  planDraft,
+  planForm,
+  plans,
+  removePending,
+  state,
+  togglePending,
+}: {
+  editingPlanId: number | null;
+  isSaving: boolean;
+  onCancelEdit: () => void;
+  onChangePlanField: <K extends keyof InvestmentPlanFormState>(
+    k: K,
+    v: InvestmentPlanFormState[K],
+  ) => void;
+  onDelete: (id: number) => void;
+  onEdit: (plan: InvestmentPlan) => void;
+  onSubmit: () => void;
+  onToggle: (plan: InvestmentPlan) => void;
+  planDraft: ReturnType<typeof validateInvestmentPlanDraft>;
+  planForm: InvestmentPlanFormState;
+  plans: InvestmentPlan[];
+  removePending: boolean;
+  state: { isLoading: boolean; error: unknown };
+  togglePending: boolean;
+}) {
+  return (
+    <div className="space-y-4">
+      <div className="rounded-lg bg-blue-50 p-3 text-xs text-blue-900">
+        <div className="font-medium">定投计划只保存规则</div>
+        <p className="mt-1 text-blue-700">
+          v1 不自动生成交易、不自动扣款；实际买入仍从“加仓记录”手动写入。
+        </p>
+      </div>
+
+      <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className="mb-1 block text-[11px] font-medium text-gray-700">定投金额 ¥</label>
+            <Input
+              inputMode="decimal"
+              min={0}
+              onChange={(e) => onChangePlanField("amount", e.target.value)}
+              placeholder="1000"
+              step="0.01"
+              type="number"
+              value={planForm.amount}
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-[11px] font-medium text-gray-700">频率</label>
+            <select
+              className="block h-9 w-full rounded-md border border-gray-200 bg-white px-3 text-sm text-gray-950 shadow-sm focus:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-100"
+              onChange={(e) => onChangePlanField("frequency", e.target.value)}
+              value={planForm.frequency}
+            >
+              <option value="monthly">每月</option>
+              <option value="weekly">每周</option>
+            </select>
+          </div>
+          <div>
+            <label className="mb-1 block text-[11px] font-medium text-gray-700">日期规则</label>
+            <Input
+              onChange={(e) => onChangePlanField("day_rule", e.target.value)}
+              placeholder={planForm.frequency === "weekly" ? "例如 周一" : "例如 5"}
+              value={planForm.day_rule}
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-[11px] font-medium text-gray-700">开始日期</label>
+            <Input
+              onChange={(e) => onChangePlanField("start_date", e.target.value)}
+              type="date"
+              value={planForm.start_date}
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-[11px] font-medium text-gray-700">结束日期(可选)</label>
+            <Input
+              onChange={(e) => onChangePlanField("end_date", e.target.value)}
+              type="date"
+              value={planForm.end_date}
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-[11px] font-medium text-gray-700">备注(可选)</label>
+            <Input
+              onChange={(e) => onChangePlanField("note", e.target.value)}
+              placeholder="如:工资日后定投"
+              value={planForm.note}
+            />
+          </div>
+        </div>
+        {!planDraft.ok && (
+          <p className="mt-2 text-[11px] text-amber-700">{planDraft.error}</p>
+        )}
+        <div className="mt-3 flex justify-end gap-2">
+          {editingPlanId != null && (
+            <Button onClick={onCancelEdit} size="sm" type="button" variant="ghost">
+              取消编辑
+            </Button>
+          )}
+          <Button
+            disabled={isSaving || !planDraft.ok}
+            onClick={onSubmit}
+            size="sm"
+            type="button"
+          >
+            {isSaving ? "保存中..." : editingPlanId != null ? "保存修改" : "保存计划"}
+          </Button>
+        </div>
+      </div>
+
+      {state.isLoading && (
+        <StateBlock title="读取定投计划" tone="loading">正在拉取定投计划。</StateBlock>
+      )}
+      {state.error != null && (
+        <StateBlock title="定投计划加载失败" tone="error">{`${state.error}`}</StateBlock>
+      )}
+      {!state.isLoading && !state.error && plans.length === 0 && (
+        <StateBlock title="暂无定投计划" tone="empty">
+          保存后会出现在这里；计划不会自动生成买入记录。
+        </StateBlock>
+      )}
+      {!state.isLoading && !state.error && plans.length > 0 && (
+        <div className="space-y-2">
+          {plans.map((plan) => (
+            <div
+              className="rounded-lg border border-gray-200 bg-white p-3 text-xs"
+              key={plan.id}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="font-medium text-gray-900">
+                    ¥ {formatMoney(plan.amount)} · {plan.frequency === "monthly" ? "每月" : "每周"}
+                    <span className="ml-1 text-gray-500">{plan.day_rule}</span>
+                  </div>
+                  <div className="mt-1 text-gray-500">
+                    {formatDate(plan.start_date)}
+                    {plan.end_date ? ` ~ ${formatDate(plan.end_date)}` : " 起长期"}
+                    <span className="mx-1">·</span>
+                    {plan.status === "active" ? "启用中" : "已暂停"}
+                  </div>
+                  {plan.note && <div className="mt-1 text-gray-500">{plan.note}</div>}
+                </div>
+                <div className="flex shrink-0 gap-1">
+                  <Button onClick={() => onEdit(plan)} size="sm" type="button" variant="ghost">
+                    编辑
+                  </Button>
+                  <Button
+                    disabled={togglePending}
+                    onClick={() => onToggle(plan)}
+                    size="sm"
+                    type="button"
+                    variant="ghost"
+                  >
+                    {plan.status === "active" ? "暂停" : "启用"}
+                  </Button>
+                  <Button
+                    disabled={removePending}
+                    onClick={() => onDelete(plan.id)}
+                    size="sm"
+                    type="button"
+                    variant="ghost"
+                  >
+                    <Trash2 className="h-3.5 w-3.5 text-red-600" />
+                  </Button>
+                </div>
+              </div>
+            </div>
+          ))}
         </div>
       )}
     </div>

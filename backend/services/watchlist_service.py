@@ -22,6 +22,17 @@ class InitialHoldingConflict(Exception):
         self.existing_tx_count = existing_tx_count
 
 
+class TransactionNavMismatch(Exception):
+    """交易 payload 的 nav 与本地同日累计净值不一致。"""
+
+    def __init__(self, fund_code: str, tx_date: str, expected: float, got: float):
+        super().__init__(fund_code, tx_date, expected, got)
+        self.fund_code = fund_code
+        self.tx_date = tx_date
+        self.expected = expected
+        self.got = got
+
+
 def _with_session(session):
     return session or get_session()
 
@@ -143,6 +154,7 @@ def add_transaction(fund_code: str, attrs: dict, session=None) -> dict | None:
     try:
         if repo.get_watchlist_row(s, fund_code) is None:
             return None
+        _validate_transaction_nav(s, fund_code, attrs or {})
         tx = repo.add_transaction(s, fund_code, attrs or {})
         wl = _recalc(s, fund_code)
         return {"transaction": tx, "watchlist": wl}
@@ -166,6 +178,7 @@ def set_initial_holding(fund_code: str, attrs: dict, session=None) -> dict:
     owns = session is None
     data = attrs or {}
     try:
+        _validate_transaction_nav(s, fund_code, data)
         w = s.scalar(select(Watchlist).where(Watchlist.fund_code == fund_code))
         if w is None:
             w = Watchlist(fund_code=fund_code)
@@ -237,3 +250,77 @@ def _recalc(s, fund_code: str, *, commit: bool = True) -> dict | None:
     """薄包装:在当前 session 上调 transaction_service.recalc_holding。"""
     from backend.services.transaction_service import recalc_holding
     return recalc_holding(fund_code, session=s, commit=commit)
+
+
+def _validate_transaction_nav(s, fund_code: str, attrs: dict) -> None:
+    """如果本地存在同日 NAV,要求交易 payload 使用同一个累计净值。
+
+    没有同日 NAV 时不拦截,兼容历史 API 调用;前端新增的日期选择会
+    在提交前强制精确读取 NAV。
+    """
+    tx_date = attrs.get("tx_date")
+    if not tx_date or attrs.get("nav") is None:
+        return
+    nav = repo.get_nav_by_date(s, fund_code, tx_date)
+    if nav is None or nav.get("accumulated_nav") is None:
+        return
+    expected = float(nav["accumulated_nav"])
+    got = float(attrs["nav"])
+    if abs(expected - got) > 1e-9:
+        raise TransactionNavMismatch(fund_code, tx_date, expected, got)
+
+
+def list_investment_plans(fund_code: str, session=None) -> list[dict] | None:
+    """列出基金的定投计划;基金不在自选池中返回 None。"""
+    s = _with_session(session)
+    owns = session is None
+    try:
+        if repo.get_watchlist_row(s, fund_code) is None:
+            return None
+        return repo.list_investment_plans(s, fund_code)
+    finally:
+        if owns:
+            s.close()
+
+
+def add_investment_plan(fund_code: str, attrs: dict, session=None) -> dict | None:
+    """新增定投计划;基金不在自选池中返回 None。"""
+    s = _with_session(session)
+    owns = session is None
+    try:
+        if repo.get_watchlist_row(s, fund_code) is None:
+            return None
+        return repo.add_investment_plan(s, fund_code, attrs or {})
+    finally:
+        if owns:
+            s.close()
+
+
+def update_investment_plan(fund_code: str, plan_id: int, patch: dict,
+                           session=None) -> dict | None:
+    """更新定投计划;不存在或 fund_code 不匹配返回 None。"""
+    s = _with_session(session)
+    owns = session is None
+    try:
+        if repo.get_watchlist_row(s, fund_code) is None:
+            return None
+        return repo.update_investment_plan(s, fund_code, plan_id, patch or {})
+    finally:
+        if owns:
+            s.close()
+
+
+def remove_investment_plan(fund_code: str, plan_id: int, session=None) -> dict | None:
+    """删除定投计划;不存在或 fund_code 不匹配返回 None。"""
+    s = _with_session(session)
+    owns = session is None
+    try:
+        if repo.get_watchlist_row(s, fund_code) is None:
+            return None
+        plan = repo.delete_investment_plan(s, fund_code, plan_id)
+        if plan is None:
+            return None
+        return {"removed": True, "plan": plan}
+    finally:
+        if owns:
+            s.close()

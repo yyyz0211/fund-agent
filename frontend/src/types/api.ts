@@ -17,6 +17,35 @@ export interface NavPoint {
   as_of: string;
 }
 
+export type InvestmentPlanFrequency = "weekly" | "monthly";
+export type InvestmentPlanStatus = "active" | "paused";
+
+export interface InvestmentPlan {
+  id: number;
+  fund_code: string;
+  amount: number;
+  frequency: InvestmentPlanFrequency;
+  day_rule: string;
+  start_date: string;
+  end_date: string | null;
+  status: InvestmentPlanStatus;
+  note: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface InvestmentPlanPayload {
+  amount: number;
+  frequency: InvestmentPlanFrequency;
+  day_rule: string;
+  start_date: string;
+  end_date?: string | null;
+  status?: InvestmentPlanStatus;
+  note?: string | null;
+}
+
+export type InvestmentPlanPatchPayload = Partial<InvestmentPlanPayload>;
+
 export interface NavHistory {
   fund_code: string;
   navs: { nav_date: string; accumulated_nav: number | null; daily_return: number | null }[];

@@ -113,6 +113,26 @@ class FundTransaction(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
+class FundInvestmentPlan(Base):
+    """定投计划规则。
+
+    v1 只保存规则,不自动生成交易、不调度执行。实际买入仍然通过
+    `FundTransaction` 的手动加仓路径落库。
+    """
+    __tablename__ = "fund_investment_plans"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    fund_code: Mapped[str] = mapped_column(String, index=True)
+    amount: Mapped[float] = mapped_column(Float)
+    frequency: Mapped[str] = mapped_column(String)
+    day_rule: Mapped[str] = mapped_column(String)
+    start_date: Mapped[str] = mapped_column(String)
+    end_date: Mapped[str | None] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, default="active")
+    note: Mapped[str | None] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
 class FundNav(Base):
     """基金日级净值快照。
 

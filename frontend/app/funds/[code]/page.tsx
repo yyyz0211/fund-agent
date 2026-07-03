@@ -77,6 +77,7 @@ export default function FundDetail({ params }: { params: { code: string } }) {
       qc.invalidateQueries({ queryKey: ["navHistory", code] });
       qc.invalidateQueries({ queryKey: ["metrics", code] });
       qc.invalidateQueries({ queryKey: ["portfolioPnl", [code]] });
+      qc.invalidateQueries({ queryKey: ["portfolioPnl", []] });
       qc.invalidateQueries({ queryKey: ["fundDiagnosis", code] });
       if (res.already_up_to_date) {
         toast.push(`${code} 本地已是最新`, "success");
@@ -113,6 +114,7 @@ export default function FundDetail({ params }: { params: { code: string } }) {
       qc.invalidateQueries({ queryKey: ["navHistory", code] });
       qc.invalidateQueries({ queryKey: ["metrics", code] });
       qc.invalidateQueries({ queryKey: ["portfolioPnl", [code]] });
+      qc.invalidateQueries({ queryKey: ["portfolioPnl", []] });
       qc.invalidateQueries({ queryKey: ["fundDiagnosis", code] });
       toast.push(`已从自选池移除 ${code}`, "success");
     } catch (err) {
@@ -289,13 +291,16 @@ export default function FundDetail({ params }: { params: { code: string } }) {
           }
         />
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.7fr_1fr]">
-          <NavChart
-            code={code}
-            navError={summary.error ?? errors.nav_history}
-            navHistory={summaryData?.nav_history}
-            navLoading={summary.isLoading}
-            period={period}
-          />
+          <div className="space-y-4" data-testid="nav-holding-column">
+            <NavChart
+              code={code}
+              navError={summary.error ?? errors.nav_history}
+              navHistory={summaryData?.nav_history}
+              navLoading={summary.isLoading}
+              period={period}
+            />
+            <HoldingCard fundCode={code} />
+          </div>
           <RecentDailyReturns
             endDate={dailyReturnRows[0]?.date ?? null}
             metrics={metricsData}
@@ -317,14 +322,13 @@ export default function FundDetail({ params }: { params: { code: string } }) {
         refreshing={refreshDiagnosis.isPending || Boolean(refreshJobId)}
       />
 
-      <HoldingCard fundCode={code} />
-
       <WatchlistDrawer
         onClose={() => setDrawerOpen(false)}
         onSaved={() => {
           qc.invalidateQueries({ queryKey: ["fundSummary", code] });
           qc.invalidateQueries({ queryKey: ["watchlist"] });
           qc.invalidateQueries({ queryKey: ["portfolioPnl", [code]] });
+          qc.invalidateQueries({ queryKey: ["portfolioPnl", []] });
           qc.invalidateQueries({ queryKey: ["fundDiagnosis", code] });
         }}
         open={drawerOpen}

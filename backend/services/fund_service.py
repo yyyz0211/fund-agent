@@ -118,6 +118,23 @@ def get_latest_nav(fund_code: str, session=None) -> dict:
             s.close()
 
 
+def get_nav_by_date(fund_code: str, nav_date: str, session=None) -> dict:
+    """按净值日精确读取本地 NAV。无匹配行返回 error dict。"""
+    s = _with_session(session)
+    owns = session is None
+    try:
+        row = repo.get_nav_by_date(s, fund_code, nav_date)
+        if row is None:
+            return {
+                "error": f"no nav data for {fund_code} on date {nav_date}; call refresh_fund first",
+                "source": dc.SOURCE,
+            }
+        return row
+    finally:
+        if owns:
+            s.close()
+
+
 def get_metrics(fund_code: str, period: str = "1m", session=None) -> dict:
     """从本地库读累计净值序列,跑区间/累计收益、最大回撤、波动率。
 
