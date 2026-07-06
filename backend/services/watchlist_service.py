@@ -352,7 +352,7 @@ def list_pending_buys(fund_code: str, session=None) -> list[dict] | None:
     try:
         if repo.get_watchlist_row(s, fund_code) is None:
             return None
-        return repo.list_pending_buys(s, fund_code)
+        return [_with_pending_buy_stage(s, row) for row in repo.list_pending_buys(s, fund_code)]
     finally:
         if owns:
             s.close()
@@ -365,7 +365,8 @@ def add_pending_buy(fund_code: str, attrs: dict, session=None) -> dict | None:
     try:
         if repo.get_watchlist_row(s, fund_code) is None:
             return None
-        return repo.add_pending_buy(s, fund_code, attrs or {})
+        row = repo.add_pending_buy(s, fund_code, attrs or {})
+        return _with_pending_buy_stage(s, row)
     finally:
         if owns:
             s.close()
@@ -381,7 +382,8 @@ def cancel_pending_buy(fund_code: str, pending_id: int, session=None) -> dict | 
         current = repo.get_pending_buy(s, fund_code, pending_id)
         if current is None:
             return None
-        return repo.update_pending_buy(s, fund_code, pending_id, {"status": "cancelled"})
+        row = repo.update_pending_buy(s, fund_code, pending_id, {"status": "cancelled"})
+        return _with_pending_buy_stage(s, row) if row else None
     finally:
         if owns:
             s.close()
@@ -429,7 +431,7 @@ def confirm_pending_buy(fund_code: str, pending_id: int, tx_date: str,
             wl = _recalc(s, fund_code, commit=False)
             s.commit()
             return {
-                "pending_buy": confirmed,
+                "pending_buy": _with_pending_buy_stage(s, confirmed),
                 "transaction": tx,
                 "watchlist": wl,
             }
@@ -439,3 +441,45 @@ def confirm_pending_buy(fund_code: str, pending_id: int, tx_date: str,
     finally:
         if owns:
             s.close()
+
+
+def _with_pending_buy_stage(s, row: dict) -> dict:
+    """给待确认申购补充 T 日展示字段。
+
+    `stage` 是响应层计算字段,不入库:
+    - submitted: 等待下一条本地 NAV
+    - confirmable: 已有下一条本地 NAV,可按用户确认日落正式交易
+    - confirmed/cancelled: 终态
+    """
+    if row is None:
+        return row
+    result = dict(row)
+    status = result.get("status") or "pending"
+    amount = float(result.get("amount") or 0.0)
+    if status == "confirmed":
+        result["stage"] = "confirmed"
+        result["expected_confirm_date"] = result.get("nav_date")
+        result["pending_amount"] = 0.0
+        result["message"] = "已确认份额,已计入持仓盈亏。"
+        return result
+    if status == "cancelled":
+        result["stage"] = "cancelled"
+        result["expected_confirm_date"] = result.get("nav_date")
+        result["pending_amount"] = 0.0
+        result["message"] = "已取消,不计入持仓盈亏。"
+        return result
+
+    expected = repo.get_next_nav_date_after(
+        s,
+        str(result["fund_code"]),
+        str(result["request_date"]),
+    )
+    result["expected_confirm_date"] = expected
+    result["pending_amount"] = amount
+    if expected:
+        result["stage"] = "confirmable"
+        result["message"] = f"预计确认日 {expected} 已有本地 NAV,可确认份额。"
+    else:
+        result["stage"] = "submitted"
+        result["message"] = "已提交,等待下一交易日 NAV 后确认份额。"
+    return result

@@ -416,6 +416,17 @@ def get_nav_by_date(session, fund_code: str, nav_date: str) -> dict | None:
     return _nav_to_dict(row) if row else None
 
 
+def get_next_nav_date_after(session, fund_code: str, nav_date: str) -> str | None:
+    """取 `nav_date` 之后的第一条本地 NAV 日期,用于 T 日预计确认。"""
+    return session.scalar(
+        select(FundNav.nav_date)
+        .where(FundNav.fund_code == fund_code)
+        .where(FundNav.nav_date > nav_date)
+        .order_by(FundNav.nav_date)
+        .limit(1)
+    )
+
+
 def get_transaction(session, tx_id: int) -> dict | None:
     """按主键取单笔交易,不在则 None。"""
     tx = session.get(FundTransaction, tx_id)
