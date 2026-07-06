@@ -7,6 +7,7 @@ import type {
   FundTransaction, InitialHoldingPayload, InitialHoldingResponse, TransactionUpsertPayload,
   WatchlistAddResponse, WatchlistPatchPayload, WatchlistPreloadJob,
   WatchlistRow, WatchlistUpsertPayload,
+  PortfolioPnlSeries,
 } from "@/types/api";
 
 // 兼容两种命名:Docker 部署用 NEXT_PUBLIC_API_BASE_URL,本地 dev 历史上用 NEXT_PUBLIC_API_BASE
@@ -171,6 +172,12 @@ export const api = {
     get<AnnouncementList>("/api/announcements", { fund_code: fundCode, limit }),
   portfolioPnl: (codes: string[] = []) =>
     get<PortfolioPnl>("/api/portfolio/pnl", { codes: codes.join(",") }),
+  portfolioPnlSeries: (codes: string[] = [], start = "", end = "") =>
+    get<PortfolioPnlSeries>("/api/portfolio/pnl-series", {
+      codes: codes.join(","),
+      start,
+      end,
+    }),
   portfolioCompare: (codes: string[], start = "", end = "") =>
     get<{
       as_of: string;

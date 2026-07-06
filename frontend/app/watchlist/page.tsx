@@ -1,6 +1,7 @@
 "use client";
 import { useMemo, useState } from "react";
-import { Plus, RefreshCw, Search } from "lucide-react";
+import Link from "next/link";
+import { Plus, RefreshCw, Search, Wallet } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageHeader } from "@/components/PageHeader";
 import { WatchlistDrawer } from "@/components/WatchlistDrawer";
@@ -118,6 +119,12 @@ export default function WatchlistPage() {
         description="本地维护的基金清单。可新建、编辑备注/持仓信息,或删除条目;搜索在前端完成,不会修改后端数据。"
         actions={
           <>
+            <Link href="/portfolio">
+              <Button type="button" variant="outline">
+                <Wallet className="mr-2 h-4 w-4" />
+                组合表现
+              </Button>
+            </Link>
             <Button
               disabled={refreshingAll || isLoading || !data?.length}
               onClick={handleRefreshAll}

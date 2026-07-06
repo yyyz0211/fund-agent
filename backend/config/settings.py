@@ -39,6 +39,13 @@ class Settings(BaseSettings):
     # `db.init_db` / smoke 脚本按需创建。
     database_url: str = "sqlite:///backend/data/fund_agent.db"
 
+    # 定时刷新调度(APScheduler,进程内)。测试 / CI 里把 SCHEDULER_ENABLED
+    # 设为 false 可避免起后台线程。cron 时间按 scheduler_timezone 解释。
+    scheduler_enabled: bool = True
+    scheduler_refresh_cron_hour: int = 20
+    scheduler_refresh_cron_minute: int = 0
+    scheduler_timezone: str = "Asia/Shanghai"
+
 
 @lru_cache
 def get_settings() -> Settings:

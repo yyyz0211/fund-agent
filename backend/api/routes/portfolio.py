@@ -19,6 +19,7 @@ from backend.db.models import Fund, FundNav
 from backend.db.session import get_session
 from backend.services import data_collector as dc
 from backend.services import pnl_service as psvc
+from backend.services import portfolio_history as ph
 
 router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
 
@@ -47,6 +48,24 @@ def get_portfolio_pnl(
     if codes.strip():
         fund_codes = [c.strip() for c in codes.split(",") if c.strip()]
     return psvc.calculate_pnl(fund_codes=fund_codes)
+
+
+@router.get("/pnl-series")
+def get_portfolio_pnl_series(
+    codes: str = Query(default="", description="逗号分隔的 fund_code 列表;空=全部持仓"),
+    start: str = Query(default="", description="ISO YYYY-MM-DD;空=默认 1 年窗口"),
+    end: str = Query(default="", description="ISO YYYY-MM-DD;空=今天"),
+):
+    """返回持仓组合每日盈亏时间序列(投入 / 市值 / 累计盈亏)。
+
+    确定性本地计算,不联网。`codes` 缺省时算全部 `is_holding=true` 行。
+    """
+    _validate_date(start)
+    _validate_date(end)
+    fund_codes: Optional[list[str]] = None
+    if codes.strip():
+        fund_codes = [c.strip() for c in codes.split(",") if c.strip()]
+    return ph.calculate_pnl_series(fund_codes=fund_codes, start=start, end=end)
 
 
 @router.get("/compare")

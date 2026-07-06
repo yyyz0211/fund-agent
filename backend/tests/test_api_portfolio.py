@@ -124,3 +124,46 @@ class TestCompareEndpoint:
             params={"codes": "110011", "start": "not-a-date"},
         )
         assert r.status_code == 400
+
+
+class TestPnlSeriesEndpoint:
+    def _seed_holding_with_history(self, s, code, dates, navs, tx_date, amount):
+        repo.add_to_watchlist_full(s, code, {"is_holding": True})
+        if not s.get(Fund, code):
+            s.add(Fund(fund_code=code, fund_name=code))
+            s.commit()
+        for d, n in zip(dates, navs):
+            s.add(FundNav(fund_code=code, nav_date=d, accumulated_nav=n, source="akshare"))
+        s.commit()
+        repo.add_transaction(s, code, {"tx_date": tx_date, "amount": amount, "nav": navs[0]})
+
+    def test_empty_portfolio_returns_zero_summary(self, session):
+        r = client.get("/api/portfolio/pnl-series")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["dates"] == []
+        assert body["summary"]["invested"] == 0.0
+        assert body["summary"]["daily_points"] == 0
+
+    def test_single_holding_series(self, session):
+        self._seed_holding_with_history(
+            session, "110011",
+            ["2026-01-01", "2026-01-02"], [1.0, 1.1],
+            tx_date="2026-01-01", amount=1000.0,
+        )
+        r = client.get(
+            "/api/portfolio/pnl-series",
+            params={"start": "2026-01-01", "end": "2026-01-02"},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["dates"][0]["invested"] == 1000.0
+        assert body["dates"][0]["market_value"] == 1000.0
+        assert body["dates"][1]["market_value"] == 1100.0
+        assert body["dates"][1]["pnl"] == 100.0
+        assert body["summary"]["invested"] == 1000.0
+        assert body["summary"]["market_value"] == 1100.0
+
+    def test_rejects_bad_date(self, session):
+        r = client.get("/api/portfolio/pnl-series", params={"start": "bad-date"})
+        assert r.status_code == 400

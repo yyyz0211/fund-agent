@@ -83,6 +83,11 @@ NEXT_PUBLIC_LANGGRAPH_URL=http://100.64.0.2:2024
 
 `100.x.x.x` 全部要换成你 `tailscale ip -4` 的实际结果。
 
+定时刷新调度(SCHEDULER_*)默认开启,每天 20:00 Asia/Shanghai 跑一遍自选池。
+如需关闭,把 `SCHEDULER_ENABLED=false` 即可,后端 `start_scheduler()` 会立即返回,
+不起后台线程。手动触发全量刷新另走 `POST /api/admin/refresh-all`(另见
+"信任模型与 admin 端点")。
+
 ### 1.4 启动
 
 ```powershell
@@ -157,6 +162,26 @@ docker compose logs --tail 100 langgraph
 docker compose restart backend
 docker compose up -d --build backend    # 代码改了要重建
 ```
+
+### 2.6 信任模型与 admin 端点
+
+整套部署由 Tailscale 网络边界保护:**假设 Tailscale 网络内只有受信用户**
+(你本人 + 你授权的朋友)。基于这个假设,后端所有路由都未做鉴权 —— 同网络
+里的访客能直接调任何 `/api/*`,包括:
+
+- `GET /api/admin/refresh-status` — 看最近一次定时/手动刷新结果
+- `POST /api/admin/refresh-all` — 手动触发全量刷新,202 后立即返回
+  (后台线程跑,可并发多次调用,单飞实现避免重复执行)
+
+如果以后要对外开放(cancel Tailscale、走 Cloudflare Tunnel):
+
+1. 把后端 admin 路由器改为 localhost-only(`uvicorn` 只在 `127.0.0.1:8000` 监听)
+2. 另起一个 Node/Bash 脚本需要时 SSH 上这台机器去调 admin
+3. 或先加 `X-Admin-Token` 头校验,通过 `backend/.env` 注入
+
+**同一原则适用于所有其它路由**:组合数据、交易明细、自选池都是前台
+登录假设下的"家人/朋友"模型。若要分权限,先把单用户容器改成
+`uvicorn --forwarded-allow-ips` + JWT/前向代理那一套。
 
 ---
 

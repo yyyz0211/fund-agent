@@ -12,6 +12,7 @@ from backend.api.routes import market as market_routes
 from backend.api.routes import watchlist as watchlist_routes
 from backend.api.routes import announcements as announcements_routes
 from backend.api.routes import portfolio as portfolio_routes
+from backend.api.routes import admin as admin_routes
 
 app = FastAPI(title="Fund Agent API", version="0.1.0")
 
@@ -34,14 +35,27 @@ app.add_middleware(
 
 @app.on_event("startup")
 def _ensure_schema() -> None:
-    """进程启动时把 ORM 表建齐 + 给老表补列。
+    """进程启动时把 ORM 表建齐 + 给老表补列,并启动定时刷新调度器。
 
     生产级项目会用 alembic,本项目当前没引入迁移工具,这里
     `init_db` 自带"反射 → 缺列 ALTER"逻辑,幂等可重复跑。
+
+    调度器随进程启动;`SCHEDULER_ENABLED=false`(测试/CI)时 `start_scheduler`
+    直接返回 None,不起后台线程。
     """
     from backend.db.init_db import init_db
+    from backend import scheduler as app_scheduler
 
     init_db()
+    app_scheduler.start_scheduler()
+
+
+@app.on_event("shutdown")
+def _stop_scheduler() -> None:
+    """进程退出时停止调度器,避免后台线程泄漏。"""
+    from backend import scheduler as app_scheduler
+
+    app_scheduler.shutdown_scheduler()
 
 
 @app.get("/api/health")
@@ -55,6 +69,7 @@ def add_routers(app: FastAPI) -> None:
     app.include_router(market_routes.router)
     app.include_router(announcements_routes.router)
     app.include_router(portfolio_routes.router)
+    app.include_router(admin_routes.router)
 
 
 add_routers(app)

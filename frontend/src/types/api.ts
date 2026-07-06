@@ -335,3 +335,39 @@ export interface DiagnosisRefreshJob {
   error: string | null;
   as_of: string | null;
 }
+
+export interface PortfolioPnlPoint {
+  date: string;
+  invested: number;
+  market_value: number;
+  pnl: number;
+  pnl_pct: number;
+  missing_funds: string[];
+}
+
+export interface PortfolioPnlFund {
+  fund_code: string;
+  fund_name: string | null;
+  current_share: number;
+  current_invested: number;
+  current_market_value: number;
+}
+
+export interface PortfolioPnlSummary {
+  invested: number;
+  market_value: number;
+  pnl_abs: number;
+  pnl_pct: number;
+  daily_points: number;
+}
+
+export interface PortfolioPnlSeries {
+  start: string;
+  end: string;
+  as_of: string;
+  source: string;
+  dates: PortfolioPnlPoint[];
+  per_fund: PortfolioPnlFund[];
+  summary: PortfolioPnlSummary;
+  uncovered_funds: string[];
+}

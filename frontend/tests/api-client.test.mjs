@@ -194,6 +194,39 @@ test("api.fundDiagnosisRefreshJob calls job status endpoint", async () => {
   );
 });
 
+test("api.portfolioPnlSeries calls pnl-series endpoint with codes and window", async () => {
+  const urls = [];
+  const fetch = async (url) => {
+    urls.push(String(url));
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ dates: [], per_fund: [], summary: {} }),
+    };
+  };
+  const { api } = await loadModule("../src/lib/api.ts", { fetch });
+
+  await api.portfolioPnlSeries(["110011", "000001"], "2026-01-01", "2026-07-06");
+
+  assert.equal(
+    urls[0],
+    "http://api.test/api/portfolio/pnl-series?codes=110011%2C000001&start=2026-01-01&end=2026-07-06",
+  );
+});
+
+test("api.portfolioPnlSeries omits empty params", async () => {
+  const urls = [];
+  const fetch = async (url) => {
+    urls.push(String(url));
+    return { ok: true, status: 200, json: async () => ({ dates: [] }) };
+  };
+  const { api } = await loadModule("../src/lib/api.ts", { fetch });
+
+  await api.portfolioPnlSeries();
+
+  assert.equal(urls[0], "http://api.test/api/portfolio/pnl-series");
+});
+
 test("api.watchlistPreloadJob calls watchlist preload endpoint", async () => {
   const urls = [];
   const fetch = async (url) => {
