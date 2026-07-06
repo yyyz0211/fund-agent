@@ -9,7 +9,11 @@ import type {
   WatchlistRow, WatchlistUpsertPayload,
 } from "@/types/api";
 
-const BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
+// 兼容两种命名:Docker 部署用 NEXT_PUBLIC_API_BASE_URL,本地 dev 历史上用 NEXT_PUBLIC_API_BASE
+const BASE =
+  process.env.NEXT_PUBLIC_API_BASE_URL ??
+  process.env.NEXT_PUBLIC_API_BASE ??
+  "http://localhost:8000";
 
 async function get<T>(path: string, params?: Record<string, string | number>): Promise<T> {
   const url = new URL(BASE + path);

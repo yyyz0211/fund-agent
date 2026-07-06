@@ -25,6 +25,7 @@ RUN pip install -r /tmp/req.txt \
 # 复制 backend 源码(graph / tools / config 等模块)和 langgraph 配置。
 COPY backend ./backend
 COPY langgraph ./langgraph
+COPY langgraph.json /app/langgraph.json
 
 EXPOSE 2024
 

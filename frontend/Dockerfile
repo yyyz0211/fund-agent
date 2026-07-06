@@ -42,10 +42,9 @@ ENV NODE_ENV=production \
 COPY --from=builder /app/.next/standalone ./
 # 静态资源(Next.js 默认 .next/static,standalone 模式下未包含)
 COPY --from=builder /app/.next/static ./.next/static
-# public/ 如果存在(可选,没有也不报错)
-COPY --from=builder /app/public ./public 2>/dev/null || true
+# public/ 目录(含 .gitkeep)
+COPY --from=builder /app/public ./public
 
 EXPOSE 3000
 
-# 关闭大小写敏感的 Windows 路径兼容,standalone 镜像里 Linux 文件名不受影响
 CMD ["node", "server.js"]

@@ -13,3 +13,7 @@ coverage/
 .idea/
 .vscode/
 README.md
+# 非 frontend 目录的文件不应该进入 frontend 的构建上下文
+langgraph.json
+backend/
+langgraph/
