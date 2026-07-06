@@ -99,6 +99,12 @@ function parsePositiveNumber(value: string): number | null {
   return n;
 }
 
+function todayInputValue(): string {
+  const now = new Date();
+  now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
+  return now.toISOString().slice(0, 10);
+}
+
 export function WatchlistDrawer({
   row, prefillFundCode, open, onClose, onSaved,
 }: WatchlistDrawerProps) {
@@ -202,6 +208,27 @@ export function WatchlistDrawer({
     navPoint: selectedNavQuery.data,
   });
   const planDraft = validateInvestmentPlanDraft(planForm);
+
+  useEffect(() => {
+    if (!open) return;
+    const rows = pendingBuysQuery.data ?? [];
+    if (rows.length === 0) return;
+    setConfirmDates((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const item of rows) {
+        if (
+          item.stage === "confirmable" &&
+          item.expected_confirm_date &&
+          !next[item.id]
+        ) {
+          next[item.id] = item.expected_confirm_date;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [open, pendingBuysQuery.data]);
 
   useEffect(() => {
     const navDate = selectedNavQuery.data?.nav_date;
@@ -557,6 +584,18 @@ export function WatchlistDrawer({
     }
   }
 
+  function startPendingBuyFromPlan(plan: InvestmentPlan) {
+    setActiveTab("pending");
+    setPendingFormOpen(true);
+    setPendingForm({
+      request_date: todayInputValue(),
+      amount: String(plan.amount),
+      fee: "",
+      note: plan.note ? `定投计划: ${plan.note}` : "定投计划本次申购",
+    });
+    toast.push("已带入定投金额,请确认申购日期后保存", "info");
+  }
+
   function submitTx(e: React.FormEvent) {
     e.preventDefault();
     if (selectedNavQuery.isLoading) {
@@ -794,6 +833,7 @@ export function WatchlistDrawer({
                   removePlan.mutate(id);
                 }}
                 onEdit={editPlan}
+                onRecordPendingFromPlan={startPendingBuyFromPlan}
                 onSubmit={submitPlan}
                 onToggle={togglePlanStatus.mutate}
                 planDraft={planDraft}
@@ -1130,9 +1170,11 @@ function TransactionsTab({
   );
 }
 
-function pendingStatusLabel(status: PendingBuy["status"]): string {
+function pendingStatusLabel(status: PendingBuy["status"], stage: PendingBuy["stage"]): string {
   if (status === "confirmed") return "已确认";
   if (status === "cancelled") return "已取消";
+  if (stage === "confirmable") return "可确认";
+  if (stage === "submitted") return "等待净值";
   return "申购中";
 }
 
@@ -1178,7 +1220,7 @@ function PendingBuysTab({
 }) {
   const activePendingAmount = pendingBuys
     .filter((row) => row.status === "pending")
-    .reduce((sum, row) => sum + row.amount, 0);
+    .reduce((sum, row) => sum + (row.pending_amount ?? row.amount), 0);
 
   return (
     <div className="space-y-4">
@@ -1280,12 +1322,20 @@ function PendingBuysTab({
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <div className="font-medium text-gray-900">
-                    ¥ {formatMoney(row.amount)} · {pendingStatusLabel(row.status)}
+                    ¥ {formatMoney(row.amount)} · {pendingStatusLabel(row.status, row.stage)}
                   </div>
                   <div className="mt-1 text-gray-500">
                     申购 {formatDate(row.request_date)}
                     {row.nav_date ? ` · 确认 ${formatDate(row.nav_date)}` : ""}
                   </div>
+                  {row.expected_confirm_date && row.status === "pending" && (
+                    <div className="mt-1 text-gray-500">
+                      预计确认日 {formatDate(row.expected_confirm_date)}
+                    </div>
+                  )}
+                  {row.message && (
+                    <div className="mt-1 text-gray-500">{row.message}</div>
+                  )}
                   {row.nav != null && (
                     <div className="mt-1 text-gray-500">
                       NAV {formatNav(row.nav)}
@@ -1298,18 +1348,19 @@ function PendingBuysTab({
                   <div className="flex shrink-0 items-center gap-1">
                     <Input
                       className="h-8 w-[132px]"
+                      disabled={row.stage !== "confirmable"}
                       onChange={(e) => onChangeConfirmDate(row.id, e.target.value)}
                       type="date"
-                      value={confirmDates[row.id] ?? ""}
+                      value={confirmDates[row.id] ?? row.expected_confirm_date ?? ""}
                     />
                     <Button
-                      disabled={isConfirming}
+                      disabled={isConfirming || row.stage !== "confirmable"}
                       onClick={() => onConfirm(row.id)}
                       size="sm"
                       type="button"
                       variant="outline"
                     >
-                      确认
+                      {row.stage === "confirmable" ? "确认份额" : "等待净值/刷新数据"}
                     </Button>
                     <Button
                       disabled={isCancelling}
@@ -1338,6 +1389,7 @@ function InvestmentPlansTab({
   onChangePlanField,
   onDelete,
   onEdit,
+  onRecordPendingFromPlan,
   onSubmit,
   onToggle,
   planDraft,
@@ -1356,6 +1408,7 @@ function InvestmentPlansTab({
   ) => void;
   onDelete: (id: number) => void;
   onEdit: (plan: InvestmentPlan) => void;
+  onRecordPendingFromPlan: (plan: InvestmentPlan) => void;
   onSubmit: () => void;
   onToggle: (plan: InvestmentPlan) => void;
   planDraft: ReturnType<typeof validateInvestmentPlanDraft>;
@@ -1490,6 +1543,15 @@ function InvestmentPlansTab({
                   {plan.note && <div className="mt-1 text-gray-500">{plan.note}</div>}
                 </div>
                 <div className="flex shrink-0 gap-1">
+                  <Button
+                    disabled={plan.status !== "active"}
+                    onClick={() => onRecordPendingFromPlan(plan)}
+                    size="sm"
+                    type="button"
+                    variant="outline"
+                  >
+                    记录本次申购
+                  </Button>
                   <Button onClick={() => onEdit(plan)} size="sm" type="button" variant="ghost">
                     编辑
                   </Button>

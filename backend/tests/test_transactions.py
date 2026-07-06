@@ -576,6 +576,63 @@ class TestInvestmentPlanApi:
 
 
 class TestPendingBuyApi:
+    def test_create_pending_buy_returns_t_day_confirmable_metadata(self, session):
+        repo.add_to_watchlist(session, "110011")
+        session.add_all([
+            FundNav(
+                fund_code="110011",
+                nav_date="2026-07-01",
+                accumulated_nav=2.0,
+                source="akshare",
+            ),
+            FundNav(
+                fund_code="110011",
+                nav_date="2026-07-02",
+                accumulated_nav=2.1,
+                source="akshare",
+            ),
+        ])
+        session.commit()
+
+        r = client.post("/api/watchlist/110011/pending-buys", json={
+            "request_date": "2026-07-01",
+            "amount": 1000.0,
+        })
+
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["status"] == "pending"
+        assert body["stage"] == "confirmable"
+        assert body["expected_confirm_date"] == "2026-07-02"
+        assert body["pending_amount"] == pytest.approx(1000.0)
+        assert "可确认" in body["message"]
+
+        listed = client.get("/api/watchlist/110011/pending-buys").json()
+        assert listed[0]["stage"] == "confirmable"
+        assert listed[0]["expected_confirm_date"] == "2026-07-02"
+
+    def test_create_pending_buy_waits_when_next_nav_is_missing(self, session):
+        repo.add_to_watchlist(session, "110011")
+        session.add(FundNav(
+            fund_code="110011",
+            nav_date="2026-07-01",
+            accumulated_nav=2.0,
+            source="akshare",
+        ))
+        session.commit()
+
+        r = client.post("/api/watchlist/110011/pending-buys", json={
+            "request_date": "2026-07-01",
+            "amount": 1000.0,
+        })
+
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["stage"] == "submitted"
+        assert body["expected_confirm_date"] is None
+        assert body["pending_amount"] == pytest.approx(1000.0)
+        assert "等待" in body["message"]
+
     def test_create_and_list_pending_buy_without_affecting_pnl(self, session):
         from backend.services import pnl_service as psvc
 
@@ -667,7 +724,35 @@ class TestPendingBuyApi:
 
         assert r.status_code == 200
         assert r.json()["status"] == "cancelled"
+        assert r.json()["stage"] == "cancelled"
         assert repo.list_transactions(session, "110011") == []
+
+    def test_confirmed_pending_buy_cannot_be_confirmed_twice(self, session):
+        repo.add_to_watchlist_full(session, "110011", {"is_holding": True})
+        session.add(FundNav(
+            fund_code="110011",
+            nav_date="2026-07-02",
+            accumulated_nav=2.5,
+            source="akshare",
+        ))
+        session.commit()
+        created = client.post("/api/watchlist/110011/pending-buys", json={
+            "request_date": "2026-07-01",
+            "amount": 1000.0,
+        }).json()
+        first = client.post(
+            f"/api/watchlist/110011/pending-buys/{created['id']}/confirm",
+            json={"tx_date": "2026-07-02"},
+        )
+        assert first.status_code == 200, first.text
+
+        second = client.post(
+            f"/api/watchlist/110011/pending-buys/{created['id']}/confirm",
+            json={"tx_date": "2026-07-02"},
+        )
+
+        assert second.status_code == 409
+        assert repo.count_transactions(session, "110011") == 1
 
 
 # --------------------------------------------------------------------------- #

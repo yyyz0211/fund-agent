@@ -19,6 +19,8 @@ export interface NavPoint {
 
 export type InvestmentPlanFrequency = "daily" | "weekly" | "monthly";
 export type InvestmentPlanStatus = "active" | "paused";
+export type PendingBuyStatus = "pending" | "confirmed" | "cancelled";
+export type PendingBuyStage = "submitted" | "confirmable" | "confirmed" | "cancelled";
 
 export interface InvestmentPlan {
   id: number;
@@ -53,7 +55,11 @@ export interface PendingBuy {
   amount: number;
   fee: number | null;
   note: string | null;
-  status: "pending" | "confirmed" | "cancelled";
+  status: PendingBuyStatus;
+  stage: PendingBuyStage;
+  expected_confirm_date: string | null;
+  pending_amount: number;
+  message: string;
   nav_date: string | null;
   nav: number | null;
   share: number | null;
