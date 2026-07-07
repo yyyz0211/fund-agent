@@ -7,6 +7,7 @@
 `{"error": ..., "source": ...}`(沿用 collector 的契约)。
 """
 from concurrent.futures import ThreadPoolExecutor
+from datetime import date
 
 from backend.db.session import get_session
 from backend.db import repository as repo
@@ -17,6 +18,7 @@ from backend.services import watchlist_service as wsvc
 
 
 _REFRESH_FETCH_WORKERS = 2
+_AUTO_REFRESH_POLICIES = {"if_missing_or_stale", "always", "never"}
 
 
 def _with_session(session):
@@ -219,6 +221,165 @@ def _summary_value(result: dict, key: str, errors: dict[str, str]) -> dict | Non
         errors[key] = result["error"]
         return None
     return result
+
+
+def _parse_iso_date(value) -> date | None:
+    if not value:
+        return None
+    if isinstance(value, date):
+        return value
+    try:
+        return date.fromisoformat(str(value))
+    except ValueError:
+        return None
+
+
+def _auto_refresh_reason(
+    latest_nav: dict | None,
+    refresh_policy: str,
+    stale_days: int,
+) -> str | None:
+    if refresh_policy == "never":
+        return None
+    if refresh_policy == "always":
+        return "always"
+    if not latest_nav or latest_nav.get("error"):
+        return "missing_nav"
+
+    nav_date = _parse_iso_date(latest_nav.get("nav_date"))
+    today = _parse_iso_date(dc.today_str())
+    if not nav_date or not today:
+        return "stale_nav"
+    if (today - nav_date).days > stale_days:
+        return "stale_nav"
+    return None
+
+
+def _local_lookup_payload(fund_code: str, period: str, session) -> dict:
+    errors: dict[str, str] = {}
+    fund = _summary_value(
+        get_basic_info(fund_code, session=session),
+        "fund",
+        errors,
+    )
+    latest_nav = _summary_value(
+        get_latest_nav(fund_code, session=session),
+        "latest_nav",
+        errors,
+    )
+    metric_payload = _summary_value(
+        get_metrics(fund_code, period=period, session=session),
+        "metrics",
+        errors,
+    )
+    nav_history = _summary_value(
+        get_nav_history(fund_code, session=session),
+        "nav_history",
+        errors,
+    )
+    return {
+        "fund_code": fund_code,
+        "fund": fund,
+        "latest_nav": latest_nav,
+        "metrics": metric_payload,
+        "nav_history": nav_history,
+        "errors": errors,
+        "source": dc.SOURCE,
+        "as_of": dc.today_str(),
+    }
+
+
+def lookup_fund_auto(
+    fund_code: str,
+    period: str = "1y",
+    refresh_policy: str = "if_missing_or_stale",
+    stale_days: int = 3,
+    session=None,
+) -> dict:
+    """读取基金数据;本地缺失或过期时先主动刷新再返回。
+
+    这是给 LangGraph 问答使用的确定性入口:LLM 不需要自己串
+    `get_latest_fund_nav -> refresh_fund -> get_metrics`,只调用本函数
+    并根据 `refresh` / `errors` 解释结果即可。
+    """
+    if refresh_policy not in _AUTO_REFRESH_POLICIES:
+        return {
+            "fund_code": fund_code,
+            "error": f"unsupported refresh_policy: {refresh_policy}",
+            "source": dc.SOURCE,
+            "as_of": dc.today_str(),
+        }
+
+    s = _with_session(session)
+    owns = session is None
+    try:
+        initial_latest = get_latest_nav(fund_code, session=s)
+        reason = _auto_refresh_reason(initial_latest, refresh_policy, stale_days)
+        refresh_meta = {
+            "attempted": False,
+            "reason": reason,
+            "result": None,
+            "error": None,
+        }
+
+        if reason:
+            refresh_meta["attempted"] = True
+            try:
+                result = refresh_fund(fund_code, session=s)
+            except Exception as exc:  # noqa: BLE001
+                result = {"error": str(exc), "source": dc.SOURCE}
+            refresh_meta["result"] = result
+            if isinstance(result, dict) and result.get("error"):
+                refresh_meta["error"] = result["error"]
+
+        payload = _local_lookup_payload(fund_code, period=period, session=s)
+        payload["refresh"] = refresh_meta
+        return payload
+    finally:
+        if owns:
+            s.close()
+
+
+def diagnose_fund_auto(
+    fund_code: str,
+    period: str = "1y",
+    refresh_policy: str = "if_missing_or_stale",
+    stale_days: int = 3,
+    session=None,
+) -> dict:
+    """主动补齐本地基金数据后运行确定性基金体检。"""
+    s = _with_session(session)
+    owns = session is None
+    try:
+        lookup = lookup_fund_auto(
+            fund_code,
+            period=period,
+            refresh_policy=refresh_policy,
+            stale_days=stale_days,
+            session=s,
+        )
+        if "error" in lookup:
+            return lookup
+
+        from backend.services import diagnosis_service as ds
+
+        diagnosis = ds.diagnose_fund(fund_code, period=period, session=s)
+        if not isinstance(diagnosis, dict):
+            return {
+                "fund_code": fund_code,
+                "error": "diagnose_fund returned non-dict result",
+                "refresh": lookup.get("refresh"),
+                "source": dc.SOURCE,
+                "as_of": dc.today_str(),
+            }
+        out = dict(diagnosis)
+        out["refresh"] = lookup.get("refresh")
+        out["lookup_errors"] = lookup.get("errors", {})
+        out["lookup_as_of"] = lookup.get("as_of")
+        return out
+    finally:
+        if owns:
+            s.close()
 
 
 def get_summary(

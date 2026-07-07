@@ -38,11 +38,14 @@ def test_system_prompt_contains_tool_contract():
     prompt = get_system_prompt()
     # 必须告诉 LLM 何时用什么工具(至少出现一个工具名)
     assert any(tool in prompt for tool in [
+        "diagnose_fund_auto",
+        "lookup_fund_auto",
         "diagnose_fund",
-        "lookup_fund",
         "get_latest_fund_nav",
         "calculate_fund_metrics",
     ])
+    assert "lookup_fund_auto" in prompt
+    assert "diagnose_fund_auto" in prompt
 
 
 def test_system_prompt_requires_source_and_date():

@@ -144,6 +144,116 @@ def test_refresh_fund_info_success_has_no_warn(session, monkeypatch):
     assert info["fund_name"] == "FundA"
 
 
+def test_lookup_fund_auto_refreshes_when_nav_missing(session, monkeypatch):
+    """本地没有 NAV 时,auto 入口应主动 refresh,再返回可分析数据。"""
+    monkeypatch.setattr(dc, "today_str", lambda: "2026-07-07")
+
+    def fake_refresh(code, session=None):
+        repo.upsert_fund(session, {
+            "fund_code": code,
+            "fund_name": "FundA",
+            "fund_type": "混合型",
+            "manager": "X",
+            "company": "Y",
+        })
+        navs = [
+            {"nav_date": f"2026-07-{d:02d}", "unit_nav": None,
+             "accumulated_nav": 1.0 + d * 0.01, "daily_return": 0.01,
+             "source": "akshare", "source_updated_at": "2026-07-07"}
+            for d in range(1, 8)
+        ]
+        repo.upsert_navs(session, code, navs)
+        return {"fund_code": code, "navs_inserted": 7,
+                "source": "akshare", "as_of": "2026-07-07"}
+
+    monkeypatch.setattr(fs, "refresh_fund", fake_refresh)
+
+    out = fs.lookup_fund_auto("110011", period="1w", session=session)
+
+    assert out["refresh"]["attempted"] is True
+    assert out["refresh"]["reason"] == "missing_nav"
+    assert out["latest_nav"]["nav_date"] == "2026-07-07"
+    assert out["fund"]["fund_name"] == "FundA"
+    assert out["metrics"]["period"] == "1w"
+    assert out["source"] == "akshare"
+    assert out["as_of"] == "2026-07-07"
+
+
+def test_lookup_fund_auto_skips_refresh_when_nav_fresh(session, monkeypatch):
+    """本地 NAV 足够新时,auto 入口不应重复联网刷新。"""
+    monkeypatch.setattr(dc, "today_str", lambda: "2026-07-07")
+    repo.upsert_fund(session, {"fund_code": "110011", "fund_name": "FundA"})
+    repo.upsert_navs(session, "110011", [
+        {"nav_date": f"2026-07-{d:02d}", "unit_nav": None,
+         "accumulated_nav": 1.0 + d * 0.01, "daily_return": 0.01,
+         "source": "akshare", "source_updated_at": "2026-07-07"}
+        for d in range(1, 8)
+    ])
+
+    def fail_refresh(code, session=None):  # pragma: no cover - should not run
+        raise AssertionError("refresh_fund should not be called for fresh local NAV")
+
+    monkeypatch.setattr(fs, "refresh_fund", fail_refresh)
+
+    out = fs.lookup_fund_auto("110011", period="1w", session=session)
+
+    assert out["refresh"]["attempted"] is False
+    assert out["refresh"]["reason"] is None
+    assert out["latest_nav"]["nav_date"] == "2026-07-07"
+
+
+def test_lookup_fund_auto_degrades_when_refresh_fails(session, monkeypatch):
+    """主动刷新失败时返回结构化 refresh error,不抛裸异常也不编数据。"""
+    monkeypatch.setattr(dc, "today_str", lambda: "2026-07-07")
+    monkeypatch.setattr(fs, "refresh_fund", lambda code, session=None: {
+        "error": "akshare timeout",
+        "source": "akshare",
+    })
+
+    out = fs.lookup_fund_auto("110011", period="1w", session=session)
+
+    assert out["refresh"]["attempted"] is True
+    assert out["refresh"]["reason"] == "missing_nav"
+    assert out["refresh"]["error"] == "akshare timeout"
+    assert out["latest_nav"] is None
+    assert "latest_nav" in out["errors"]
+
+
+def test_diagnose_fund_auto_attaches_refresh_metadata(session, monkeypatch):
+    """诊断 auto 入口应先走 lookup auto,再把刷新元信息带给调用方。"""
+    monkeypatch.setattr(fs, "lookup_fund_auto", lambda code, period="1y",
+                        refresh_policy="if_missing_or_stale", stale_days=3,
+                        session=None: {
+                            "fund_code": code,
+                            "refresh": {
+                                "attempted": True,
+                                "reason": "missing_nav",
+                                "result": {"navs_inserted": 5},
+                                "error": None,
+                            },
+                            "errors": {},
+                            "as_of": "2026-07-07",
+                        })
+
+    from backend.services import diagnosis_service as ds
+
+    monkeypatch.setattr(ds, "diagnose_fund", lambda code, period="1y",
+                        session=None: {
+                            "fund_code": code,
+                            "period": period,
+                            "decision_label": "观察",
+                            "source": "akshare",
+                            "as_of": "2026-07-07",
+                        })
+
+    out = fs.diagnose_fund_auto("110011", period="1y", session=session)
+
+    assert out["decision_label"] == "观察"
+    assert out["refresh"]["attempted"] is True
+    assert out["refresh"]["reason"] == "missing_nav"
+    assert out["lookup_as_of"] == "2026-07-07"
+
+
 def test_get_basic_info_no_data(session):
     assert "error" in fs.get_basic_info("110011", session=session)
 

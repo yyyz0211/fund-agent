@@ -1,8 +1,8 @@
 """LangChain tool 定义。
 
 每个 tool 都是一层极薄的包装:它接受 LLM 传来的参数,调用对应的
-service,把返回字典直接交给 LangChain。LLM 不接触网络或数据库 —
-它只能通过这两个 tool 拿到数据,这与 system prompt 里
+service,把返回字典直接交给 LangChain。LLM 不直接接触网络或数据库 —
+它只能通过受控 tool 拿到数据,这与 system prompt 里
 "数字必须来自工具"的要求一致。
 """
 from langchain_core.tools import tool
@@ -69,11 +69,47 @@ def diagnose_fund(fund_code: str, period: str = "1y") -> dict:
     return ds.diagnose_fund(fund_code, period=period)
 
 
+@tool
+def lookup_fund_auto(
+    fund_code: str,
+    period: str = "1y",
+    refresh_policy: str = "if_missing_or_stale",
+) -> dict:
+    """自动读取基金数据;本地缺失或过期时先 refresh_fund 再返回。
+
+    适合回答"最新净值/最近怎么样/阶段收益"类问题。输出包含
+    `fund/latest_nav/metrics/nav_history/errors/refresh/source/as_of`。
+    """
+    return fs.lookup_fund_auto(
+        fund_code,
+        period=period,
+        refresh_policy=refresh_policy,
+    )
+
+
+@tool
+def diagnose_fund_auto(
+    fund_code: str,
+    period: str = "1y",
+    refresh_policy: str = "if_missing_or_stale",
+) -> dict:
+    """自动补齐本地基金数据后做基金体检。
+
+    适合回答"能买吗/要不要卖/是否加仓/风险如何/同类对比"类问题。
+    输出仍是确定性规则结果,不是强制交易指令或收益预测。
+    """
+    return fs.diagnose_fund_auto(
+        fund_code,
+        period=period,
+        refresh_policy=refresh_policy,
+    )
+
+
 # Phase-1 thin agent 兼容入口
 TOOLS = [get_latest_fund_nav, calculate_fund_metrics]
 
 FUND_TOOLS = [get_latest_fund_nav, calculate_fund_metrics,
               get_fund_basic_info, get_fund_nav_history, refresh_fund,
-              diagnose_fund]
+              diagnose_fund, lookup_fund_auto, diagnose_fund_auto]
 
 ALL_TOOLS = FUND_TOOLS + WATCHLIST_TOOLS + MARKET_TOOLS + PNL_TOOLS + WHAT_IF_TOOLS
