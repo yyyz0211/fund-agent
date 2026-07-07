@@ -348,3 +348,49 @@ def test_fetch_fund_profile_degrades_when_source_fails(monkeypatch):
     assert out["scale"] is None
     assert "scale" in out["missing_data"]
     assert any("scale" in error for error in out["errors"])
+
+
+# ---------------------------------------------------------------------------
+# Task 2: 6 new market-intel fetch functions
+# ---------------------------------------------------------------------------
+
+def test_fetch_concept_sectors_returns_list():
+    from backend.services.data_collector import fetch_concept_sectors
+    result = fetch_concept_sectors()
+    assert isinstance(result, list)
+
+
+def test_fetch_industry_flows_returns_list():
+    from backend.services.data_collector import fetch_industry_flows
+    result = fetch_industry_flows()
+    assert isinstance(result, list)
+
+
+def test_fetch_concept_flows_returns_list():
+    from backend.services.data_collector import fetch_concept_flows
+    result = fetch_concept_flows()
+    assert isinstance(result, list)
+
+
+def test_fetch_theme_boards_returns_list():
+    from backend.services.data_collector import fetch_theme_boards
+    result = fetch_theme_boards()
+    assert isinstance(result, list)
+
+
+def test_fetch_breadth_indicators_returns_dict():
+    from backend.services.data_collector import fetch_breadth_indicators
+    result = fetch_breadth_indicators()
+    assert isinstance(result, dict)
+
+
+def test_fetch_overseas_markets_returns_list():
+    from backend.services.data_collector import fetch_overseas_markets
+    result = fetch_overseas_markets()
+    assert isinstance(result, list)
+
+
+def test_fetch_announcements_returns_list():
+    from backend.services.data_collector import fetch_announcements
+    result = fetch_announcements(limit=5)
+    assert isinstance(result, list)
