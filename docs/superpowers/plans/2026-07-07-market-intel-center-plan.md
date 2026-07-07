@@ -381,16 +381,15 @@ def fetch_theme_boards(limit_n: int = 20) -> list[dict]:
 
 
 def fetch_breadth_indicators() -> dict:
-    """拉取情绪指标: 连板高度 top5 + 炸板率估算。来源: stock_zt_pool_strong_ths()"""
+    """拉取情绪指标: 连板高度 top5。akshare: stock_zt_pool_strong_em(date=today_str())"""
     try:
-        # 连板高度
-        strong_df = ak.stock_zt_pool_strong_ths()
+        df = ak.stock_zt_pool_strong_em(date=today_str())
         board_height = []
-        if strong_df is not None and not getattr(strong_df, "empty", True):
-            name_col = _find_col(strong_df, "股票名称", "股票代码")
-            board_col = _find_col(strong_df, "连板数", "连续板数")
+        if df is not None and not getattr(df, "empty", True):
+            name_col = _find_col(df, "名称")
+            board_col = _find_col(df, "连板数")
             if name_col and board_col:
-                for _, row in strong_df.head(5).iterrows():
+                for _, row in df.head(5).iterrows():
                     try:
                         name = str(row.get(name_col, ""))
                         boards = _to_float(row.get(board_col))
@@ -398,30 +397,13 @@ def fetch_breadth_indicators() -> dict:
                             board_height.append({"name": name, "boards": boards})
                     except Exception:
                         continue
-
-        # 炸板率: 从 stock_zt_pool_em 估算
-        rejection_rate = None
-        try:
-            zt_df = ak.stock_zt_pool_em(date=today_str())
-            if zt_df is not None and not getattr(zt_df, "empty", True):
-                zt_count = len(zt_df)
-                # 炸板 = 涨停后打开（需要更细粒度数据，这里用估算）
-                rejection_rate = None  # akshare 暂无直接接口，标注待更新
-        except Exception:
-            pass
-
-        return {
-            "board_height": board_height,
-            "rejection_rate": rejection_rate,
-            "source": SOURCE,
-            "as_of": today_str(),
-        }
+        return {"board_height": board_height, "source": SOURCE, "as_of": today_str()}
     except Exception:
-        return {"board_height": [], "rejection_rate": None, "source": SOURCE, "as_of": today_str()}
+        return {"board_height": [], "source": SOURCE, "as_of": today_str()}
 
 
 def fetch_overseas_markets() -> list[dict]:
-    """拉取外围市场: 美股主要指数 + 港股 + 原油。akshare: index_global_hist_sina()"""
+    """拉取外围市场: 美股主要指数 + 港股 + 国内油价。akshare: index_global_hist_sina() + energy_oil_hist()"""
     result = []
     targets = [
         ("US", "纳斯达克综合指数", "IXIC"),
@@ -438,65 +420,63 @@ def fetch_overseas_markets() -> list[dict]:
                 change_col = _find_col(df, "涨跌幅")
                 if close_col:
                     result.append({
-                        "market": market,
-                        "name": name,
-                        "symbol": symbol,
+                        "market": market, "name": name, "symbol": symbol,
                         "close": _to_float(last.get(close_col)),
                         "change_pct": _to_float(last.get(change_col)) if change_col else None,
-                        "source": SOURCE,
-                        "as_of": today_str(),
+                        "source": SOURCE, "as_of": today_str(),
                     })
         except Exception:
             continue
-    # 原油
+    # 国内油价
     try:
-        oil_df = ak.futures_oil_crude()
+        oil_df = ak.energy_oil_hist()
         if oil_df is not None and not getattr(oil_df, "empty", True):
-            close_col = _find_col(oil_df, "收盘", "最新价")
-            change_col = _find_col(oil_df, "涨跌幅")
-            if close_col:
-                last = oil_df.iloc[-1]
-                result.append({
-                    "market": "COMMODITY",
-                    "name": "布伦特原油",
-                    "symbol": "OIL",
-                    "close": _to_float(last.get(close_col)),
-                    "change_pct": _to_float(last.get(change_col)) if change_col else None,
-                    "source": SOURCE,
-                    "as_of": today_str(),
-                })
+            last = oil_df.iloc[-1]
+            result.append({
+                "market": "COMMODITY", "name": "国内汽油均价", "symbol": "GASOLINE",
+                "close": _to_float(last.get("汽油价格")),
+                "change_pct": _to_float(last.get("汽油涨跌")),
+                "source": SOURCE, "as_of": today_str(),
+            })
     except Exception:
         pass
     return result
 
 
 def fetch_announcements(limit: int = 50) -> list[dict]:
-    """拉取近 N 天重要基金/市场公告摘要。akshare: stock_announcement_em()"""
+    """拉取近 N 天基金重要公告。akshare: fund_announcement_dividend_em(symbol=fund_code)"""
     try:
-        df = ak.stock_announcement_em(symbol="all", date=today_str())
-        if df is None or getattr(df, "empty", True) or len(df) == 0:
-            return []
-        title_col = _find_col(df, "公告标题", "标题", "公告")
-        date_col = _find_col(df, "公告日期", "日期", "时间")
-        code_col = _find_col(df, "股票代码", "代码")
-        if title_col is None:
-            return []
+        from backend.db.session import get_session
+        from backend.db.models import Watchlist
+        from sqlalchemy import select
+        s = get_session()
+        try:
+            codes = [r.fund_code for r in s.scalars(select(Watchlist.fund_code)).all()]
+        finally:
+            s.close()
         rows = []
-        for _, row in df.head(limit).iterrows():
+        for code in codes[:20]:
             try:
-                title = str(row.get(title_col, "")).strip()
-                ann_date = str(row.get(date_col, ""))[:10]
-                code = str(row.get(code_col, ""))[:6]
-                if title and len(title) > 5:
-                    rows.append({
-                        "title": title,
-                        "ann_date": ann_date,
-                        "code": code,
-                        "source": SOURCE,
-                    })
+                div_df = ak.fund_announcement_dividend_em(symbol=code)
+                if div_df is not None and not getattr(div_df, "empty", True):
+                    title_col = _find_col(div_df, "公告标题")
+                    date_col = _find_col(div_df, "公告日期")
+                    name_col = _find_col(div_df, "基金名称")
+                    if title_col and date_col:
+                        for _, row in div_df.head(3).iterrows():
+                            title = str(row.get(title_col, "")).strip()
+                            ann_date = str(row.get(date_col, ""))[:10]
+                            fund_name = str(row.get(name_col, code))
+                            if title and len(title) > 5:
+                                rows.append({
+                                    "title": title, "ann_date": ann_date,
+                                    "fund_code": code, "fund_name": fund_name,
+                                    "source": SOURCE,
+                                })
             except Exception:
                 continue
-        return rows
+        rows.sort(key=lambda x: x["ann_date"], reverse=True)
+        return rows[:limit]
     except Exception:
         return []
 ```

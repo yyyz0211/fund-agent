@@ -4,25 +4,29 @@ import { MarketSnapshot } from "@/lib/market";
 export function ThemeBoards({ snap }: { snap: MarketSnapshot }) {
   const themes = snap.themes || [];
   if (!themes.length) {
-    return <p className="text-gray-400 text-sm">暂无题材数据（收盘后更新）</p>;
+    return (
+      <div className="rounded-xl border border-gray-200 bg-white p-6 text-center text-sm text-gray-400 shadow-sm">
+        暂无题材数据（收盘后更新）
+      </div>
+    );
   }
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-      {themes.slice(0, 10).map((t, i) => (
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      {themes.slice(0, 9).map((t, i) => (
         <div
           key={i}
-          className="rounded-lg border border-gray-200 bg-white p-3 shadow-sm"
+          className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm transition hover:border-gray-300 hover:shadow-md"
         >
           <div className="flex items-center justify-between gap-2">
-            <span className="font-medium text-sm text-gray-950 truncate">
+            <span className="truncate text-sm font-semibold text-gray-950">
               {t.theme}
             </span>
-            <span className="text-xs text-blue-700 bg-blue-50 border border-blue-100 rounded px-2 py-0.5 whitespace-nowrap">
+            <span className="whitespace-nowrap rounded-full border border-blue-100 bg-blue-50 px-2 py-0.5 text-xs font-semibold text-blue-700">
               {t.count}只
             </span>
           </div>
           {t.stocks?.length > 0 && (
-            <div className="mt-2 text-xs text-gray-500 line-clamp-2">
+            <div className="mt-3 line-clamp-2 text-xs leading-5 text-gray-500">
               {t.stocks.map((s) => s.name).join("、")}
             </div>
           )}

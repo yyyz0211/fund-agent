@@ -14,19 +14,23 @@ function regionStyle(market?: string) {
 export function OverseasMarkets({ snap }: { snap: MarketSnapshot }) {
   const markets = snap.overseas || [];
   if (!markets.length) {
-    return <p className="text-gray-400 text-sm">暂无外围市场数据</p>;
+    return (
+      <div className="rounded-xl border border-gray-200 bg-white p-6 text-center text-sm text-gray-400 shadow-sm">
+        暂无外围市场数据
+      </div>
+    );
   }
   return (
-    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+    <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-2">
       {markets.map((m) => {
         const rs = regionStyle(m.market);
         const sign = (m.change_pct ?? 0) >= 0 ? "+" : "";
         const changeColor =
-          (m.change_pct ?? 0) >= 0 ? "text-green-700" : "text-red-700";
+          (m.change_pct ?? 0) >= 0 ? "text-red-700" : "text-green-700";
         return (
           <div
             key={m.symbol}
-            className={`rounded-lg border ${rs.border} bg-white p-3 shadow-sm`}
+            className={`rounded-xl border ${rs.border} bg-white p-4 shadow-sm`}
           >
             <div className="flex items-center justify-between">
               <div className="text-xs text-gray-500">{m.name}</div>
@@ -36,10 +40,10 @@ export function OverseasMarkets({ snap }: { snap: MarketSnapshot }) {
                 {(m.market || "其他").toUpperCase()}
               </span>
             </div>
-            <div className="mt-1 text-lg font-semibold tabular-nums">
+            <div className="mt-3 text-xl font-semibold tracking-tight tabular-nums text-gray-950">
               {m.close?.toFixed(2) ?? "—"}
             </div>
-            <div className={`text-xs mt-0.5 tabular-nums ${changeColor}`}>
+            <div className={`mt-1 text-xs font-semibold tabular-nums ${changeColor}`}>
               {m.change_pct != null
                 ? `${sign}${m.change_pct.toFixed(2)}%`
                 : "—"}
