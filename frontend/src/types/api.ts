@@ -104,6 +104,58 @@ export interface FundMetrics {
   as_of: string;
 }
 
+export interface BriefingSection {
+  market_snapshot?: Array<{
+    symbol: string;
+    name?: string | null;
+    close?: number | null;
+    change_pct?: number | null;
+  }>;
+  watchlist_changes?: Array<{
+    fund_code: string;
+    fund_name?: string | null;
+    period_returns?: Record<string, number | null>;
+    source?: string | null;
+    as_of?: string | null;
+  }>;
+  errors?: Array<Record<string, unknown>>;
+  disclaimer?: string;
+}
+
+export interface Briefing {
+  id: number;
+  briefing_date: string;
+  title: string;
+  markdown: string;
+  sections: BriefingSection | Record<string, unknown>;
+  source: string | null;
+  as_of: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface BriefingSummary {
+  id: number;
+  briefing_date: string;
+  title: string;
+  as_of: string | null;
+}
+
+export interface BriefingLatestResponse {
+  briefing: Briefing | null;
+}
+
+export interface BriefingListResponse {
+  briefings: BriefingSummary[];
+  limit: number;
+}
+
+export interface BriefingRunResponse {
+  status: string;
+  trigger: string;
+  job_id?: string;
+}
+
 export interface WatchlistRow {
   id?: number;
   fund_code: string;

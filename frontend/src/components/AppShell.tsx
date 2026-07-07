@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BarChart3, FileText, Home, MessageSquareText, Star } from "lucide-react";
+import { BarChart3, FileText, Home, MessageSquareText, Newspaper, Star } from "lucide-react";
 import { Disclaimer } from "@/components/Disclaimer";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
@@ -10,6 +10,7 @@ import { cn } from "@/lib/cn";
 const NAV_ITEMS = [
   { href: "/", label: "总览", icon: Home },
   { href: "/watchlist", label: "自选池", icon: Star },
+  { href: "/briefing", label: "每日简报", icon: Newspaper },
   { href: "/announcements", label: "公告", icon: FileText },
   { href: "/qa", label: "问答", icon: MessageSquareText },
 ];

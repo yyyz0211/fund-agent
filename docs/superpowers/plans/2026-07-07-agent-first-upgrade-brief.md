@@ -25,6 +25,16 @@
 | 可观测 | 无 token / 失败率统计 | LangSmith env 接入 + 关键事件 callback |
 | Eval | 无 | 50 条 golden query + 自动回归(`backend/tests/eval/`) |
 
+> **2026-07-07 增量(Wave 3.3 范围对齐)**:用户给出一篇示例简报(指数表现 + 赚钱效应 + 主线板块逻辑 + 重磅政策 + 晚间公告 + 盘前信号 + 操作思路)。该示例**远超** spec 原 Wave 3.3「自选基金 + 市场指数」数据范围。本 spec 增量明确:
+> - **Wave 3.3 本期范围**:只做「自选池 metrics 变化 + 当日主要指数」两路本地数据驱动的简报,落 `Briefing` 表 + `/briefing` 页面。
+> - **示例中以下板块本期不做,统一挪到独立 plan**:
+>   - 赚钱效应(涨停跌停家数、连板高度、炸板率)
+>   - 行业板块涨跌幅与板块逻辑拆解
+>   - 重磅政策消息、晚间公告精选、美股/原油外围市场
+>   - 资金流向(北向、龙虎榜)
+> - **合规边界**:示例「操作思路」段含「不盲目追高 / 两条低吸主线 / 减仓 / 加仓」等带建议性表述,违反 `policy.py` 红线。简报改写为「数据观察 + 风险提示」中性语气,不输出任何带操作建议的句子。
+> - **不动 `qa_graph` / `SYSTEM_PROMPT` / `policy.py`**;简报走独立 `briefing_service`,独立 `BRIEFING_PROMPT_TEMPLATE`,不进入 `_post_check`。
+
 ---
 
 ## Global Constraints
@@ -260,7 +270,29 @@ T3.* 依赖 Wave-1 全部完成
 
 ### Task 3.3: `daily_briefing_graph`
 
-- 内部:并行拉自选每只最新 NAV + market snapshot + 最近 3 条公告;DeepSeek 合成简报;写 `Briefing` 表。
+- **2026-07-07 细化**:Wave 3.3 本期只做自选池 + 指数,简报内容详见上文"2026-07-07 增量"。实现**不强制走 LangGraph**:简报是确定性产物,可直接 service + scheduler;如需 graph 化可在独立 plan 升级为子图。
+- 内部数据源:`market_service.get_indices` + `watchlist_service.list_watchlist` + `fund_service.get_metrics(period ∈ {"1d","1w","1m"})`。**不引入新数据采集**;板块、龙虎榜、政策新闻等挪到独立 plan。
+- 限量:自选池超过 `settings.briefing_max_watchlist_funds`(默认 30)时截断。
+- **合规边界**:`BRIEFING_PROMPT_TEMPLATE` 明确禁止「建议加仓 / 建议减仓 / 不应追高 / 操作思路 / 明日涨跌预测」;简报走独立 service,**不进入 `_post_check`**。
+- 文件清单:
+  - Modify `backend/db/models.py`:追加 `Briefing` ORM 类(append-only)
+  - Create `backend/services/briefing_service.py`:`collect_watchlist_snapshot` + `compose_briefing` + `run_daily_briefing` + 内存快照 + `reset_for_tests`
+  - Create `backend/api/routes/briefing.py`:`GET /api/briefing/latest` + `GET /api/briefing/list?limit=30` + `POST /api/briefing/run`(本地触发)
+  - Modify `backend/api/app.py`:注册 `briefing_router`
+  - Modify `backend/scheduler.py`:追加 `daily_briefing` cron job(默认 17:00 Asia/Shanghai),保留现有 `daily_refresh`
+  - Modify `backend/config/settings.py`:追加 `scheduler_briefing_*` + `briefing_max_watchlist_funds` + `briefing_llm_model`
+  - Modify `backend/graph/prompts.py`:追加 `BRIEFING_PROMPT_TEMPLATE`(不动 `SYSTEM_PROMPT`)
+  - Create `frontend/app/briefing/page.tsx`:列表 + 最近一篇 Markdown 渲染 + 手动触发按钮
+  - Modify `frontend/app/page.tsx`(或 layout):导航加 `/briefing` 入口
+  - Create `backend/tests/test_briefing_service.py` + `backend/tests/test_briefing_route.py`
+- Briefing 表 schema:
+  ```
+  id (PK) | briefing_date (YYYY-MM-DD, unique) | title | markdown | sections_json | source | as_of | created_at | updated_at
+  ```
+- Verification:
+  - `pytest backend/tests/ -x` 全绿(含 3.3 新增测试)
+  - 手测:`python -c "from backend.services.briefing_service import run_daily_briefing; print(run_daily_briefing(trigger='manual'))"` 写出非空 `Briefing` 行
+  - `grep -n "check_answer" backend/services/briefing_service.py` 必须**无命中** —— 简报必须绕过 `_post_check`
 
 ### Task 3.4: 主动告警
 

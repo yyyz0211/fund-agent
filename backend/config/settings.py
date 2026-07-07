@@ -46,6 +46,15 @@ class Settings(BaseSettings):
     scheduler_refresh_cron_minute: int = 0
     scheduler_timezone: str = "Asia/Shanghai"
 
+    # 每日简报调度(APScheduler,进程内)。与 daily_refresh 共存,可独立关闭。
+    scheduler_briefing_enabled: bool = True
+    scheduler_briefing_cron_hour: int = 17
+    scheduler_briefing_cron_minute: int = 0
+
+    # 简报采集限额 + LLM 选择
+    briefing_max_watchlist_funds: int = 30
+    briefing_llm_model: str = "deepseek-chat"
+
 
 @lru_cache
 def get_settings() -> Settings:

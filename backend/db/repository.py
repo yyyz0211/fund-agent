@@ -14,6 +14,7 @@ service 既可以传入测试用的内存 Session,也可以传通过
 from sqlalchemy import and_, delete, func, select
 
 from backend.db.models import (
+    Briefing,
     Fund,
     FundInvestmentPlan,
     FundNav,
@@ -611,5 +612,23 @@ def update_pending_buy(session, fund_code: str, pending_id: int,
         session.commit()
     else:
         session.flush()
-    session.refresh(row)
+        session.refresh(row)
     return _pending_buy_to_dict(row)
+
+
+# ---------------------------------------------------------------------------
+# Briefing
+# ---------------------------------------------------------------------------
+
+def upsert_briefing(session, briefing_date: str, payload: dict) -> Briefing:
+    """按 briefing_date upsert 简报;payload 的字段写入 Briefing 各列。"""
+    row = session.scalar(select(Briefing).where(Briefing.briefing_date == briefing_date))
+    if row is None:
+        row = Briefing(briefing_date=briefing_date, **payload)
+        session.add(row)
+    else:
+        for key, value in payload.items():
+            if hasattr(row, key):
+                setattr(row, key, value)
+    session.flush()
+    return row

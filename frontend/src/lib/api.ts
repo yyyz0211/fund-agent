@@ -8,6 +8,7 @@ import type {
   WatchlistAddResponse, WatchlistPatchPayload, WatchlistPreloadJob,
   WatchlistRow, WatchlistUpsertPayload,
   PortfolioPnlSeries,
+  Briefing, BriefingLatestResponse, BriefingListResponse, BriefingRunResponse,
 } from "@/types/api";
 
 // 兼容两种命名:Docker 部署用 NEXT_PUBLIC_API_BASE_URL,本地 dev 历史上用 NEXT_PUBLIC_API_BASE
@@ -168,6 +169,17 @@ export const api = {
       `/api/watchlist/${encodeURIComponent(fundCode)}/pending-buys/${pendingId}/cancel`,
     ),
   marketLatest: () => get<MarketLatest>("/api/market/latest"),
+  briefingLatest: () => get<BriefingLatestResponse>("/api/briefing/latest"),
+  briefingList: (limit = 30) => get<BriefingListResponse>("/api/briefing/list", { limit }),
+  briefingRun: () =>
+    fetch(BASE + "/api/briefing/run", {
+      method: "POST",
+      headers: { "X-Local-Trigger": "1" },
+      cache: "no-store",
+    }).then(async (r) => {
+      if (!r.ok) throw new Error(`/api/briefing/run -> ${r.status}`);
+      return (await r.json()) as BriefingRunResponse;
+    }),
   announcements: (fundCode = "", limit = 20) =>
     get<AnnouncementList>("/api/announcements", { fund_code: fundCode, limit }),
   portfolioPnl: (codes: string[] = []) =>

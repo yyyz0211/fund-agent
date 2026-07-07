@@ -10,6 +10,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from backend.config.settings import get_settings
+from backend.services import briefing_service
 from backend.services.scheduled_refresh import refresh_all_watchlist
 
 
@@ -59,6 +60,19 @@ def start_scheduler(*, enabled: bool | None = None,
         max_instances=1,
         coalesce=True,
     )
+
+    # 每日简报(Wave 3.3);独立 cron,可独立关闭。
+    if bool(getattr(settings, "scheduler_briefing_enabled", True)):
+        b_hour = int(getattr(settings, "scheduler_briefing_cron_hour", 17))
+        b_minute = int(getattr(settings, "scheduler_briefing_cron_minute", 0))
+        scheduler.add_job(
+            lambda: briefing_service.run_daily_briefing(trigger="scheduled"),
+            trigger=_cron_trigger(b_hour, b_minute, timezone),
+            id="daily_briefing",
+            max_instances=1,
+            coalesce=True,
+        )
+
     scheduler.start()
     _scheduler = scheduler
     return scheduler

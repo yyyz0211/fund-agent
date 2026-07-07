@@ -188,3 +188,24 @@ class MarketData(Base):
     change_pct: Mapped[float | None] = mapped_column(Float)
     source: Mapped[str | None] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class Briefing(Base):
+    """每日基金简报。
+
+    `briefing_date` 唯一 —— 同日重复生成时 upsert 覆盖。
+    `markdown` 供前端 ReactMarkdown 渲染；`sections_json` 存结构化数据
+    (market_snapshot / watchlist_changes / errors / disclaimer)，用于程序消费。
+    简报内容完全由本地数据(指数 + 自选池)驱动，不经过 policy 合规检查。
+    """
+    __tablename__ = "briefings"
+    __table_args__ = (UniqueConstraint("briefing_date", name="uq_briefing_date"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    briefing_date: Mapped[str] = mapped_column(String, index=True)
+    title: Mapped[str] = mapped_column(String)
+    markdown: Mapped[str] = mapped_column(String)
+    sections_json: Mapped[str] = mapped_column(String)
+    source: Mapped[str | None] = mapped_column(String)
+    as_of: Mapped[str | None] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())

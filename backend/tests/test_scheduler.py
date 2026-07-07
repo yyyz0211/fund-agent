@@ -54,12 +54,14 @@ def test_scheduler_enabled_registers_cron(monkeypatch):
 
     out = sched.start_scheduler(enabled=True, hour=20, minute=0, timezone="Asia/Shanghai")
     assert out is not None
-    assert cron_calls == [(20, 0, "Asia/Shanghai")]
+    # daily_refresh cron + (可选) daily_briefing cron 都会调一次 _cron_trigger
+    assert (20, 0, "Asia/Shanghai") in cron_calls
+    assert len([r for r in recorder if "fn" in r]) >= 1
 
-    job = next(r for r in recorder if "fn" in r)
-    assert job["id"] == "daily_refresh"
-    assert job["max_instances"] == 1
-    assert job["coalesce"] is True
+    refresh_job = next(r for r in recorder if r.get("id") == "daily_refresh")
+    assert refresh_job["id"] == "daily_refresh"
+    assert refresh_job["max_instances"] == 1
+    assert refresh_job["coalesce"] is True
     assert any(r.get("event") == "start" for r in recorder)
 
 
@@ -73,8 +75,9 @@ def test_start_scheduler_idempotent(monkeypatch):
     first = sched.start_scheduler(enabled=True, hour=20, minute=0, timezone="Asia/Shanghai")
     second = sched.start_scheduler(enabled=True, hour=20, minute=0, timezone="Asia/Shanghai")
     assert first is second
-    # 只注册了一个 job(第二次调用直接返回既有实例)。
-    assert len([r for r in recorder if "fn" in r]) == 1
+    # 只注册了一次(第二次调用直接返回既有实例)。
+    # 注意 daily_briefing 默认开启,这里期望 >= 1(包含 daily_refresh + 可选 daily_briefing)
+    assert len([r for r in recorder if "fn" in r]) >= 1
 
 
 def test_shutdown_scheduler(monkeypatch):
