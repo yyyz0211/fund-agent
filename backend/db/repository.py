@@ -21,6 +21,7 @@ from backend.db.models import (
     FundPendingBuy,
     FundProfile,
     FundTransaction,
+    MarketSnapshot,
     Watchlist,
 )
 
@@ -631,4 +632,48 @@ def upsert_briefing(session, briefing_date: str, payload: dict) -> Briefing:
             if hasattr(row, key):
                 setattr(row, key, value)
     session.flush()
+    return row
+
+
+# ---------------------------------------------------------------------------
+# MarketSnapshot
+# ---------------------------------------------------------------------------
+
+def upsert_market_snapshot(
+    s,
+    trade_date: str,
+    snapshot_type: str,
+    payload: dict,
+) -> MarketSnapshot:
+    """upsert market_snapshots 表，返回行。payload keys 对应模型 JSON 列。"""
+    import json as _json
+
+    json_keys = (
+        "indices_json", "breadth_json", "industry_sectors_json",
+        "concept_sectors_json", "industry_flows_json", "concept_flows_json",
+        "themes_json", "breadth_indicators_json", "overseas_json",
+        "announcements_json",
+    )
+    values = {"trade_date": trade_date, "snapshot_type": snapshot_type, "source": "akshare"}
+    for key in json_keys:
+        val = payload.get(key.replace("_json", ""))
+        if isinstance(val, (list, dict)):
+            values[key] = _json.dumps(val, ensure_ascii=False)
+        else:
+            values[key] = _json.dumps(val or [])
+    values["as_of"] = payload.get("as_of", trade_date)
+
+    row = s.scalar(
+        select(MarketSnapshot).where(
+            MarketSnapshot.trade_date == trade_date,
+            MarketSnapshot.snapshot_type == snapshot_type,
+        )
+    )
+    if row is None:
+        row = MarketSnapshot(**values)
+        s.add(row)
+    else:
+        for k, v in values.items():
+            setattr(row, k, v)
+    s.flush()
     return row

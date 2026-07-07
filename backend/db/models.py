@@ -209,3 +209,26 @@ class Briefing(Base):
     as_of: Mapped[str | None] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class MarketSnapshot(Base):
+    """市场快照：按交易日 + 类型（morning/post_market）存储当日市场全量快照。"""
+    __tablename__ = "market_snapshots"
+    __table_args__ = (UniqueConstraint("trade_date", "snapshot_type", name="uq_market_snapshot_date_type"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    trade_date: Mapped[str] = mapped_column(String(10), index=True)
+    snapshot_type: Mapped[str] = mapped_column(String(16))  # "morning" | "post_market"
+    indices_json: Mapped[str] = mapped_column(String)
+    breadth_json: Mapped[str] = mapped_column(String)
+    industry_sectors_json: Mapped[str] = mapped_column(String)
+    concept_sectors_json: Mapped[str] = mapped_column(String)
+    industry_flows_json: Mapped[str] = mapped_column(String)
+    concept_flows_json: Mapped[str] = mapped_column(String)
+    themes_json: Mapped[str] = mapped_column(String)
+    breadth_indicators_json: Mapped[str] = mapped_column(String)
+    overseas_json: Mapped[str] = mapped_column(String)
+    announcements_json: Mapped[str] = mapped_column(String)
+    source: Mapped[str] = mapped_column(String, default="akshare")
+    as_of: Mapped[str] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
