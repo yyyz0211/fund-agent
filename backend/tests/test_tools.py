@@ -100,7 +100,7 @@ def test_diagnose_fund_tool(monkeypatch):
 
 
 def test_all_tools_aggregate_has_unique_set():
-    # 13:6 fund + 4 watchlist + 2 market + 1 pnl
+    # 6 fund + 4 watchlist + 2 market + 1 pnl + 1 what_if = 14
     names = [t.name for t in fund_tools.ALL_TOOLS]
     assert len(names) == len(set(names))  # no name collisions
     assert set(names) == {
@@ -108,4 +108,5 @@ def test_all_tools_aggregate_has_unique_set():
         "get_fund_nav_history", "refresh_fund", "diagnose_fund", "get_watchlist",
         "add_fund_to_watchlist", "remove_fund_from_watchlist", "update_fund_note",
         "get_market_indices", "refresh_market", "calculate_holding_pnl",
+        "what_if_analysis",
     }

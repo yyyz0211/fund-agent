@@ -20,12 +20,13 @@ from __future__ import annotations
 from typing import Iterator
 from uuid import uuid4
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 from backend.config.settings import get_settings
 from backend.graph.policy import check_question, check_answer, REFUSAL_MESSAGE
 from backend.graph.model import build_model
+from backend.graph.prompts import get_system_prompt
 from backend.tools.fund_tools import ALL_TOOLS
 
 
@@ -61,10 +62,16 @@ def _llm_node(state: MessagesState) -> dict:
     """LLM 节点:使用 DeepSeek + ALL_TOOLS 处理消息，返回 AI 响应。
 
     返回 dict 以便 LangGraph 用 add_messages 合并到 state["messages"]。
+
+    把 SYSTEM_PROMPT 拼到 messages 头部,LLM 看到角色边界 + 工具调用约定。
+    - 不修改 state["messages"]:避免 SystemMessage 进入 checkpointer 历史,
+      保持 thread 干净。
+    - 用独立 `_system_message` 单例避免重复构造。
     """
     model = build_model()
     bound = model.bind_tools(ALL_TOOLS)
-    response = bound.invoke(state["messages"])
+    system_msg = SystemMessage(content=get_system_prompt())
+    response = bound.invoke([system_msg] + state["messages"])
     return {"messages": [response]}
 
 

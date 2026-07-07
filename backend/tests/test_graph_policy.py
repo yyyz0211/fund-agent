@@ -15,11 +15,11 @@ class TestCheckQuestion:
         "帮我推荐一只基金",
         "这只基金明天涨还是跌",
         "你能告诉我明天净值吗",
-        "现在该买还是卖",
         "要不要清仓",
-        "帮我分析下应该加仓还是减仓",
-        "现在可以申购这个基金吗",
         "帮我买100块",
+        "立刻买入110011",
+        "必须卖出这只基金",
+        "满仓买入110011",
         "现在进场合适吗",
         "明天基金净值预测",
         "给我推荐个高收益基金",
@@ -49,6 +49,11 @@ class TestCheckQuestion:
 
     @pytest.mark.parametrize("text", [
         "110011能买吗",
+        "110011 建议买入吗",
+        "110011 要不要卖出",
+        "我能不能现在加仓 110011",
+        "帮我分析下应该加仓还是减仓",
+        "现在可以申购这个基金吗",
         "110011怎么样",
         "帮我体检一下 110011",
         "这只基金适合我吗",
@@ -59,11 +64,11 @@ class TestCheckQuestion:
 
     @pytest.mark.parametrize("text", [
         "帮我买1000块110011",
-        "现在买入110011",
+        "立刻买入110011",
         "110011下个月收益多少",
         "明天涨跌预测",
         "110011 跌太多了我想止损",
-        "我能不能现在加仓 110011",
+        "马上清仓 110011",
     ])
     def test_operation_prediction_and_action_intent_blocked(self, text):
         assert check_question(text) is False, f"action intent should block: {text}"
@@ -73,13 +78,11 @@ class TestCheckAnswer:
     """Answer post-check:模型生成的回答若触及禁区,应被替换。"""
 
     @pytest.mark.parametrize("text", [
-        "建议您现在买入该基金",
+        "建议您立刻买入该基金",
         "明天净值预测会涨",
-        "我建议您加仓",
         "可以满仓操作",
         "收益可达 20%",
         "现在清仓是最佳选择",
-        "建议持有 3 个月后卖出",
         "赶紧申购这只基金",
         "现在就是最佳买点",
     ])
@@ -94,6 +97,9 @@ class TestCheckAnswer:
         "自选池中没有基金 000001",
         "已为您添加 110011 到自选池",
         "注意：过往业绩不代表未来表现，投资有风险",
+        "规则结论：建议买入。置信度：medium。source: akshare as_of 2026-07-06。",
+        "规则结论：建议减仓。原因是当前持仓占比偏高，source: local as_of 2026-07-06。",
+        "规则结论：不建议加仓。近 1 年最大回撤较高，source: akshare as_of 2026-07-06。",
     ])
     def test_allowed(self, text):
         assert check_answer(text) is True, f"answer should allow: {text}"

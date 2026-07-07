@@ -12,6 +12,7 @@ from backend.services import fund_service as fs
 from backend.tools.watchlist_tools import WATCHLIST_TOOLS
 from backend.tools.market_tools import MARKET_TOOLS
 from backend.tools.pnl_tools import PNL_TOOLS
+from backend.tools.what_if_tools import WHAT_IF_TOOLS
 
 
 @tool
@@ -75,4 +76,4 @@ FUND_TOOLS = [get_latest_fund_nav, calculate_fund_metrics,
               get_fund_basic_info, get_fund_nav_history, refresh_fund,
               diagnose_fund]
 
-ALL_TOOLS = FUND_TOOLS + WATCHLIST_TOOLS + MARKET_TOOLS + PNL_TOOLS
+ALL_TOOLS = FUND_TOOLS + WATCHLIST_TOOLS + MARKET_TOOLS + PNL_TOOLS + WHAT_IF_TOOLS
