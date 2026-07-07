@@ -19,6 +19,7 @@ from backend.config import settings as app_settings
 from backend.db.models import Briefing
 from backend.db.session import get_session
 from backend.graph.model import build_model
+from backend.services import data_collector as dc
 from backend.services import market_service, watchlist_service, fund_service
 
 
@@ -113,8 +114,22 @@ def collect_watchlist_snapshot(*, fund_codes: list[str] | None = None,
             "as_of": _today(),
         })
 
+    # 4) 市场宽度（涨跌家数 / 涨跌停 / 成交额）
+    try:
+        breadth = _collect_market_breadth()
+    except Exception:  # noqa: BLE001
+        breadth = {}
+
+    # 5) 板块涨跌快照
+    try:
+        sector_snapshot = _collect_sector_snapshot()
+    except Exception:  # noqa: BLE001
+        sector_snapshot = []
+
     return {
         "market_snapshot": market_result.get("indices", []),
+        "market_breadth": breadth,
+        "sector_snapshot": sector_snapshot,
         "watchlist_changes": watchlist_changes,
         "errors": errors,
         "collect_meta": {
@@ -128,6 +143,16 @@ def collect_watchlist_snapshot(*, fund_codes: list[str] | None = None,
 def _collect_market_snapshot():
     """拉最新交易日指数，返回 {indices, source, as_of} 或 {error}。"""
     return market_service.get_indices()
+
+
+def _collect_market_breadth() -> dict:
+    """拉市场宽度（涨跌家数/涨跌停/成交额）。"""
+    return dc.fetch_market_breadth()
+
+
+def _collect_sector_snapshot() -> list[dict]:
+    """拉行业板块涨跌幅 top/bottom。"""
+    return dc.fetch_sector_snapshot()
 
 
 def _safe_get(d: Any, key: str, default=None) -> Any:
@@ -150,7 +175,10 @@ def compose_briefing(snapshot: dict) -> dict:
 
     warnings: list[str] = []
     snapshot_json = json.dumps(snapshot, ensure_ascii=False, indent=2)
-    prompt = BRIEFING_PROMPT_TEMPLATE.format(snapshot_json=snapshot_json)
+    # 用 SafeFormatter 防止 JSON 中的 {key} 被二次解析为占位符
+    from string import Template
+    safe_prompt = Template(BRIEFING_PROMPT_TEMPLATE).substitute(snapshot_json=snapshot_json)
+    prompt = safe_prompt  # noqa: F841
 
     model = build_model()
     response = model.invoke(prompt)

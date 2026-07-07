@@ -518,3 +518,137 @@ def fetch_fund_profile(fund_code: str) -> dict:
 
     out["missing_data"] = list(dict.fromkeys(out["missing_data"]))
     return out
+
+
+# ---------------------------------------------------------------------------
+# 市场宽度采集（涨跌家数 / 涨跌停 / 成交额）
+# ---------------------------------------------------------------------------
+
+def fetch_market_breadth() -> dict:
+    """拉取今日 A 股市场宽度指标。
+
+    调用 ``akshare.stock.stock_market_activity_legu()`` 获取涨跌家数/涨跌停。
+
+    非交易日该接口可能返回旧数据，此时 volume=0。
+
+    成功返回:
+        {
+            "up": int, "down": int, "limit_up": int, "limit_down": int,
+            "volume": float（亿元）, "amount": float（亿元）,
+            "total": int, "source": "akshare", "as_of": "YYYY-MM-DD"
+        }
+    失败返回: {"error": str, "source": "akshare"}
+    """
+    try:
+        df = ak.stock_market_activity_legu()
+        if df is None or getattr(df, "empty", True) or len(df) == 0:
+            return _empty_breadth(SOURCE)
+
+        # 转换为 dict: item=行标签, value=数值
+        kv = dict(zip(df["item"], df["value"]))
+
+        def _num(key, default=0.0):
+            val = kv.get(key)
+            if val is None:
+                return default
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                return default
+
+        up = int(_num("上涨"))
+        down = int(_num("下跌"))
+        limit_up = int(_num("涨停"))
+        limit_down = int(_num("跌停"))
+        total = up + down
+
+        # 活跃度统计日期
+        as_of = str(kv.get("统计日期", ""))[:10]
+        if as_of == "":
+            as_of = today_str()
+
+        return {
+            "up": up,
+            "down": down,
+            "limit_up": limit_up,
+            "limit_down": limit_down,
+            "volume": 0.0,  # stock_market_activity_legu 不含成交额
+            "amount": 0.0,
+            "total": total,
+            "source": SOURCE,
+            "as_of": as_of,
+        }
+    except Exception as e:  # noqa: BLE001
+        return {"error": f"fetch_market_breadth failed: {e}", "source": SOURCE}
+
+
+def _empty_breadth(source: str) -> dict:
+    return {"up": 0, "down": 0, "limit_up": 0, "limit_down": 0,
+            "volume": 0.0, "amount": 0.0, "total": 0, "source": source,
+            "as_of": today_str()}
+
+
+def _find_col(df, *names) -> str | None:
+    """在 DataFrame 列中查找第一个存在的列名。"""
+    for name in names:
+        if name in df.columns:
+            return name
+    return None
+
+
+# ---------------------------------------------------------------------------
+# 板块涨跌快照
+# ---------------------------------------------------------------------------
+
+def fetch_sector_snapshot(limit_n: int = 10) -> list[dict]:
+    """拉取今日行业板块涨跌幅，取 top-N + bottom-N。
+
+    使用 ``akshare.stock.stock_board_industry_summary_ths()`` 拉申万行业实时行情，
+    按涨跌幅排序取强势 / 弱势各若干。
+
+    非交易日可能返回少量数据或空列表，此时返回空列表。
+
+    成功返回:
+        [{"name": str, "change_pct": float, "source": "akshare"}, ...]
+    失败返回: []
+    """
+    try:
+        df = ak.stock_board_industry_summary_ths()
+        if df is None or getattr(df, "empty", True) or len(df) == 0:
+            return []
+
+        name_col = "板块"
+        change_col = "涨跌幅"
+
+        if name_col not in df.columns or change_col not in df.columns:
+            return []
+
+        rows = []
+        for _, row in df.iterrows():
+            try:
+                name = str(row.get(name_col, "")).strip()
+                change = _to_float(row.get(change_col))
+                if name and change is not None:
+                    rows.append({
+                        "name": name,
+                        "change_pct": change,
+                        "source": SOURCE,
+                    })
+            except Exception:  # noqa: BLE001
+                continue
+
+        if not rows:
+            return []
+
+        rows.sort(key=lambda r: r["change_pct"], reverse=True)
+        top = rows[:limit_n]
+        bottom = rows[-limit_n:] if len(rows) > limit_n else []
+        # 避免重复
+        result = list(top)
+        for b in bottom:
+            if b not in result:
+                result.append(b)
+        return result
+
+    except Exception:  # noqa: BLE001
+        return []

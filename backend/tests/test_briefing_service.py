@@ -141,6 +141,17 @@ class TestCollectWatchlistSnapshot:
         def mock_get_indices():
             return {"indices": market_rows, "source": "akshare", "as_of": "2026-07-07"}
 
+        def mock_get_breadth():
+            return {"up": 3200, "down": 1500, "limit_up": 71, "limit_down": 12,
+                    "volume": 9800.0, "amount": 10200.0, "total": 4700,
+                    "source": "akshare", "as_of": "2026-07-07"}
+
+        def mock_get_sectors():
+            return [
+                {"name": "医疗服务", "change_pct": 3.2, "source": "akshare"},
+                {"name": "煤炭开采", "change_pct": -1.5, "source": "akshare"},
+            ]
+
         def mock_list_watchlist(**_kwargs):
             return watchlist_rows
 
@@ -153,12 +164,16 @@ class TestCollectWatchlistSnapshot:
                 return fund_metrics_1m
 
         with patch.object(briefing_service, "_collect_market_snapshot", mock_get_indices), \
+             patch.object(briefing_service, "_collect_market_breadth", mock_get_breadth), \
+             patch.object(briefing_service, "_collect_sector_snapshot", mock_get_sectors), \
              patch("backend.services.briefing_service.watchlist_service.list_watchlist", mock_list_watchlist), \
              patch("backend.services.briefing_service.fund_service.get_metrics", mock_get_metrics):
 
             result = briefing_service.collect_watchlist_snapshot()
 
         assert "market_snapshot" in result
+        assert "market_breadth" in result
+        assert "sector_snapshot" in result
         assert "watchlist_changes" in result
         assert "errors" in result
         assert "collect_meta" in result
@@ -166,6 +181,10 @@ class TestCollectWatchlistSnapshot:
         assert len(result["watchlist_changes"]) == 3
         assert result["errors"] == []
         assert result["collect_meta"]["max_funds_applied"] is None  # 未超限额
+        # Phase A+ 新字段
+        assert result["market_breadth"]["up"] == 3200
+        assert result["market_breadth"]["limit_up"] == 71
+        assert len(result["sector_snapshot"]) == 2
 
     def test_collect_skips_failed_fund_continues_loop(self):
         """单只 fund 抛异常:记 errors,后续继续处理。"""
@@ -173,6 +192,14 @@ class TestCollectWatchlistSnapshot:
 
         def mock_get_indices():
             return {"indices": [], "source": "akshare", "as_of": "2026-07-07"}
+
+        def mock_get_breadth():
+            return {"up": 0, "down": 0, "limit_up": 0, "limit_down": 0,
+                    "volume": 0.0, "amount": 0.0, "total": 0,
+                    "source": "akshare", "as_of": "2026-07-07"}
+
+        def mock_get_sectors():
+            return []
 
         def mock_list_watchlist(**_kwargs):
             return [
@@ -191,6 +218,8 @@ class TestCollectWatchlistSnapshot:
             return {"period": period, "period_return": 0.01}
 
         with patch.object(briefing_service, "_collect_market_snapshot", mock_get_indices), \
+             patch.object(briefing_service, "_collect_market_breadth", mock_get_breadth), \
+             patch.object(briefing_service, "_collect_sector_snapshot", mock_get_sectors), \
              patch("backend.services.briefing_service.watchlist_service.list_watchlist", mock_list_watchlist), \
              patch("backend.services.briefing_service.fund_service.get_metrics", mock_get_metrics):
 
@@ -212,6 +241,14 @@ class TestCollectWatchlistSnapshot:
         def mock_get_indices():
             return {"indices": [], "source": "akshare", "as_of": "2026-07-07"}
 
+        def mock_get_breadth():
+            return {"up": 0, "down": 0, "limit_up": 0, "limit_down": 0,
+                    "volume": 0.0, "amount": 0.0, "total": 0,
+                    "source": "akshare", "as_of": "2026-07-07"}
+
+        def mock_get_sectors():
+            return []
+
         def mock_list_watchlist(**_kwargs):
             return [{"fund_code": f"00{i:04d}", "fund_name": f"基金{i}"}
                     for i in range(1, 11)]
@@ -222,6 +259,8 @@ class TestCollectWatchlistSnapshot:
         cap = 3
 
         with patch.object(briefing_service, "_collect_market_snapshot", mock_get_indices), \
+             patch.object(briefing_service, "_collect_market_breadth", mock_get_breadth), \
+             patch.object(briefing_service, "_collect_sector_snapshot", mock_get_sectors), \
              patch("backend.services.briefing_service.watchlist_service.list_watchlist", mock_list_watchlist), \
              patch("backend.services.briefing_service.fund_service.get_metrics", mock_get_metrics), \
              patch("backend.services.briefing_service.settings") as mock_settings:
@@ -232,6 +271,70 @@ class TestCollectWatchlistSnapshot:
         assert len(result["watchlist_changes"]) == cap
         assert any("截断" in w or "cap" in w.lower()
                    for w in result["collect_meta"].get("warnings", []))
+
+    def test_collect_market_breadth_graceful_fallback(self):
+        """_collect_market_breadth 抛异常时 snapshot 仍有 market_breadth={}。"""
+        from backend.services import briefing_service
+
+        def mock_get_indices():
+            return {"indices": [], "source": "akshare", "as_of": "2026-07-07"}
+
+        def mock_get_breadth_fail():
+            raise RuntimeError("akshare unavailable")
+
+        def mock_get_sectors():
+            return []
+
+        def mock_list_watchlist(**_kwargs):
+            return [{"fund_code": "110011", "fund_name": "A"}]
+
+        def mock_get_metrics(fund_code, period, **_kwargs):
+            return {"period": period, "period_return": 0.01}
+
+        with patch.object(briefing_service, "_collect_market_snapshot", mock_get_indices), \
+             patch.object(briefing_service, "_collect_market_breadth", mock_get_breadth_fail), \
+             patch.object(briefing_service, "_collect_sector_snapshot", mock_get_sectors), \
+             patch("backend.services.briefing_service.watchlist_service.list_watchlist", mock_list_watchlist), \
+             patch("backend.services.briefing_service.fund_service.get_metrics", mock_get_metrics):
+
+            result = briefing_service.collect_watchlist_snapshot()
+
+        # breadth 因异常返回 {}，但 snapshot 仍然成功返回（graceful degradation）
+        assert result["market_breadth"] == {}
+        assert result["sector_snapshot"] == []
+        assert result["watchlist_changes"][0]["fund_code"] == "110011"
+
+    def test_collect_sector_snapshot_empty_is_valid(self):
+        """sector_snapshot 为空时 snapshot 仍成功（当日可能无板块数据）。"""
+        from backend.services import briefing_service
+
+        def mock_get_indices():
+            return {"indices": [{"symbol": "000001", "name": "上证指数",
+                                  "close": 3200.0, "change_pct": 0.5,
+                                  "market_date": "2026-07-07", "source": "akshare"}],
+                    "source": "akshare", "as_of": "2026-07-07"}
+
+        def mock_get_breadth():
+            return {"up": 0, "down": 0, "limit_up": 0, "limit_down": 0,
+                    "volume": 0.0, "amount": 0.0, "total": 0,
+                    "source": "akshare", "as_of": "2026-07-07"}
+
+        def mock_get_sectors():
+            return []  # 空 = 非交易日
+
+        def mock_list_watchlist(**_kwargs):
+            return []
+
+        with patch.object(briefing_service, "_collect_market_snapshot", mock_get_indices), \
+             patch.object(briefing_service, "_collect_market_breadth", mock_get_breadth), \
+             patch.object(briefing_service, "_collect_sector_snapshot", mock_get_sectors), \
+             patch("backend.services.briefing_service.watchlist_service.list_watchlist", mock_list_watchlist):
+
+            result = briefing_service.collect_watchlist_snapshot()
+
+        assert result["sector_snapshot"] == []
+        assert len(result["market_snapshot"]) == 1
+        assert result["watchlist_changes"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -322,6 +425,10 @@ class TestRunDailyBriefing:
 
         snapshot = {
             "market_snapshot": [{"symbol": "000300", "name": "沪深300", "close": 3800.0, "change_pct": 0.5}],
+            "market_breadth": {"up": 2000, "down": 2500, "limit_up": 50, "limit_down": 20,
+                              "volume": 8000.0, "amount": 8500.0, "total": 4500,
+                              "source": "akshare", "as_of": "2026-07-07"},
+            "sector_snapshot": [{"name": "医疗服务", "change_pct": 2.1, "source": "akshare"}],
             "watchlist_changes": [],
             "errors": [],
             "collect_meta": {},
