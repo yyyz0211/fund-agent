@@ -126,9 +126,31 @@ def collect_watchlist_snapshot(*, fund_codes: list[str] | None = None,
     except Exception:  # noqa: BLE001
         sector_snapshot = []
 
+    # 6) 行业板块资金流向
+    try:
+        industry_flows = dc.fetch_industry_flows()
+    except Exception:  # noqa: BLE001
+        industry_flows = []
+
+    # 7) 概念板块涨跌幅
+    try:
+        concept_sectors = dc.fetch_concept_sectors()
+    except Exception:  # noqa: BLE001
+        concept_sectors = []
+
+    # 8) 概念板块资金流向
+    try:
+        concept_flows = dc.fetch_concept_flows()
+    except Exception:  # noqa: BLE001
+        concept_flows = []
+
     return {
         "market_snapshot": market_result.get("indices", []),
         "market_breadth": breadth,
+        "industry_sectors": sector_snapshot,
+        "industry_flows": industry_flows,
+        "concept_sectors": concept_sectors,
+        "concept_flows": concept_flows,
         "sector_snapshot": sector_snapshot,
         "watchlist_changes": watchlist_changes,
         "errors": errors,

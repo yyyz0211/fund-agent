@@ -152,6 +152,15 @@ class TestCollectWatchlistSnapshot:
                 {"name": "煤炭开采", "change_pct": -1.5, "source": "akshare"},
             ]
 
+        def mock_industry_flows():
+            return [{"name": "银行", "net_flow": 50000.0}]
+
+        def mock_concept_sectors():
+            return [{"name": "AI概念", "change_pct": 4.5, "source": "akshare"}]
+
+        def mock_concept_flows():
+            return [{"name": "AI概念", "net_flow": 20000.0}]
+
         def mock_list_watchlist(**_kwargs):
             return watchlist_rows
 
@@ -166,6 +175,9 @@ class TestCollectWatchlistSnapshot:
         with patch.object(briefing_service, "_collect_market_snapshot", mock_get_indices), \
              patch.object(briefing_service, "_collect_market_breadth", mock_get_breadth), \
              patch.object(briefing_service, "_collect_sector_snapshot", mock_get_sectors), \
+             patch("backend.services.briefing_service.dc.fetch_industry_flows", mock_industry_flows), \
+             patch("backend.services.briefing_service.dc.fetch_concept_sectors", mock_concept_sectors), \
+             patch("backend.services.briefing_service.dc.fetch_concept_flows", mock_concept_flows), \
              patch("backend.services.briefing_service.watchlist_service.list_watchlist", mock_list_watchlist), \
              patch("backend.services.briefing_service.fund_service.get_metrics", mock_get_metrics):
 
@@ -181,10 +193,14 @@ class TestCollectWatchlistSnapshot:
         assert len(result["watchlist_changes"]) == 3
         assert result["errors"] == []
         assert result["collect_meta"]["max_funds_applied"] is None  # 未超限额
-        # Phase A+ 新字段
+        # Phase A++ 新字段
         assert result["market_breadth"]["up"] == 3200
         assert result["market_breadth"]["limit_up"] == 71
         assert len(result["sector_snapshot"]) == 2
+        assert "industry_flows" in result
+        assert "concept_sectors" in result
+        assert "concept_flows" in result
+        assert result["industry_flows"][0]["name"] == "银行"
 
     def test_collect_skips_failed_fund_continues_loop(self):
         """单只 fund 抛异常:记 errors,后续继续处理。"""
@@ -199,6 +215,15 @@ class TestCollectWatchlistSnapshot:
                     "source": "akshare", "as_of": "2026-07-07"}
 
         def mock_get_sectors():
+            return []
+
+        def mock_industry_flows():
+            return []
+
+        def mock_concept_sectors():
+            return []
+
+        def mock_concept_flows():
             return []
 
         def mock_list_watchlist(**_kwargs):
@@ -220,6 +245,9 @@ class TestCollectWatchlistSnapshot:
         with patch.object(briefing_service, "_collect_market_snapshot", mock_get_indices), \
              patch.object(briefing_service, "_collect_market_breadth", mock_get_breadth), \
              patch.object(briefing_service, "_collect_sector_snapshot", mock_get_sectors), \
+             patch("backend.services.briefing_service.dc.fetch_industry_flows", mock_industry_flows), \
+             patch("backend.services.briefing_service.dc.fetch_concept_sectors", mock_concept_sectors), \
+             patch("backend.services.briefing_service.dc.fetch_concept_flows", mock_concept_flows), \
              patch("backend.services.briefing_service.watchlist_service.list_watchlist", mock_list_watchlist), \
              patch("backend.services.briefing_service.fund_service.get_metrics", mock_get_metrics):
 
@@ -249,6 +277,15 @@ class TestCollectWatchlistSnapshot:
         def mock_get_sectors():
             return []
 
+        def mock_industry_flows():
+            return []
+
+        def mock_concept_sectors():
+            return []
+
+        def mock_concept_flows():
+            return []
+
         def mock_list_watchlist(**_kwargs):
             return [{"fund_code": f"00{i:04d}", "fund_name": f"基金{i}"}
                     for i in range(1, 11)]
@@ -261,6 +298,9 @@ class TestCollectWatchlistSnapshot:
         with patch.object(briefing_service, "_collect_market_snapshot", mock_get_indices), \
              patch.object(briefing_service, "_collect_market_breadth", mock_get_breadth), \
              patch.object(briefing_service, "_collect_sector_snapshot", mock_get_sectors), \
+             patch("backend.services.briefing_service.dc.fetch_industry_flows", mock_industry_flows), \
+             patch("backend.services.briefing_service.dc.fetch_concept_sectors", mock_concept_sectors), \
+             patch("backend.services.briefing_service.dc.fetch_concept_flows", mock_concept_flows), \
              patch("backend.services.briefing_service.watchlist_service.list_watchlist", mock_list_watchlist), \
              patch("backend.services.briefing_service.fund_service.get_metrics", mock_get_metrics), \
              patch("backend.services.briefing_service.settings") as mock_settings:
@@ -285,6 +325,15 @@ class TestCollectWatchlistSnapshot:
         def mock_get_sectors():
             return []
 
+        def mock_industry_flows():
+            return []
+
+        def mock_concept_sectors():
+            return []
+
+        def mock_concept_flows():
+            return []
+
         def mock_list_watchlist(**_kwargs):
             return [{"fund_code": "110011", "fund_name": "A"}]
 
@@ -294,6 +343,9 @@ class TestCollectWatchlistSnapshot:
         with patch.object(briefing_service, "_collect_market_snapshot", mock_get_indices), \
              patch.object(briefing_service, "_collect_market_breadth", mock_get_breadth_fail), \
              patch.object(briefing_service, "_collect_sector_snapshot", mock_get_sectors), \
+             patch("backend.services.briefing_service.dc.fetch_industry_flows", mock_industry_flows), \
+             patch("backend.services.briefing_service.dc.fetch_concept_sectors", mock_concept_sectors), \
+             patch("backend.services.briefing_service.dc.fetch_concept_flows", mock_concept_flows), \
              patch("backend.services.briefing_service.watchlist_service.list_watchlist", mock_list_watchlist), \
              patch("backend.services.briefing_service.fund_service.get_metrics", mock_get_metrics):
 
@@ -322,12 +374,24 @@ class TestCollectWatchlistSnapshot:
         def mock_get_sectors():
             return []  # 空 = 非交易日
 
+        def mock_industry_flows():
+            return []
+
+        def mock_concept_sectors():
+            return []
+
+        def mock_concept_flows():
+            return []
+
         def mock_list_watchlist(**_kwargs):
             return []
 
         with patch.object(briefing_service, "_collect_market_snapshot", mock_get_indices), \
              patch.object(briefing_service, "_collect_market_breadth", mock_get_breadth), \
              patch.object(briefing_service, "_collect_sector_snapshot", mock_get_sectors), \
+             patch("backend.services.briefing_service.dc.fetch_industry_flows", mock_industry_flows), \
+             patch("backend.services.briefing_service.dc.fetch_concept_sectors", mock_concept_sectors), \
+             patch("backend.services.briefing_service.dc.fetch_concept_flows", mock_concept_flows), \
              patch("backend.services.briefing_service.watchlist_service.list_watchlist", mock_list_watchlist):
 
             result = briefing_service.collect_watchlist_snapshot()
