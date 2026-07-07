@@ -16,10 +16,12 @@ class _FakeScheduler:
     def __init__(self, recorder):
         self._recorder = recorder
 
-    def add_job(self, fn, trigger=None, id=None, max_instances=1, coalesce=True):
+    def add_job(self, fn, trigger=None, id=None, max_instances=1, coalesce=True,
+                 misfire_grace_time=None, jitter=None):
         self._recorder.append({
             "fn": fn, "trigger": trigger, "id": id,
             "max_instances": max_instances, "coalesce": coalesce,
+            "misfire_grace_time": misfire_grace_time, "jitter": jitter,
         })
 
     def start(self):
