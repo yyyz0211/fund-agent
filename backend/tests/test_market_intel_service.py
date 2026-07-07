@@ -1,7 +1,11 @@
 """market_intel_service 集成测试。"""
+from __future__ import annotations
+
 import pytest
+from unittest.mock import patch, MagicMock
 
 from backend.db.models import Briefing  # noqa: F401  注册入 Base.metadata
+from backend.services import market_intel_service
 
 
 @pytest.fixture
@@ -16,6 +20,25 @@ def in_memory_session():
     session = Session()
     yield session
     session.close()
+
+
+def _mock_all_dc_calls():
+    """Return a dict of mocks for all data_collector and market_service calls."""
+    return {
+        "fetch_market_breadth": MagicMock(
+            return_value={"up": 100, "down": 50, "limit_up": 5, "limit_down": 1,
+                          "volume": 0.0, "amount": 0.0, "total": 150, "source": "akshare",
+                          "as_of": "2026-07-07"}
+        ),
+        "fetch_sector_snapshot": MagicMock(return_value=[]),
+        "fetch_concept_sectors": MagicMock(return_value=[]),
+        "fetch_industry_flows": MagicMock(return_value=[]),
+        "fetch_concept_flows": MagicMock(return_value=[]),
+        "fetch_theme_boards": MagicMock(return_value=[]),
+        "fetch_breadth_indicators": MagicMock(return_value={}),
+        "fetch_overseas_markets": MagicMock(return_value=[]),
+        "fetch_announcements": MagicMock(return_value=[]),
+    }
 
 
 def test_market_snapshot_model_import():
@@ -47,3 +70,48 @@ def test_upsert_market_snapshot_idempotent(in_memory_session):
     in_memory_session.commit()
     row2 = upsert_market_snapshot(in_memory_session, "2026-07-07", "post_market", payload)
     assert row1.id == row2.id  # idempotent
+
+
+def test_collect_market_intel_returns_all_keys():
+    from backend.services import market_intel_service
+    mocks = _mock_all_dc_calls()
+    with patch.object(market_intel_service.dc, "fetch_market_breadth", mocks["fetch_market_breadth"]), \
+         patch.object(market_intel_service.dc, "fetch_sector_snapshot", mocks["fetch_sector_snapshot"]), \
+         patch.object(market_intel_service.dc, "fetch_industry_flows", mocks["fetch_industry_flows"]), \
+         patch.object(market_intel_service.dc, "fetch_concept_sectors", mocks["fetch_concept_sectors"]), \
+         patch.object(market_intel_service.dc, "fetch_concept_flows", mocks["fetch_concept_flows"]), \
+         patch.object(market_intel_service.dc, "fetch_theme_boards", mocks["fetch_theme_boards"]), \
+         patch.object(market_intel_service.dc, "fetch_breadth_indicators", mocks["fetch_breadth_indicators"]), \
+         patch.object(market_intel_service.dc, "fetch_overseas_markets", mocks["fetch_overseas_markets"]), \
+         patch.object(market_intel_service.dc, "fetch_announcements", mocks["fetch_announcements"]), \
+         patch.object(market_intel_service.market_service, "get_indices",
+                      return_value={"indices": [], "source": "akshare", "as_of": "2026-07-07"}):
+        result = market_intel_service.collect_market_intel("2026-07-07", "post_market")
+    expected_keys = {
+        "trade_date", "snapshot_type", "indices", "breadth",
+        "industry_sectors", "concept_sectors", "industry_flows",
+        "concept_flows", "themes", "breadth_indicators",
+        "overseas", "announcements", "as_of", "errors",
+    }
+    assert expected_keys.issubset(result.keys())
+
+
+def test_collect_market_intel_partial_failure_continues():
+    """单项 akshare 失败时其他字段仍返回，不抛整体异常。"""
+    from backend.services import market_intel_service
+    mocks = _mock_all_dc_calls()
+    mocks["fetch_concept_sectors"] = MagicMock(side_effect=RuntimeError("network"))
+    with patch.object(market_intel_service.dc, "fetch_market_breadth", mocks["fetch_market_breadth"]), \
+         patch.object(market_intel_service.dc, "fetch_sector_snapshot", mocks["fetch_sector_snapshot"]), \
+         patch.object(market_intel_service.dc, "fetch_industry_flows", mocks["fetch_industry_flows"]), \
+         patch.object(market_intel_service.dc, "fetch_concept_sectors", mocks["fetch_concept_sectors"]), \
+         patch.object(market_intel_service.dc, "fetch_concept_flows", mocks["fetch_concept_flows"]), \
+         patch.object(market_intel_service.dc, "fetch_theme_boards", mocks["fetch_theme_boards"]), \
+         patch.object(market_intel_service.dc, "fetch_breadth_indicators", mocks["fetch_breadth_indicators"]), \
+         patch.object(market_intel_service.dc, "fetch_overseas_markets", mocks["fetch_overseas_markets"]), \
+         patch.object(market_intel_service.dc, "fetch_announcements", mocks["fetch_announcements"]), \
+         patch.object(market_intel_service.market_service, "get_indices",
+                      return_value={"indices": [], "source": "akshare", "as_of": "2026-07-07"}):
+        result = market_intel_service.collect_market_intel("2026-07-07", "post_market")
+    assert "errors" in result
+    assert any(e["field"] == "concept_sectors" for e in result["errors"])
