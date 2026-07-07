@@ -23,3 +23,18 @@ export function MetricCards({ items }: { items: MetricItem[] }) {
     </div>
   );
 }
+
+export function MetricCard({ label, value, sub, color = "gray" }: MetricItem & { color?: "green" | "red" | "gray" }) {
+  const textColor = color === "green" ? "text-green-600" : color === "red" ? "text-red-600" : "text-gray-950";
+  return (
+    <Card className="p-5">
+      <CardHeader className="mb-4">
+        <CardTitle>{label}</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className={`text-2xl font-semibold tracking-tight ${textColor}`}>{value}</div>
+        {sub && <div className="mt-2 text-xs text-gray-500">{sub}</div>}
+      </CardContent>
+    </Card>
+  );
+}
