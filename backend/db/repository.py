@@ -11,7 +11,9 @@ service 既可以传入测试用的内存 Session,也可以传通过
 - 写路径默认在内部自己 `session.commit()`,调用方不要重复提交;少数需要
   原子组合的 service 会显式传 `commit=False` 并自行控制事务。
 """
-from sqlalchemy import and_, delete, func, select
+import json
+
+from sqlalchemy import and_, delete, func, or_, select
 
 from backend.db.models import (
     Briefing,
@@ -21,6 +23,7 @@ from backend.db.models import (
     FundPendingBuy,
     FundProfile,
     FundTransaction,
+    MarketEvidence,
     MarketSnapshot,
     Watchlist,
 )
@@ -101,6 +104,38 @@ def _pending_buy_to_dict(row: FundPendingBuy) -> dict:
         "nav": row.nav,
         "share": row.share,
         "transaction_id": row.transaction_id,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+def _json_loads(value, fallback):
+    if not value:
+        return fallback
+    try:
+        return json.loads(value)
+    except Exception:
+        return fallback
+
+
+def _evidence_to_dict(row: MarketEvidence) -> dict:
+    """MarketEvidence 的可序列化投影。"""
+    return {
+        "id": row.id,
+        "trade_date": row.trade_date,
+        "brief_type": row.brief_type,
+        "category": row.category,
+        "title": row.title,
+        "summary": row.summary,
+        "symbols": _json_loads(row.symbols_json, []),
+        "metrics": _json_loads(row.metrics_json, {}),
+        "source": row.source,
+        "source_url": row.source_url,
+        "published_at": row.published_at,
+        "collected_at": row.collected_at,
+        "reliability": row.reliability,
+        "raw_excerpt": row.raw_excerpt,
+        "raw_hash": row.raw_hash,
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
@@ -677,3 +712,85 @@ def upsert_market_snapshot(
             setattr(row, k, v)
     s.flush()
     return row
+
+
+# ---------------------------------------------------------------------------
+# MarketEvidence
+# ---------------------------------------------------------------------------
+
+_MARKET_EVIDENCE_FIELDS = {
+    "trade_date",
+    "brief_type",
+    "category",
+    "title",
+    "summary",
+    "symbols_json",
+    "metrics_json",
+    "source",
+    "source_url",
+    "published_at",
+    "collected_at",
+    "reliability",
+    "raw_excerpt",
+    "raw_hash",
+}
+
+
+def upsert_market_evidence(session, payload: dict) -> dict:
+    """按 raw_hash upsert 市场证据。"""
+    values = {
+        key: value
+        for key, value in (payload or {}).items()
+        if key in _MARKET_EVIDENCE_FIELDS
+    }
+    if not values.get("raw_hash"):
+        raise ValueError("raw_hash is required")
+    if not values.get("category"):
+        raise ValueError("category is required")
+    if not values.get("title"):
+        raise ValueError("title is required")
+
+    row = session.scalar(
+        select(MarketEvidence).where(MarketEvidence.raw_hash == values["raw_hash"])
+    )
+    if row is None:
+        row = MarketEvidence(**values)
+        session.add(row)
+    else:
+        for key, value in values.items():
+            setattr(row, key, value)
+    session.commit()
+    session.refresh(row)
+    return _evidence_to_dict(row)
+
+
+def search_market_evidence(
+    session,
+    *,
+    query: str = "",
+    trade_date: str = "",
+    category: str = "",
+    limit: int = 10,
+) -> list[dict]:
+    """按关键词/交易日/类别搜索市场证据。"""
+    stmt = select(MarketEvidence)
+    if trade_date:
+        stmt = stmt.where(MarketEvidence.trade_date == trade_date)
+    if category:
+        stmt = stmt.where(MarketEvidence.category == category)
+    if query:
+        pattern = f"%{query}%"
+        stmt = stmt.where(
+            or_(
+                MarketEvidence.title.ilike(pattern),
+                MarketEvidence.summary.ilike(pattern),
+                MarketEvidence.symbols_json.ilike(pattern),
+                MarketEvidence.raw_excerpt.ilike(pattern),
+            )
+        )
+    safe_limit = max(1, min(int(limit or 10), 50))
+    rows = session.scalars(
+        stmt.order_by(MarketEvidence.published_at.desc(), MarketEvidence.id.desc())
+        .limit(safe_limit)
+    ).all()
+    return [_evidence_to_dict(row) for row in rows]

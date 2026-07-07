@@ -232,3 +232,31 @@ class MarketSnapshot(Base):
     source: Mapped[str] = mapped_column(String, default="akshare")
     as_of: Mapped[str] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class MarketEvidence(Base):
+    """市场情报证据。
+
+    保存可追溯的短证据,供简报和 QA 回答引用。这里不保存长篇新闻全文,
+    只保存摘要、短摘录、来源 URL 和 hash。
+    """
+    __tablename__ = "market_evidence"
+    __table_args__ = (UniqueConstraint("raw_hash", name="uq_market_evidence_hash"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    trade_date: Mapped[str | None] = mapped_column(String(10), index=True)
+    brief_type: Mapped[str | None] = mapped_column(String(16))
+    category: Mapped[str] = mapped_column(String(32), index=True)
+    title: Mapped[str] = mapped_column(String)
+    summary: Mapped[str | None] = mapped_column(String)
+    symbols_json: Mapped[str | None] = mapped_column(String)
+    metrics_json: Mapped[str | None] = mapped_column(String)
+    source: Mapped[str | None] = mapped_column(String)
+    source_url: Mapped[str | None] = mapped_column(String)
+    published_at: Mapped[str | None] = mapped_column(String)
+    collected_at: Mapped[str | None] = mapped_column(String)
+    reliability: Mapped[str | None] = mapped_column(String)
+    raw_excerpt: Mapped[str | None] = mapped_column(String)
+    raw_hash: Mapped[str] = mapped_column(String, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())

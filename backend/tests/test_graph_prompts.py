@@ -48,6 +48,22 @@ def test_system_prompt_contains_tool_contract():
     assert "diagnose_fund_auto" in prompt
 
 
+def test_system_prompt_references_real_market_tools():
+    prompt = get_system_prompt()
+    assert "get_market_snapshot_auto" in prompt
+    assert "get_sector_heatmap" in prompt
+    assert "get_latest_market_brief" in prompt
+    assert "search_market_evidence" in prompt
+    assert "get_market_index_quote" not in prompt
+
+
+def test_system_prompt_requires_evidence_for_market_catalysts():
+    prompt = get_system_prompt()
+    assert "为什么涨/跌" in prompt
+    assert "search_market_evidence" in prompt
+    assert "不能确认催化原因" in prompt
+
+
 def test_system_prompt_requires_source_and_date():
     prompt = get_system_prompt()
     assert "source" in prompt.lower()

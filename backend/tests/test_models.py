@@ -9,7 +9,7 @@ def test_tables_created():
     engine = make_engine("sqlite:///:memory:")
     init_db(engine)
     names = set(inspect(engine).get_table_names())
-    assert {"funds", "watchlist", "fund_nav", "market_data"} <= names
+    assert {"funds", "watchlist", "fund_nav", "market_data", "market_evidence"} <= names
 
 
 def test_fund_nav_unique_constraint():
