@@ -1,15 +1,20 @@
 "use client";
 import { useRefreshMarket } from "@/lib/market";
+import { Button } from "@/components/ui/button";
+import { RefreshCw } from "lucide-react";
 
 export function SnapshotRefreshButton() {
   const { mutate, isPending } = useRefreshMarket();
   return (
-    <button
+    <Button
+      variant="outline"
+      size="sm"
       onClick={() => mutate()}
       disabled={isPending}
-      className="px-4 py-2 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 disabled:opacity-50 transition"
+      className="gap-2"
     >
-      {isPending ? "采集中..." : "刷新市场数据"}
-    </button>
+      <RefreshCw className={`h-4 w-4 ${isPending ? "animate-spin" : ""}`} />
+      {isPending ? "采集中…" : "刷新数据"}
+    </Button>
   );
 }
