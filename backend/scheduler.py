@@ -73,6 +73,27 @@ def start_scheduler(*, enabled: bool | None = None,
             coalesce=True,
         )
 
+    # 市场情报快照 job
+    # morning: 09:35 (涨停池数据可能不完整)
+    from backend.services import market_intel_service
+    scheduler.add_job(
+        lambda: market_intel_service.collect_market_intel(None, "morning"),
+        trigger=_cron_trigger(9, 35, timezone),
+        id="morning_market_intel",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=3600,
+    )
+    # post_market: 15:35 (涨停池数据完整)
+    scheduler.add_job(
+        lambda: market_intel_service.collect_market_intel(None, "post_market"),
+        trigger=_cron_trigger(15, 35, timezone),
+        id="post_market_market_intel",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=3600,
+    )
+
     scheduler.start()
     _scheduler = scheduler
     return scheduler
