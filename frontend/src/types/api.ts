@@ -17,6 +17,36 @@ export interface NavPoint {
   as_of: string;
 }
 
+// ---- Market evidence (Wave 1) ----
+export type EvidenceCategory =
+  | "policy"
+  | "announcement"
+  | "overseas_disclosure"
+  | "macro"
+  | "sector";
+
+export type EvidenceReliability = "official" | "wire" | "rumor";
+
+export interface MarketEvidenceItem {
+  id: number;
+  trade_date: string;
+  category: EvidenceCategory;
+  title: string;
+  summary: string | null;
+  symbols: string[];
+  metrics: Record<string, number | string> | null;
+  source: string;
+  source_url: string;
+  published_at: string | null;
+  reliability: EvidenceReliability;
+}
+
+export interface MarketEvidenceResponse {
+  count: number;
+  groups: Partial<Record<EvidenceCategory, MarketEvidenceItem[]>>;
+  items?: MarketEvidenceItem[];
+}
+
 export type InvestmentPlanFrequency = "daily" | "weekly" | "monthly";
 export type InvestmentPlanStatus = "active" | "paused";
 export type PendingBuyStatus = "pending" | "confirmed" | "cancelled";
@@ -130,15 +160,24 @@ export interface Briefing {
   sections: BriefingSection | Record<string, unknown>;
   source: string | null;
   as_of: string | null;
+  data_quality?: DataQuality | null;
+  confidence?: BriefingConfidence | null;
+  missing_data?: string[];
+  evidence_count?: number | null;
   created_at: string | null;
   updated_at: string | null;
 }
+
+export type DataQuality = "complete" | "partial" | "market_only" | "failed";
+export type BriefingConfidence = "high" | "medium" | "low";
 
 export interface BriefingSummary {
   id: number;
   briefing_date: string;
   title: string;
   as_of: string | null;
+  data_quality?: DataQuality | null;
+  evidence_count?: number | null;
 }
 
 export interface BriefingLatestResponse {

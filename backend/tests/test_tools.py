@@ -57,7 +57,11 @@ def test_tool_lists_exposed(monkeypatch):
     assert {t.name for t in wt.WATCHLIST_TOOLS} == {
         "get_watchlist", "add_fund_to_watchlist",
         "remove_fund_from_watchlist", "update_fund_note"}
-    assert {t.name for t in mt.MARKET_TOOLS} == {"get_market_indices", "refresh_market"}
+    assert {t.name for t in mt.MARKET_TOOLS} == {
+        "get_market_indices", "refresh_market",
+        "get_market_snapshot_auto", "search_market_evidence",
+        "get_market_briefing",
+    }
 
 
 def test_fund_basic_info_tool(monkeypatch):
@@ -135,7 +139,7 @@ def test_diagnose_fund_auto_tool(monkeypatch):
 
 
 def test_all_tools_aggregate_has_unique_set():
-    # 8 fund + 4 watchlist + 2 market + 1 pnl + 1 what_if = 16
+    # 8 fund + 4 watchlist + 5 market (Wave 1: +snapshot_auto, +evidence, +briefing) + 1 pnl + 1 what_if = 19
     names = [t.name for t in fund_tools.ALL_TOOLS]
     assert len(names) == len(set(names))  # no name collisions
     assert set(names) == {
@@ -143,6 +147,8 @@ def test_all_tools_aggregate_has_unique_set():
         "get_fund_nav_history", "refresh_fund", "diagnose_fund",
         "lookup_fund_auto", "diagnose_fund_auto", "get_watchlist",
         "add_fund_to_watchlist", "remove_fund_from_watchlist", "update_fund_note",
-        "get_market_indices", "refresh_market", "calculate_holding_pnl",
+        "get_market_indices", "refresh_market",
+        "get_market_snapshot_auto", "search_market_evidence", "get_market_briefing",
+        "calculate_holding_pnl",
         "what_if_analysis",
     }

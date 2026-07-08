@@ -54,3 +54,41 @@ def test_refresh_with_header_returns_started(client):
                                headers={"X-Local-Trigger": "1"})
     assert response.status_code == 200
     assert response.json()["status"] == "started"
+
+
+def test_evidence_endpoint_returns_grouped_rows(client):
+    """evidence API 返回按类别分组的证据。"""
+    with patch("backend.services.market_evidence_service.search_evidence",
+               return_value=[
+                   {
+                       "id": 1,
+                       "trade_date": "2026-07-07",
+                       "category": "policy",
+                       "title": "创新药政策",
+                       "summary": "审评提速。",
+                       "source": "NMPA",
+                       "source_url": "https://example.gov/a",
+                       "published_at": "2026-07-07",
+                       "reliability": "official",
+                   },
+                   {
+                       "id": 2,
+                       "trade_date": "2026-07-07",
+                       "category": "macro",
+                       "title": "FRED 利率",
+                       "summary": "DFF = 4.25",
+                       "source": "FRED",
+                       "source_url": "https://fred.stlouisfed.org/series/DFF",
+                       "published_at": "2026-07-06",
+                       "reliability": "official",
+                   },
+               ]):
+        response = client.get("/api/market/evidence?date=2026-07-07&limit=20")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["count"] == 2
+    assert data["items"][0]["title"] == "创新药政策"
+    assert data["items"][1]["source"] == "FRED"
+    assert data["groups"]["policy"][0]["title"] == "创新药政策"
+    assert data["groups"]["macro"][0]["source"] == "FRED"

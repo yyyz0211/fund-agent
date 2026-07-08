@@ -11,7 +11,7 @@
 """
 import math
 
-_PERIOD_ROWS = {"1w": 5, "1m": 21, "3m": 63, "6m": 126, "1y": 252, "all": None}
+_PERIOD_ROWS = {"1d": 1, "1w": 5, "1m": 21, "3m": 63, "6m": 126, "1y": 252, "all": None}
 
 
 def daily_returns(navs: list[float]) -> list[float]:

@@ -28,6 +28,14 @@ def _briefing_to_dict(row: Briefing) -> dict:
         sections = json.loads(row.sections_json) if row.sections_json else {}
     except (json.JSONDecodeError, TypeError):
         sections = {}
+    missing_data: list[str] = []
+    if row.missing_data_json:
+        try:
+            parsed = json.loads(row.missing_data_json)
+            if isinstance(parsed, list):
+                missing_data = [str(x) for x in parsed]
+        except (json.JSONDecodeError, TypeError):
+            missing_data = []
     return {
         "id": row.id,
         "briefing_date": row.briefing_date,
@@ -36,6 +44,10 @@ def _briefing_to_dict(row: Briefing) -> dict:
         "sections": sections,
         "source": row.source,
         "as_of": row.as_of,
+        "data_quality": row.data_quality,
+        "confidence": row.confidence,
+        "missing_data": missing_data,
+        "evidence_count": row.evidence_count,
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
@@ -47,6 +59,8 @@ def _briefing_summary(row: Briefing) -> dict:
         "briefing_date": row.briefing_date,
         "title": row.title,
         "as_of": row.as_of,
+        "data_quality": row.data_quality,
+        "evidence_count": row.evidence_count,
     }
 
 

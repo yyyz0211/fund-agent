@@ -115,3 +115,31 @@ def test_collect_market_intel_partial_failure_continues():
         result = market_intel_service.collect_market_intel("2026-07-07", "post_market")
     assert "errors" in result
     assert any(e["field"] == "concept_sectors" for e in result["errors"])
+
+
+def test_collect_market_intel_uses_serial_executor():
+    """Regression: collect_market_intel 的 ThreadPoolExecutor 必须 max_workers=1。
+    防止有人未来把它改回 6 路并发, 触发 libmini_racer worker pool race。
+    """
+    import ast
+    import inspect
+    from backend.services.market_intel_service import collect_market_intel
+    src = inspect.getsource(collect_market_intel)
+    tree = ast.parse(src)
+    found_workers: list[int] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            func = node.func
+            is_tpe = (isinstance(func, ast.Name) and func.id == "ThreadPoolExecutor") or \
+                     (isinstance(func, ast.Attribute) and func.attr == "ThreadPoolExecutor")
+            if not is_tpe:
+                continue
+            for kw in node.keywords:
+                if kw.arg == "max_workers" and isinstance(kw.value, ast.Constant) \
+                        and isinstance(kw.value.value, int):
+                    found_workers.append(kw.value.value)
+    assert found_workers, "collect_market_intel 没有 ThreadPoolExecutor(max_workers=...)"
+    assert all(w == 1 for w in found_workers), (
+        f"collect_market_intel ThreadPoolExecutor max_workers={found_workers}, "
+        f"必须全为 1 才能防 libmini_racer race。"
+    )

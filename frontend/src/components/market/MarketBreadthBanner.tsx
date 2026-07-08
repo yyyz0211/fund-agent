@@ -1,13 +1,17 @@
 "use client";
-import { MarketSnapshot } from "@/lib/market";
+import { MarketSnapshot, normalizeMarketBreadth } from "@/lib/market";
 
 export function MarketBreadthBanner({ snap }: { snap: MarketSnapshot }) {
-  const { up, down, limit_up, limit_down } = snap.breadth;
-  const total = up + down || 1;
-  const upRatio = (up / total) * 100;
-  const downRatio = (down / total) * 100;
+  const breadth = normalizeMarketBreadth(snap.breadth);
+  const { up, down, limit_up, limit_down } = breadth;
+  const total = up + down;
+  const upRatio = total > 0 ? (up / total) * 100 : 0;
+  const downRatio = total > 0 ? (down / total) * 100 : 0;
+  const hasError = Boolean(breadth.error);
   const sentiment =
-    up > down * 1.3
+    hasError
+      ? { label: "缺失", tone: "gray" as const, note: "市场宽度暂不可用" }
+      : up > down * 1.3
       ? { label: "偏暖", tone: "red" as const, note: "上涨家数占优" }
       : down > up * 1.3
       ? { label: "偏弱", tone: "green" as const, note: "下跌家数占优" }
@@ -44,6 +48,11 @@ export function MarketBreadthBanner({ snap }: { snap: MarketSnapshot }) {
           </div>
           <div className="mt-2 text-2xl font-semibold tracking-tight text-gray-950">市场宽度</div>
           <p className="mt-1 text-sm text-gray-500">{sentiment.note}，涨跌停用于观察短线情绪强度。</p>
+          {hasError && (
+            <p className="mt-2 max-w-xl text-xs leading-5 text-amber-600">
+              数据源返回错误，已用 0 占位：{breadth.error}
+            </p>
+          )}
         </div>
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:min-w-[430px]">
           <div className="rounded-lg bg-red-50 px-4 py-3">

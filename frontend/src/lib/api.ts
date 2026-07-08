@@ -9,6 +9,7 @@ import type {
   WatchlistRow, WatchlistUpsertPayload,
   PortfolioPnlSeries,
   Briefing, BriefingLatestResponse, BriefingListResponse, BriefingRunResponse,
+  MarketEvidenceResponse, EvidenceCategory,
 } from "@/types/api";
 
 // 兼容两种命名:Docker 部署用 NEXT_PUBLIC_API_BASE_URL,本地 dev 历史上用 NEXT_PUBLIC_API_BASE
@@ -169,6 +170,12 @@ export const api = {
       `/api/watchlist/${encodeURIComponent(fundCode)}/pending-buys/${pendingId}/cancel`,
     ),
   marketLatest: () => get<MarketLatest>("/api/market/latest"),
+  marketEvidence: (date: string, category?: EvidenceCategory, limit: number = 20) =>
+    get<MarketEvidenceResponse>("/api/market/evidence", {
+      date,
+      category: category ?? "",
+      limit,
+    }),
   briefingLatest: () => get<BriefingLatestResponse>("/api/briefing/latest"),
   briefingList: (limit = 30) => get<BriefingListResponse>("/api/briefing/list", { limit }),
   briefingRun: () =>

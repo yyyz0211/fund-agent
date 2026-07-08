@@ -11,7 +11,7 @@ service 既可以传入测试用的内存 Session,也可以传通过
 - 写路径默认在内部自己 `session.commit()`,调用方不要重复提交;少数需要
   原子组合的 service 会显式传 `commit=False` 并自行控制事务。
 """
-from sqlalchemy import and_, delete, func, select
+from sqlalchemy import and_, delete, func, select, update
 
 from backend.db.models import (
     Briefing,
@@ -21,6 +21,7 @@ from backend.db.models import (
     FundPendingBuy,
     FundProfile,
     FundTransaction,
+    MarketEvidence,
     MarketSnapshot,
     Watchlist,
 )
@@ -35,6 +36,7 @@ def _watchlist_to_dict(w: Watchlist) -> dict:
     return {
         "id": w.id,
         "fund_code": w.fund_code,
+        "fund_name": w.fund_name,
         "is_holding": w.is_holding,
         "is_focus": w.is_focus,
         "holding_amount": w.holding_amount,
@@ -111,6 +113,7 @@ def _pending_buy_to_dict(row: FundPendingBuy) -> dict:
 _WATCHLIST_PATCH_FIELDS = {
     "note", "is_holding", "is_focus",
     "holding_amount", "holding_share", "cost_nav", "buy_date",
+    "fund_name",
 }
 
 
@@ -231,6 +234,33 @@ def update_watchlist_preload(session, fund_code: str, *,
     if commit:
         session.commit()
     return _watchlist_to_dict(w)
+
+
+def backfill_watchlist_fund_names(session) -> int:
+    """从本地 `funds.fund_name` 回填 `watchlist.fund_name`。
+
+    修复: 之前 Watchlist 表没有 fund_name 字段, briefing 显示空字符串。
+    加列后老行 fund_name=NULL, 跑一次此函数把它们从 Fund 表回填过来。
+
+    行为:
+    - 仅更新 fund_name IS NULL 的行, 不覆盖用户手动输入。
+    - 幂等: 可重复运行。
+    - 返回回填的行数 (供监控)。
+    """
+    rows = session.execute(
+        update(Watchlist)
+        .where(Watchlist.fund_name.is_(None))
+        .where(Watchlist.fund_code.in_(
+            select(Fund.fund_code).where(Fund.fund_name.is_not(None))
+        ))
+        .values(fund_name=select(Fund.fund_name)
+                 .where(Fund.fund_code == Watchlist.fund_code)
+                 .scalar_subquery())
+        .returning(Watchlist.fund_code)
+    ).all()
+    if rows:
+        session.commit()
+    return len(rows)
 
 
 def upsert_fund(session, fund: dict) -> None:
@@ -677,3 +707,107 @@ def upsert_market_snapshot(
             setattr(row, k, v)
     s.flush()
     return row
+
+
+# ---------------------------------------------------------------------------
+# MarketEvidence
+# ---------------------------------------------------------------------------
+
+def _evidence_to_dict(row: MarketEvidence) -> dict:
+    """MarketEvidence 的可序列化投影。"""
+    import json as _json
+    symbols: list = []
+    metrics: dict | None = None
+    if row.symbols_json:
+        try:
+            parsed = _json.loads(row.symbols_json)
+            if isinstance(parsed, list):
+                symbols = parsed
+        except (TypeError, ValueError):
+            symbols = []
+    if row.metrics_json:
+        try:
+            parsed = _json.loads(row.metrics_json)
+            if isinstance(parsed, dict):
+                metrics = parsed
+        except (TypeError, ValueError):
+            metrics = None
+    return {
+        "id": row.id,
+        "trade_date": row.trade_date,
+        "brief_type": row.brief_type,
+        "category": row.category,
+        "title": row.title,
+        "summary": row.summary,
+        "symbols": symbols,
+        "metrics": metrics,
+        "source": row.source,
+        "source_url": row.source_url,
+        "published_at": row.published_at,
+        "reliability": row.reliability,
+    }
+
+
+def upsert_market_evidence(s, row: dict) -> bool:
+    """按 `(trade_date, brief_type, source_url)` 去重插入。
+
+    返回 True 表示新建，False 表示已存在。
+    """
+    import json as _json
+
+    symbols = row.get("symbols") or []
+    metrics = row.get("metrics")
+    if not isinstance(symbols, list):
+        symbols = [str(symbols)]
+    payload = {
+        "trade_date": row["trade_date"],
+        "brief_type": row["brief_type"],
+        "category": row["category"],
+        "title": row["title"],
+        "summary": row.get("summary"),
+        "symbols_json": _json.dumps(symbols, ensure_ascii=False) if symbols else None,
+        "metrics_json": _json.dumps(metrics, ensure_ascii=False) if metrics else None,
+        "source": row.get("source") or "unknown",
+        "source_url": row["source_url"],
+        "published_at": row.get("published_at"),
+        "reliability": row.get("reliability") or "official",
+    }
+    existing = s.scalar(
+        select(MarketEvidence).where(
+            MarketEvidence.trade_date == payload["trade_date"],
+            MarketEvidence.brief_type == payload["brief_type"],
+            MarketEvidence.source_url == payload["source_url"],
+        )
+    )
+    if existing is not None:
+        return False
+    s.add(MarketEvidence(**payload))
+    s.flush()
+    return True
+
+
+def search_market_evidence(
+    s,
+    *,
+    trade_date: str,
+    category: str | None = None,
+    query: str | None = None,
+    limit: int = 50,
+) -> list[dict]:
+    """按日期 / 类别 / 关键词查询 evidence；按 id 倒序（新→旧）。
+
+    - `query` 为空字符串或 None 时不过滤关键词。
+    - `category` 为空字符串或 None 时不过滤类别。
+    - 结果以 `_evidence_to_dict` 投影返回。
+    """
+    stmt = select(MarketEvidence).where(MarketEvidence.trade_date == trade_date)
+    if category:
+        stmt = stmt.where(MarketEvidence.category == category)
+    if query:
+        like = f"%{query}%"
+        stmt = stmt.where(
+            (MarketEvidence.title.like(like)) | (MarketEvidence.summary.like(like))
+        )
+    stmt = stmt.order_by(MarketEvidence.id.desc()).limit(max(1, int(limit)))
+    rows = s.scalars(stmt).all()
+    return [_evidence_to_dict(r) for r in rows]

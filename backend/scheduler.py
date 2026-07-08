@@ -73,8 +73,7 @@ def start_scheduler(*, enabled: bool | None = None,
             coalesce=True,
         )
 
-    # 市场情报快照 job
-    # morning: 09:35 (涨停池数据可能不完整)
+    # market intel: morning (09:35) + post_market (15:35)
     from backend.services import market_intel_service
     scheduler.add_job(
         lambda: market_intel_service.collect_market_intel(None, "morning"),
@@ -84,7 +83,6 @@ def start_scheduler(*, enabled: bool | None = None,
         coalesce=True,
         misfire_grace_time=3600,
     )
-    # post_market: 15:35 (涨停池数据完整)
     scheduler.add_job(
         lambda: market_intel_service.collect_market_intel(None, "post_market"),
         trigger=_cron_trigger(15, 35, timezone),
@@ -93,6 +91,32 @@ def start_scheduler(*, enabled: bool | None = None,
         coalesce=True,
         misfire_grace_time=3600,
     )
+
+    # market evidence 采集 (Wave 1):
+    # pre_market 08:30 → 抓宏观(FRED) + 政策(NMPA/CSRC/PBOC/NDRC/MOF)
+    # post_market 16:00 → 抓政策 + 公告 + 宏观 + 行业热点(sector)
+    from backend.services import market_evidence_service
+    if bool(getattr(settings, "scheduler_evidence_enabled", True)):
+        scheduler.add_job(
+            lambda: market_evidence_service.refresh_market_evidence_async(
+                brief_type="pre_market", trigger="scheduled",
+            ),
+            trigger=_cron_trigger(8, 30, timezone),
+            id="pre_market_evidence",
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=3600,
+        )
+        scheduler.add_job(
+            lambda: market_evidence_service.refresh_market_evidence_async(
+                brief_type="post_market", trigger="scheduled",
+            ),
+            trigger=_cron_trigger(16, 0, timezone),
+            id="post_market_evidence",
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=3600,
+        )
 
     scheduler.start()
     _scheduler = scheduler

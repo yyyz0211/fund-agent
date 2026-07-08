@@ -79,3 +79,38 @@ def refresh_market(
     if _trigger is None:
         raise HTTPException(status_code=403, detail="Requires X-Local-Trigger header")
     return market_intel_service.refresh_market_intel_async(trigger="manual")
+
+
+@router.get("/evidence")
+def get_market_evidence(
+    date: str | None = Query(default=None, description="交易日 YYYY-MM-DD，默认今天"),
+    category: str | None = Query(default=None, description="类别: policy/announcement/macro/sector 等"),
+    limit: int = Query(default=20, ge=1, le=200),
+    session: Session = Depends(get_session),
+):
+    """按日期/类别查 market_evidence，按 category 分组返回。无证据返回 {count:0, groups:{}}。"""
+    from backend.services import market_evidence_service
+    try:
+        rows = market_evidence_service.search_evidence(
+            trade_date=date, category=category, limit=limit, session=session,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=str(exc))
+    groups: dict[str, list] = {}
+    for r in rows:
+        groups.setdefault(r["category"], []).append(r)
+    return {"count": len(rows), "groups": groups, "items": rows}
+
+
+@router.post("/evidence/refresh")
+def refresh_market_evidence(
+    _trigger: str | None = Header(default=None, alias="X-Local-Trigger"),
+    brief_type: str = Query(default="post_market"),
+):
+    """手动触发 evidence 采集（异步）。"""
+    if _trigger is None:
+        raise HTTPException(status_code=403, detail="Requires X-Local-Trigger header")
+    from backend.services import market_evidence_service
+    return market_evidence_service.refresh_market_evidence_async(
+        brief_type=brief_type, trigger="manual",
+    )

@@ -227,6 +227,33 @@ test("api.portfolioPnlSeries omits empty params", async () => {
   assert.equal(urls[0], "http://api.test/api/portfolio/pnl-series");
 });
 
+test("api.marketEvidence calls market evidence endpoint", async () => {
+  const urls = [];
+  const fetch = async (url) => {
+    urls.push(String(url));
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ evidence: [], groups: {}, count: 0 }),
+    };
+  };
+  const { api } = await loadModule("../src/lib/api.ts", { fetch });
+
+  await api.marketEvidence("2026-07-07", "policy", 20);
+
+  assert.equal(
+    urls[0],
+    "http://api.test/api/market/evidence?date=2026-07-07&category=policy&limit=20",
+  );
+});
+
+test("next rewrite honors Docker API base env var", async () => {
+  const source = await fs.readFile(new URL("../next.config.mjs", import.meta.url), "utf8");
+
+  assert.match(source, /NEXT_PUBLIC_API_BASE_URL/);
+  assert.match(source, /NEXT_PUBLIC_API_BASE/);
+});
+
 test("api.watchlistPreloadJob calls watchlist preload endpoint", async () => {
   const urls = [];
   const fetch = async (url) => {

@@ -74,6 +74,10 @@ class Watchlist(Base):
     __table_args__ = (UniqueConstraint("fund_code", name="uq_watchlist_fund"),)
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     fund_code: Mapped[str] = mapped_column(String, index=True)
+    # 缓存基金名,避免每次简报/snapshot 都查 Fund 表或 akshare。
+    # 新增于 Wave 2 (briefing fund_name 修复)。已有行允许 NULL,
+    # 由 repository 层从本地 Fund.fund_name 回填一次。
+    fund_name: Mapped[str | None] = mapped_column(String(64))
     is_holding: Mapped[bool] = mapped_column(default=False)
     is_focus: Mapped[bool] = mapped_column(default=False)
     holding_amount: Mapped[float | None] = mapped_column(Float)
@@ -197,6 +201,12 @@ class Briefing(Base):
     `markdown` 供前端 ReactMarkdown 渲染；`sections_json` 存结构化数据
     (market_snapshot / watchlist_changes / errors / disclaimer)，用于程序消费。
     简报内容完全由本地数据(指数 + 自选池)驱动，不经过 policy 合规检查。
+
+    数据质量字段（Wave 1）:
+    - `data_quality`: complete / partial / market_only / failed
+    - `confidence`: high / medium / low
+    - `missing_data_json`: JSON list，列出本次缺失的数据维度
+    - `evidence_count`: 当日 market_evidence 条数
     """
     __tablename__ = "briefings"
     __table_args__ = (UniqueConstraint("briefing_date", name="uq_briefing_date"),)
@@ -207,6 +217,10 @@ class Briefing(Base):
     sections_json: Mapped[str] = mapped_column(String)
     source: Mapped[str | None] = mapped_column(String)
     as_of: Mapped[str | None] = mapped_column(String)
+    data_quality: Mapped[str | None] = mapped_column(String)
+    confidence: Mapped[str | None] = mapped_column(String)
+    missing_data_json: Mapped[str | None] = mapped_column(String)
+    evidence_count: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -232,3 +246,35 @@ class MarketSnapshot(Base):
     source: Mapped[str] = mapped_column(String, default="akshare")
     as_of: Mapped[str] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class MarketEvidence(Base):
+    """证据表：政策/公告/海外披露/宏观/行业热点。
+
+    唯一键 `(trade_date, brief_type, source_url)` 用于去重 upsert。
+    `symbols_json` / `metrics_json` 用 JSON 字符串保存，避免对 SQLite 强依赖 JSON 列。
+    `category` 取值: policy / announcement / overseas_disclosure / macro / sector。
+    `reliability` 取值: official / wire / rumor（默认 official）。
+    `brief_type` 取值: pre_market / post_market。
+    """
+    __tablename__ = "market_evidence"
+    __table_args__ = (
+        UniqueConstraint(
+            "trade_date", "brief_type", "source_url",
+            name="uq_evidence_trade_brief_url",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    trade_date: Mapped[str] = mapped_column(String(10), index=True)
+    brief_type: Mapped[str] = mapped_column(String(16), index=True)
+    category: Mapped[str] = mapped_column(String(32), index=True)
+    title: Mapped[str] = mapped_column(String)
+    summary: Mapped[str | None] = mapped_column(String)
+    symbols_json: Mapped[str | None] = mapped_column(String)
+    metrics_json: Mapped[str | None] = mapped_column(String)
+    source: Mapped[str] = mapped_column(String)
+    source_url: Mapped[str] = mapped_column(String)
+    published_at: Mapped[str | None] = mapped_column(String)
+    reliability: Mapped[str] = mapped_column(String, default="official")
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

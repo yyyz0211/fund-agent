@@ -1,4 +1,5 @@
 import types
+import time
 
 import pandas as pd
 import pytest
@@ -394,3 +395,57 @@ def test_fetch_announcements_returns_list():
     from backend.services.data_collector import fetch_announcements
     result = fetch_announcements(limit=5)
     assert isinstance(result, list)
+
+
+# ---------------------------------------------------------------------------
+# AKShare 全局串行化 — 防止 mini_racer worker pool race crash
+# ---------------------------------------------------------------------------
+
+def test_akshare_lock_is_module_level():
+    """AKSHARE_LOCK 必须在模块级, 跨 fetch_* 函数共享同一把锁。"""
+    assert hasattr(dc, "AKSHARE_LOCK"), "缺少进程级 AKSHARE_LOCK"
+    assert dc.AKSHARE_LOCK is dc.AKSHARE_LOCK  # 单例
+
+
+def test_fetch_announcements_serializes_concurrent_calls(monkeypatch):
+    """并发调用 fetch_announcements 时, 真正的 ak.* 调用必须串行执行。
+    这是防止 libmini_racer.dylib FATAL:address_pool_manager.cc(67) 的核心保护。
+    """
+    import threading
+
+    timings: list[float] = []
+    timings_lock = threading.Lock()
+    single_call_ms = 80
+    N = 4
+
+    class _TimedAkshare:
+        def fund_announcement_dividend_em(self, symbol: str):
+            import time as _time
+            with timings_lock:
+                timings.append(_time.monotonic())
+            _time.sleep(single_call_ms / 1000.0)
+            return pd.DataFrame()
+
+    from backend.db.models import Watchlist
+    from unittest.mock import MagicMock
+
+    fake_session = MagicMock()
+    fake_session.scalars.return_value.all.return_value = [Watchlist(fund_code="000001")]
+    import backend.db.session as db_session_mod
+    monkeypatch.setattr(db_session_mod, "get_session", lambda: fake_session)
+    monkeypatch.setattr(dc, "ak", _TimedAkshare())
+
+    t0 = time.monotonic()
+    threads = [threading.Thread(target=dc.fetch_announcements, kwargs={"limit": 1}) for _ in range(N)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5.0)
+    elapsed_ms = (time.monotonic() - t0) * 1000
+
+    expected_min_ms = N * single_call_ms * 0.9
+    assert elapsed_ms >= expected_min_ms, (
+        f"串行化失败: 4 线程仅耗时 {elapsed_ms:.0f}ms, "
+        f"期望 >= {expected_min_ms:.0f}ms (= {N} x {single_call_ms}ms)。"
+    )
+    assert len(timings) == N

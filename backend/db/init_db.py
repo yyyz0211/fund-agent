@@ -18,9 +18,11 @@ from __future__ import annotations
 
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session
 
 import backend.db.models  # noqa: F401  (必须 import,模型才会注册到 Base.metadata)
-from backend.db.session import Base, engine as default_engine
+from backend.db.repository import backfill_watchlist_fund_names
+from backend.db.session import Base, engine as default_engine, get_session
 
 
 def init_db(engine: Engine | None = None) -> None:
@@ -38,6 +40,22 @@ def init_db(engine: Engine | None = None) -> None:
     _drop_obsolete_columns(eng)
     # create_all 不冲突,再跑一次只是补 sanity(新表的索引等)。
     Base.metadata.create_all(eng)
+    # Wave 2: Watchlist 加了 fund_name 列后, 老行是 NULL。
+    # 启动时自动从 funds.fund_name 回填, 避免 briefing 一直显示空字符串。
+    try:
+        s = Session(eng)
+        try:
+            backfilled = backfill_watchlist_fund_names(s)
+            if backfilled:
+                import logging
+                logging.getLogger(__name__).info(
+                    "Backfilled watchlist.fund_name for %d rows.", backfilled
+                )
+        finally:
+            s.close()
+    except Exception:
+        # 回填失败不能阻挡 DB 启动, 运行时仍以 _watchlist_to_dict 返回 None 让上游降级。
+        pass
 
 
 def _apply_missing_columns(eng: Engine) -> None:

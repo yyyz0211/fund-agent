@@ -419,7 +419,7 @@ class TestComposeBriefing:
             def invoke(self, _prompt):
                 return AIMessage(content=llm_content)
 
-        with patch("backend.services.briefing_service.build_model", return_value=FakeModel()):
+        with patch("backend.graph.model.build_model", return_value=FakeModel()):
             result = briefing_service.compose_briefing(
                 {"market_snapshot": [], "watchlist_changes": []}
             )
@@ -441,7 +441,7 @@ class TestComposeBriefing:
             def invoke(self, _prompt):
                 return AIMessage(content=raw_text)
 
-        with patch("backend.services.briefing_service.build_model", return_value=FakeModel()):
+        with patch("backend.graph.model.build_model", return_value=FakeModel()):
             result = briefing_service.compose_briefing({})
 
         assert result["markdown"] == raw_text
@@ -460,7 +460,7 @@ class TestComposeBriefing:
                 prompt_captured.append(str(prompt))
                 return AIMessage(content='{"markdown":"ok","sections":{}}')
 
-        with patch("backend.services.briefing_service.build_model", return_value=FakeModel()):
+        with patch("backend.graph.model.build_model", return_value=FakeModel()):
             briefing_service.compose_briefing({})
 
         full_prompt = "\n".join(prompt_captured)
@@ -473,6 +473,51 @@ class TestComposeBriefing:
             assert forbidden not in full_prompt
         # 且 prompt 里要明确出现"禁止"章节(负面词表的上下文是禁止)
         assert "禁止" in full_prompt
+
+    def test_compose_handles_doubled_braces_json(self):
+        """Regression: LLM 返回 `{{"markdown": "...", "sections": {...}}}` (outer
+        doubled braces) 时, compose_briefing 必须剥外层 braces 后解析, 不能
+        落到 raw_content 分支把整串 JSON 当 markdown。
+
+        历史 bug: BRIEFING_PROMPT_TEMPLATE 末尾 JSON 模板用了 `{{...}}`,
+        string.Template 不解析 `{`, prompt 原样传到 LLM, LLM 复刻出
+        `{{...}}` JSON, frontend ReactMarkdown 把 outer JSON 当 markdown
+        渲染成 `<pre><code class="language-json">`。
+        """
+        from backend.services import briefing_service
+        from langchain_core.messages import AIMessage
+
+        inner_json = (
+            '{"markdown": "# 今日简报\\n\\n沪深300+0.5%",'
+            ' "sections": {"market_snapshot": [], "watchlist_changes": []}}'
+        )
+        # 模拟 LLM 复刻了 prompt 模板里 `{{...}}` 输出的 outer doubled braces
+        doubled = "{{" + inner_json + "}}"
+
+        class FakeModel:
+            def invoke(self, _prompt):
+                return AIMessage(content=doubled)
+
+        with patch("backend.graph.model.build_model", return_value=FakeModel()):
+            result = briefing_service.compose_briefing(
+                {"market_snapshot": [], "watchlist_changes": []}
+            )
+
+        # markdown 必须是 inner markdown 字符串, 不能是 outer doubled JSON
+        assert "# 今日简报" in result["markdown"], (
+            f"markdown 字段应剥掉 outer braces 后取 inner markdown, "
+            f"实际得到: {result['markdown']!r}"
+        )
+        assert '"sections"' not in result["markdown"], (
+            "markdown 字段不应残留 outer JSON 的 `\"sections\":` 字面量"
+        )
+        assert result["sections"] == {
+            "market_snapshot": [],
+            "watchlist_changes": [],
+        }
+        assert any(
+            "wrapped_json" in w or "wrapped" in w for w in result["warnings"]
+        ), f"warnings 应记录 wrapped_json fallback, 实际: {result['warnings']}"
 
 
 # ---------------------------------------------------------------------------

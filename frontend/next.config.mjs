@@ -1,4 +1,9 @@
 /** @type {import('next').NextConfig} */
+const apiBase =
+  process.env.NEXT_PUBLIC_API_BASE_URL ??
+  process.env.NEXT_PUBLIC_API_BASE ??
+  "http://localhost:8000";
+
 const nextConfig = {
   reactStrictMode: true,
   // Docker 多阶段构建需要 standalone 输出:
@@ -10,7 +15,7 @@ const nextConfig = {
     return [
       {
         source: "/api/:path*",
-        destination: `${process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8001"}/api/:path*`,
+        destination: `${apiBase}/api/:path*`,
       },
     ];
   },

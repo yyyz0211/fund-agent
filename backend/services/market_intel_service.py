@@ -52,8 +52,13 @@ def collect_market_intel(
             errors.append({"field": name, "error": str(exc)})
             return None
 
-    # 并行采集（ThreadPoolExecutor, max_workers=6）
-    with ThreadPoolExecutor(max_workers=6) as ex:
+    # 串行采集 (max_workers=1)
+    # 历史原因: 之前用 max_workers=6 并行, 在 akshare 1.18 + libmini_racer 0.14 下
+    #   触发 `FATAL:address_pool_manager.cc(67) Check failed: !pool->IsInitialized()`,
+    #   uvicorn worker 进程崩, Next.js proxy 收到 ECONNRESET。
+    # 现在 `data_collector.AKSHARE_LOCK` 已经在 fetch_* 入口全局串行化 akshare,
+    #   外层再并行没意义, 反而让 race 风险窗口变大。统一改成 1 路串行。
+    with ThreadPoolExecutor(max_workers=1) as ex:
         f_indices = ex.submit(market_service.get_indices)
         f_breadth = ex.submit(dc.fetch_market_breadth)
         f_industry = ex.submit(dc.fetch_sector_snapshot)

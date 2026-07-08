@@ -1,6 +1,6 @@
 "use client";
 import { useState } from "react";
-import { useMarketSnapshot } from "@/lib/market";
+import { resolveMarketDate, useMarketSnapshot, useMarketEvidence } from "@/lib/market";
 import { MarketBreadthBanner } from "@/components/market/MarketBreadthBanner";
 import { MarketOverviewCards } from "@/components/market/MarketOverviewCards";
 import { IndustrySectorTable } from "@/components/market/IndustrySectorTable";
@@ -8,6 +8,7 @@ import { ConceptSectorTable } from "@/components/market/ConceptSectorTable";
 import { ThemeBoards } from "@/components/market/ThemeBoards";
 import { OverseasMarkets } from "@/components/market/OverseasMarkets";
 import { AnnouncementList } from "@/components/market/AnnouncementList";
+import { MarketEvidencePanel } from "@/components/market/MarketEvidencePanel";
 import { SnapshotRefreshButton } from "@/components/market/SnapshotRefreshButton";
 import { SectionHeader } from "@/components/PageHeader";
 import { AlertTriangle } from "lucide-react";
@@ -17,16 +18,13 @@ const DATE_OPTIONS = [
   { label: "昨日", value: "yesterday" },
 ];
 
-function resolveDate(opt: string): string {
-  const d = new Date();
-  if (opt === "yesterday") d.setDate(d.getDate() - 1);
-  return d.toISOString().slice(0, 10);
-}
-
 export default function MarketPage() {
   const [dateOpt, setDateOpt] = useState("today");
-  const date = resolveDate(dateOpt);
+  const date = resolveMarketDate(dateOpt);
   const { data: snap, isLoading, error } = useMarketSnapshot(date, "post_market");
+  // 同步触发 evidence 缓存(在 panel 子组件内另作主消费)
+  const evidence = useMarketEvidence(date);
+  const evidenceCount = evidence.data?.count ?? 0;
 
   return (
     <div className="mx-auto max-w-7xl space-y-7 px-4 pb-10 sm:px-6 lg:px-8">
@@ -99,6 +97,14 @@ export default function MarketPage() {
               <IndustrySectorTable snap={snap} />
               <ConceptSectorTable snap={snap} />
             </div>
+          </section>
+
+          <section className="space-y-3">
+            <SectionHeader
+              title="证据面板"
+              description="按类别分组的可追溯政策/公告/宏观证据 — 来自 market_evidence 本地表"
+            />
+            <MarketEvidencePanel date={date} />
           </section>
 
           <section className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,0.9fr)_minmax(360px,0.7fr)]">

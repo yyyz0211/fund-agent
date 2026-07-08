@@ -14,13 +14,42 @@ import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from datetime import date
 import re
+import threading
 
 import akshare as ak
+import logging
+_logger = logging.getLogger(__name__)
+
+def _log_empty(field: str, reason: str) -> None:
+    """fetch_* 返回 [] 的统一日志入口。
+
+    旧实现 silent-pass 把"akshare 列名变了/接口挂了"和"真实无数据"混在一起,
+    排查时无法区分。统一走 warning 级别一条 stderr。
+    """
+    _logger.warning("data_collector: %s empty (%s)", field, reason)
+
 
 SOURCE = "akshare"
 _PROFILE_FETCH_WORKERS = 3
 _PROFILE_SOURCE_TIMEOUT_SECONDS = 5.0
 _SINA_SCALE_CATEGORIES = ("股票型基金", "混合型基金", "债券型基金", "QDII基金", "货币型基金")
+
+
+# 全局串行化锁 — 防止 libmini_racer.dylib (akshare 内嵌 V8) 的 worker pool race。
+# 根因: 多个线程同时调 ak.* 时,
+#   `address_pool_manager.cc(67) Check failed: !pool->IsInitialized()` 会让 uvicorn 进程崩。
+# 所有 fetch_* 函数都包了此锁, 任意时刻最多一个线程进入 akshare (即 mini_racer)。
+AKSHARE_LOCK = threading.Lock()
+
+
+def _akshare_serial(fn):
+    """装饰器: 在 fn 入口拿 AKSHARE_LOCK, 退出释放。"""
+    def wrapper(*args, **kwargs):
+        with AKSHARE_LOCK:
+            return fn(*args, **kwargs)
+    wrapper.__name__ = fn.__name__
+    wrapper.__doc__ = fn.__doc__
+    return wrapper
 
 
 def today_str() -> str:
@@ -77,6 +106,7 @@ def _parse_ths_fund_info(fund_code: str, df) -> dict:
     }
 
 
+@_akshare_serial
 def fetch_fund_info(fund_code: str) -> dict:
     """拉取一只基金的基础信息(名称、类型、经理、基金公司)。
 
@@ -104,6 +134,7 @@ def fetch_fund_info(fund_code: str) -> dict:
             }
 
 
+@_akshare_serial
 def fetch_fund_nav_history(fund_code: str) -> list[dict] | dict:
     """拉取基金净值走势,返回按日期升序的列表。
 
@@ -147,6 +178,7 @@ _INDEX_SYMBOLS = {"000300": ("沪深300", "index"),
                   "399001": ("深证成指", "index")}
 
 
+@_akshare_serial
 def fetch_market_indices() -> list[dict] | dict:
     """拉取主要指数当日行情,过滤出我们关注的指数。
 
@@ -442,6 +474,7 @@ def _collect_profile_frames(fund_code: str) -> tuple[dict, list[str], list[str]]
     return frames, missing, errors
 
 
+@_akshare_serial
 def fetch_fund_profile(fund_code: str) -> dict:
     """拉取基金体检增强画像。
 
@@ -524,6 +557,7 @@ def fetch_fund_profile(fund_code: str) -> dict:
 # 市场宽度采集（涨跌家数 / 涨跌停 / 成交额）
 # ---------------------------------------------------------------------------
 
+@_akshare_serial
 def fetch_market_breadth() -> dict:
     """拉取今日 A 股市场宽度指标。
 
@@ -600,6 +634,7 @@ def _find_col(df, *names) -> str | None:
 # 板块涨跌快照
 # ---------------------------------------------------------------------------
 
+@_akshare_serial
 def fetch_sector_snapshot(limit_n: int = 10) -> list[dict]:
     """拉取今日行业板块涨跌幅，取 top-N + bottom-N。
 
@@ -654,15 +689,18 @@ def fetch_sector_snapshot(limit_n: int = 10) -> list[dict]:
         return []
 
 
-def fetch_concept_sectors(limit_n: int = 10) -> list[dict]:
+def fetch_concept_sectors(limit_n: int = 10) -> list[dict]:  # noqa: F811
     """拉取概念板块涨跌幅 top/bottom。akshare: stock_board_concept_spot_em()"""
     try:
         df = ak.stock_board_concept_spot_em()
         if df is None or getattr(df, "empty", True) or len(df) == 0:
+            _log_empty("concept_sectors", "akshare empty df")
             return []
         change_col = _find_col(df, "涨跌幅", "涨跌幅(%)")
         name_col = _find_col(df, "板块名称", "名称", "板块")
         if change_col is None or name_col is None:
+            _log_empty("concept_sectors",
+                f"col miss: change={change_col} name={name_col} cols={list(df.columns)[:6]}")
             return []
         rows = []
         for _, row in df.iterrows():
@@ -674,6 +712,7 @@ def fetch_concept_sectors(limit_n: int = 10) -> list[dict]:
             except Exception:
                 continue
         if not rows:
+            _log_empty("concept_sectors", "row parse empty")
             return []
         rows.sort(key=lambda r: r["change_pct"], reverse=True)
         top = rows[:limit_n]
@@ -683,10 +722,12 @@ def fetch_concept_sectors(limit_n: int = 10) -> list[dict]:
             if b not in result:
                 result.append(b)
         return result
-    except Exception:
+    except Exception as exc:
+        _log_empty("concept_sectors", f"{type(exc).__name__}: {exc}")
         return []
 
 
+@_akshare_serial
 def fetch_industry_flows(limit_n: int = 10) -> list[dict]:
     """拉取行业板块资金流向（净流入 top/bottom）。来源: stock_board_industry_summary_ths()"""
     try:
@@ -720,15 +761,19 @@ def fetch_industry_flows(limit_n: int = 10) -> list[dict]:
         return []
 
 
+@_akshare_serial
 def fetch_concept_flows(limit_n: int = 10) -> list[dict]:
     """拉取概念板块资金流向（净流入 top/bottom）。来源: stock_board_concept_summary_ths()"""
     try:
         df = ak.stock_board_concept_summary_ths()
         if df is None or getattr(df, "empty", True) or len(df) == 0:
+            _log_empty("concept_flows", "akshare empty df")
             return []
         name_col = _find_col(df, "板块", "板块名称", "概念板块")
         flow_col = _find_col(df, "净流入", "资金净流入")
         if name_col is None or flow_col is None:
+            _log_empty("concept_flows",
+                f"col miss: name={name_col} flow={flow_col} cols={list(df.columns)[:6]}")
             return []
         rows = []
         for _, row in df.iterrows():
@@ -753,6 +798,7 @@ def fetch_concept_flows(limit_n: int = 10) -> list[dict]:
         return []
 
 
+@_akshare_serial
 def fetch_theme_boards(limit_n: int = 20) -> list[dict]:
     """拉取当日涨停板，按涨停原因归类为题材。akshare: stock_zt_pool_em()"""
     try:
@@ -787,6 +833,7 @@ def fetch_theme_boards(limit_n: int = 20) -> list[dict]:
         return []
 
 
+@_akshare_serial
 def fetch_breadth_indicators() -> dict:
     """拉取情绪指标: 连板高度 top5。akshare: stock_zt_pool_strong_em(date=today_str())"""
     try:
@@ -809,6 +856,7 @@ def fetch_breadth_indicators() -> dict:
         return {"board_height": [], "source": SOURCE, "as_of": today_str()}
 
 
+@_akshare_serial
 def fetch_overseas_markets() -> list[dict]:
     """拉取外围市场: 美股主要指数 + 港股 + 国内油价。akshare: index_global_hist_sina() + energy_oil_hist()"""
     result = []
@@ -850,6 +898,7 @@ def fetch_overseas_markets() -> list[dict]:
     return result
 
 
+@_akshare_serial
 def fetch_announcements(limit: int = 50) -> list[dict]:
     """拉取近 N 天基金重要公告。akshare: fund_announcement_dividend_em(symbol=fund_code)"""
     try:
