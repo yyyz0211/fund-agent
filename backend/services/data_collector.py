@@ -10,6 +10,7 @@
   里,失败时返回错误字典。联网路径的"正确性"由
   `scripts/smoke_fetch.py` 在真实环境下验证,不在单测里。
 """
+import signal
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from datetime import date
@@ -58,7 +59,7 @@ def today_str() -> str:
 
 
 def with_retry(fn, *args, retries: int = 3, base_delay: float = 0.5,
-               sleep=time.sleep, **kwargs):
+               sleep=time.sleep, timeout: float | None = None, **kwargs):
     """以指数退避策略重试调用 `fn`,最后一次失败时原样抛出。
 
     Args:
@@ -66,7 +67,15 @@ def with_retry(fn, *args, retries: int = 3, base_delay: float = 0.5,
         retries: 最大尝试次数(默认 3)。
         base_delay: 第一次重试前的等待秒数,之后每次翻倍。
         sleep: 可注入的 sleep,测试中传入 `lambda _: None` 即可。
+        timeout: 单次调用的秒数上限。None = 不超时(向后兼容)。
+                 设为正数后,通过 signal.SIGALRM 强制终止长时间挂起的 HTTP 调用,
+                 避免 akshare 卡死时 collect_market_intel 阻塞 60s+。
     """
+    if timeout is not None and timeout > 0:
+        return _with_retry_and_timeout(
+            fn, *args, retries=retries, base_delay=base_delay,
+            sleep=sleep, timeout=timeout, **kwargs,
+        )
     last = None
     for attempt in range(retries):
         try:
@@ -75,6 +84,28 @@ def with_retry(fn, *args, retries: int = 3, base_delay: float = 0.5,
             last = e
             if attempt < retries - 1:
                 sleep(base_delay * (2 ** attempt))
+    raise last
+
+
+def _with_retry_and_timeout(fn, *args, retries, base_delay, sleep, timeout, **kwargs):
+    """with_retry 的 SIGALRM timeout 版本。macOS/Linux 兼容(Windows 不支持)。"""
+    def _handler(signum, frame):
+        raise TimeoutError(f"{getattr(fn, '__name__', 'fn')} timeout after {timeout}s")
+
+    last: Exception | None = None
+    for attempt in range(retries):
+        old = signal.signal(signal.SIGALRM, _handler)
+        # `setitimer` 比 `alarm` 支持小数秒
+        signal.setitimer(signal.ITIMER_REAL, timeout)
+        try:
+            return fn(*args, **kwargs)
+        except Exception as e:  # noqa: BLE001
+            last = e
+            if attempt < retries - 1:
+                sleep(base_delay * (2 ** attempt))
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, old)
     raise last
 
 
@@ -178,6 +209,30 @@ _INDEX_SYMBOLS = {"000300": ("沪深300", "index"),
                   "399001": ("深证成指", "index")}
 
 
+def _normalize_index_symbol(symbol: str) -> str:
+    """把 6 位指数代码转成 akshare 需要的带前缀格式。
+
+    规则(根据 akshare 实测):
+    - 上证综指 ``000001``、沪深300 ``000300`` 等 → ``sh``(0 开头但属于上交所的指数)
+    - 深证成指 ``399001`` 等 → ``sz``
+    - 北交所 ``8xx`` / ``4xx`` → ``bj``
+    - 已带前缀的格式则原样返回
+    """
+    s = (symbol or "").strip().lower()
+    if not s:
+        return s
+    if s[:2] in ("sh", "sz", "bj"):
+        return s
+    # akshare 实测:0 开头但属于上交所指数(如 000001/000300);3 开头才是深证
+    if s.startswith("3"):
+        return f"sz{s}"
+    if s.startswith("0"):
+        return f"sh{s}"
+    if s.startswith(("8", "4")):
+        return f"bj{s}"
+    return s
+
+
 @_akshare_serial
 def fetch_market_indices() -> list[dict] | dict:
     """拉取主要指数当日行情,过滤出我们关注的指数。
@@ -202,6 +257,51 @@ def fetch_market_indices() -> list[dict] | dict:
         return out
     except Exception as e:  # noqa: BLE001
         return {"error": f"fetch_market_indices failed: {e}", "source": SOURCE}
+
+
+@_akshare_serial
+def fetch_index_history(symbol: str, days: int = 30) -> list[dict] | dict:
+    """拉取某指数近 N 个交易日的日级序列(升序)。
+
+    用于前端 sparkline: 返回精简后的 ``[{"date", "close", "source"}]``
+    列表,长度 <= ``days``。日期格式 ``YYYY-MM-DD``。
+
+    使用 ``ak.stock_zh_index_daily(symbol=...)`` 拉日线,失败时返回
+    错误字典(同其他 ``fetch_*`` 约定)。
+
+    Symbol 接受不带前缀的 6 位代码(如 ``"000001"``),内部会按
+    沪/深/北自动加 ``sh``/``sz``/``bj`` 前缀。
+    """
+    full_symbol = _normalize_index_symbol(symbol)
+    try:
+        # 5s 单次 timeout: collect_market_intel 会为每个 index 调一次,
+        # 30+ 个 industry/concept history × 无 timeout = 整个 refresh 卡 60s+。
+        df = with_retry(ak.stock_zh_index_daily, symbol=full_symbol, timeout=5.0)
+        if df is None or getattr(df, "empty", True):
+            return {"error": f"fetch_index_history empty for {symbol}", "source": SOURCE}
+        date_col = _find_col(df, "date", "日期")
+        close_col = _find_col(df, "close", "收盘", "收盘价", "最新价")
+        if date_col is None or close_col is None:
+            return {"error": f"fetch_index_history cols miss for {symbol}: "
+                              f"date={date_col} close={close_col}", "source": SOURCE}
+        rows = list(df[[date_col, close_col]].to_dict("records"))
+        rows = [r for r in rows if not _is_missing(r.get(date_col)) and not _is_missing(r.get(close_col))]
+        rows.sort(key=lambda r: str(r[date_col]))
+        rows = rows[-days:]
+        out: list[dict] = []
+        for r in rows:
+            close = _to_float(r[close_col])
+            if close is None:
+                continue
+            d = str(r[date_col])
+            if len(d) >= 10:
+                d = d[:10]
+            out.append({"date": d, "close": close, "source": SOURCE})
+        if not out:
+            return {"error": f"fetch_index_history no rows for {symbol}", "source": SOURCE}
+        return out
+    except Exception as e:  # noqa: BLE001
+        return {"error": f"fetch_index_history failed for {symbol}: {e}", "source": SOURCE}
 
 
 def _is_missing(value) -> bool:
@@ -248,6 +348,33 @@ def _to_float(value) -> float | None:
         return float(text)
     except ValueError:
         return None
+
+
+def _to_flow_yi(value, col_name: str | None = None) -> float | None:
+    """把资金流字段统一成“亿元”。
+
+    AKShare 不同接口的资金流列有的直接是“亿”,有的是“万元”;没有单位时
+    沿用当前市场快照契约,按“亿”处理。
+    """
+    if _is_missing(value):
+        return None
+
+    unit_hint = f"{col_name or ''} {value}"
+    text = str(value).strip()
+    for token in (",", "亿元人民币", "亿元", "亿份", "亿", "万元", "万", "元", "%"):
+        text = text.replace(token, "")
+    try:
+        n = float(text)
+    except ValueError:
+        return None
+
+    if "亿" in unit_hint:
+        return n
+    if "万" in unit_hint:
+        return n / 10000
+    if "元" in unit_hint:
+        return n / 100000000
+    return n
 
 
 def _to_int(value) -> int | None:
@@ -563,15 +690,17 @@ def fetch_market_breadth() -> dict:
 
     调用 ``akshare.stock.stock_market_activity_legu()`` 获取涨跌家数/涨跌停。
 
-    非交易日该接口可能返回旧数据，此时 volume=0。
+    非交易日该接口可能返回空 DataFrame 或关键 key 缺失,此时 ``up + down == 0``。
+    前端依赖 ``stale`` 字段区分"全 0 = 数据不可用"与"真无交易"。
 
     成功返回:
         {
             "up": int, "down": int, "limit_up": int, "limit_down": int,
             "volume": float（亿元）, "amount": float（亿元）,
-            "total": int, "source": "akshare", "as_of": "YYYY-MM-DD"
+            "total": int, "source": "akshare", "as_of": "YYYY-MM-DD",
+            "stale": bool  # True 表示数据不可信(接口空 / 关键列缺失 / 全 0)
         }
-    失败返回: {"error": str, "source": "akshare"}
+    失败返回: {"error": str, "source": str}
     """
     try:
         df = ak.stock_market_activity_legu()
@@ -601,6 +730,12 @@ def fetch_market_breadth() -> dict:
         if as_of == "":
             as_of = today_str()
 
+        # staleness 标记:
+        # - 关键 key 缺失(无法信任数值)
+        # - up + down == 0(可能非交易日真没数据,也可能是接口静默失败)
+        missing_keys = any(k not in kv for k in ("上涨", "下跌", "涨停", "跌停"))
+        stale = missing_keys or total == 0
+
         return {
             "up": up,
             "down": down,
@@ -611,15 +746,18 @@ def fetch_market_breadth() -> dict:
             "total": total,
             "source": SOURCE,
             "as_of": as_of,
+            "stale": stale,
         }
     except Exception as e:  # noqa: BLE001
-        return {"error": f"fetch_market_breadth failed: {e}", "source": SOURCE}
+        return {"error": f"fetch_market_breadth failed: {e}", "source": SOURCE,
+                "stale": True, "stale_reason": "exception"}
 
 
 def _empty_breadth(source: str) -> dict:
+    """接口返回空 DataFrame 时使用,明确标记 ``stale=True``。"""
     return {"up": 0, "down": 0, "limit_up": 0, "limit_down": 0,
             "volume": 0.0, "amount": 0.0, "total": 0, "source": source,
-            "as_of": today_str()}
+            "as_of": today_str(), "stale": True, "stale_reason": "empty_dataframe"}
 
 
 def _find_col(df, *names) -> str | None:
@@ -689,15 +827,31 @@ def fetch_sector_snapshot(limit_n: int = 10) -> list[dict]:
         return []
 
 
+@_akshare_serial
 def fetch_concept_sectors(limit_n: int = 10) -> list[dict]:  # noqa: F811
-    """拉取概念板块涨跌幅 top/bottom。akshare: stock_board_concept_spot_em()"""
+    """拉取概念板块涨跌幅 top/bottom。优先使用概念板块列表接口。"""
     try:
-        df = ak.stock_board_concept_spot_em()
+        df = None
+        errors = []
+        for fn_name in ("stock_board_concept_name_em", "stock_board_concept_spot_em", "stock_fund_flow_concept"):
+            fn = getattr(ak, fn_name, None)
+            if fn is None:
+                errors.append(f"{fn_name}=missing")
+                continue
+            try:
+                candidate = fn(symbol="即时") if fn_name == "stock_fund_flow_concept" else fn()
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{fn_name}={type(exc).__name__}: {exc}")
+                continue
+            if candidate is not None and not getattr(candidate, "empty", True) and len(candidate) > 0:
+                df = candidate
+                break
+
         if df is None or getattr(df, "empty", True) or len(df) == 0:
-            _log_empty("concept_sectors", "akshare empty df")
+            _log_empty("concept_sectors", "akshare empty df; " + "; ".join(errors))
             return []
-        change_col = _find_col(df, "涨跌幅", "涨跌幅(%)")
-        name_col = _find_col(df, "板块名称", "名称", "板块")
+        change_col = _find_col(df, "涨跌幅", "涨跌幅(%)", "涨跌幅%", "阶段涨跌幅", "行业-涨跌幅")
+        name_col = _find_col(df, "板块名称", "名称", "板块", "概念名称", "概念板块", "行业")
         if change_col is None or name_col is None:
             _log_empty("concept_sectors",
                 f"col miss: change={change_col} name={name_col} cols={list(df.columns)[:6]}")
@@ -742,7 +896,7 @@ def fetch_industry_flows(limit_n: int = 10) -> list[dict]:
         for _, row in df.iterrows():
             try:
                 name = str(row.get(name_col, "")).strip()
-                flow = _to_float(row.get(flow_col))
+                flow = _to_flow_yi(row.get(flow_col), flow_col)
                 if name and flow is not None:
                     rows.append({"name": name, "net_flow": flow, "source": SOURCE})
             except Exception:
@@ -763,14 +917,29 @@ def fetch_industry_flows(limit_n: int = 10) -> list[dict]:
 
 @_akshare_serial
 def fetch_concept_flows(limit_n: int = 10) -> list[dict]:
-    """拉取概念板块资金流向（净流入 top/bottom）。来源: stock_board_concept_summary_ths()"""
+    """拉取概念板块资金流向（净流入 top/bottom）。优先使用概念资金流接口。"""
     try:
-        df = ak.stock_board_concept_summary_ths()
+        df = None
+        errors = []
+        for fn_name in ("stock_fund_flow_concept", "stock_board_concept_summary_ths"):
+            fn = getattr(ak, fn_name, None)
+            if fn is None:
+                errors.append(f"{fn_name}=missing")
+                continue
+            try:
+                candidate = fn(symbol="即时") if fn_name == "stock_fund_flow_concept" else fn()
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{fn_name}={type(exc).__name__}: {exc}")
+                continue
+            if candidate is not None and not getattr(candidate, "empty", True) and len(candidate) > 0:
+                df = candidate
+                break
+
         if df is None or getattr(df, "empty", True) or len(df) == 0:
-            _log_empty("concept_flows", "akshare empty df")
+            _log_empty("concept_flows", "akshare empty df; " + "; ".join(errors))
             return []
-        name_col = _find_col(df, "板块", "板块名称", "概念板块")
-        flow_col = _find_col(df, "净流入", "资金净流入")
+        name_col = _find_col(df, "板块", "板块名称", "概念板块", "概念名称", "行业")
+        flow_col = _find_col(df, "净流入", "资金净流入", "净流入(万元)", "净额", "主力净流入", "净流入额")
         if name_col is None or flow_col is None:
             _log_empty("concept_flows",
                 f"col miss: name={name_col} flow={flow_col} cols={list(df.columns)[:6]}")
@@ -779,7 +948,7 @@ def fetch_concept_flows(limit_n: int = 10) -> list[dict]:
         for _, row in df.iterrows():
             try:
                 name = str(row.get(name_col, "")).strip()
-                flow = _to_float(row.get(flow_col))
+                flow = _to_flow_yi(row.get(flow_col), flow_col)
                 if name and flow is not None:
                     rows.append({"name": name, "net_flow": flow, "source": SOURCE})
             except Exception:
@@ -796,6 +965,67 @@ def fetch_concept_flows(limit_n: int = 10) -> list[dict]:
         return result
     except Exception:
         return []
+
+
+@_akshare_serial
+def fetch_sector_history(name: str, kind: str = "industry", days: int = 10) -> list[dict] | dict:
+    """拉取某行业/概念板块近 N 个交易日的日涨跌幅序列(升序)。
+
+    用于前端 sparkline: 返回精简的
+    ``[{"date", "change_pct", "source"}]``,长度 <= ``days``。
+    ``change_pct`` 是接口原始值(同花顺接口 = 百分比,0.5 表示 +0.5%)。
+
+    Args:
+        name: 板块名,例如 ``"电子"`` / ``"AI算力"``。需要能映射到
+            akshare 的板块指数代码;若映射失败,返回错误字典。
+        kind: ``"industry"`` 或 ``"concept"``
+        days: 保留尾 N 条
+
+    失败: 返回 ``{"error", "source"}`` 字典(同其他 ``fetch_*`` 约定)。
+
+    Note:
+        ``ak.stock_board_industry_index_ths`` 需要 symbol 在它内置的
+        code_map 中,且外网必须可达。生产环境若外网中断或 symbol
+        不识别,本函数会返回 error 字典,调用方应降级(不画 sparkline)。
+    """
+    if kind not in ("industry", "concept"):
+        return {"error": f"fetch_sector_history kind must be industry|concept, got {kind!r}", "source": SOURCE}
+    fn = ak.stock_board_industry_index_ths if kind == "industry" else ak.stock_board_concept_index_ths
+    try:
+        from datetime import timedelta
+        end = date.today()
+        start = end - timedelta(days=max(days * 2 + 30, 60))  # 多取一些以防非交易日
+        df = with_retry(fn, symbol=name,
+                        start_date=start.strftime("%Y%m%d"),
+                        end_date=end.strftime("%Y%m%d"),
+                        timeout=5.0)
+        if df is None or getattr(df, "empty", True):
+            return {"error": f"fetch_sector_history empty for {name} ({kind})", "source": SOURCE}
+        date_col = _find_col(df, "date", "日期")
+        change_col = _find_col(df, "涨跌幅", "change_pct", "涨跌幅(%)")
+        if date_col is None or change_col is None:
+            return {"error": f"fetch_sector_history cols miss for {name} ({kind}): "
+                              f"date={date_col} change={change_col}", "source": SOURCE}
+        rows = list(df[[date_col, change_col]].to_dict("records"))
+        rows = [r for r in rows if not _is_missing(r.get(date_col)) and not _is_missing(r.get(change_col))]
+        rows.sort(key=lambda r: str(r[date_col]))
+        rows = rows[-days:]
+        out: list[dict] = []
+        for r in rows:
+            # akshare 同花顺板块接口的"涨跌幅"是百分比(0.5 表示 +0.5%),
+            # 前端 formatPctWithSign 会再 * 100,这里保持原值。
+            v = _to_float(r[change_col])
+            if v is None:
+                continue
+            d = str(r[date_col])
+            if len(d) >= 10:
+                d = d[:10]
+            out.append({"date": d, "change_pct": v, "source": SOURCE})
+        if not out:
+            return {"error": f"fetch_sector_history no rows for {name} ({kind})", "source": SOURCE}
+        return out
+    except Exception as e:  # noqa: BLE001
+        return {"error": f"fetch_sector_history failed for {name} ({kind}): {e}", "source": SOURCE}
 
 
 @_akshare_serial

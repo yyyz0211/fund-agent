@@ -361,6 +361,67 @@ def test_fetch_concept_sectors_returns_list():
     assert isinstance(result, list)
 
 
+def test_fetch_concept_sectors_uses_concept_name_list(monkeypatch):
+    class _ConceptListAkshare:
+        def __init__(self):
+            self.calls = []
+
+        def stock_board_concept_name_em(self):
+            self.calls.append("stock_board_concept_name_em")
+            return pd.DataFrame({
+                "板块名称": ["AI算力", "机器人", "低空经济"],
+                "涨跌幅": [3.2, 1.1, -2.4],
+            })
+
+        def stock_board_concept_spot_em(self):
+            self.calls.append("stock_board_concept_spot_em")
+            return pd.DataFrame()
+
+    fake = _ConceptListAkshare()
+    monkeypatch.setattr(dc, "ak", fake)
+
+    result = dc.fetch_concept_sectors(limit_n=1)
+
+    assert [row["name"] for row in result] == ["AI算力", "低空经济"]
+    assert [row["change_pct"] for row in result] == [3.2, -2.4]
+    assert fake.calls == ["stock_board_concept_name_em"]
+
+
+def test_fetch_concept_sectors_falls_back_to_fund_flow_concept(monkeypatch):
+    class _ConceptSectorFallbackAkshare:
+        def __init__(self):
+            self.calls = []
+
+        def stock_board_concept_name_em(self):
+            self.calls.append("stock_board_concept_name_em")
+            raise RuntimeError("eastmoney dns")
+
+        def stock_board_concept_spot_em(self):
+            self.calls.append("stock_board_concept_spot_em")
+            return pd.DataFrame()
+
+        def stock_fund_flow_concept(self, symbol="即时"):
+            self.calls.append(("stock_fund_flow_concept", symbol))
+            return pd.DataFrame({
+                "行业": ["AI智能体", "云计算", "比亚迪概念"],
+                "行业-涨跌幅": [2.8, 1.5, -3.4],
+                "净额": ["54.77亿", "50.84亿", "-143.91亿"],
+            })
+
+    fake = _ConceptSectorFallbackAkshare()
+    monkeypatch.setattr(dc, "ak", fake)
+
+    result = dc.fetch_concept_sectors(limit_n=1)
+
+    assert [row["name"] for row in result] == ["AI智能体", "比亚迪概念"]
+    assert [row["change_pct"] for row in result] == [2.8, -3.4]
+    assert fake.calls == [
+        "stock_board_concept_name_em",
+        "stock_board_concept_spot_em",
+        ("stock_fund_flow_concept", "即时"),
+    ]
+
+
 def test_fetch_industry_flows_returns_list():
     from backend.services.data_collector import fetch_industry_flows
     result = fetch_industry_flows()
@@ -371,6 +432,32 @@ def test_fetch_concept_flows_returns_list():
     from backend.services.data_collector import fetch_concept_flows
     result = fetch_concept_flows()
     assert isinstance(result, list)
+
+
+def test_fetch_concept_flows_uses_fund_flow_concept(monkeypatch):
+    class _ConceptFlowAkshare:
+        def __init__(self):
+            self.calls = []
+
+        def stock_fund_flow_concept(self, symbol="即时"):
+            self.calls.append(("stock_fund_flow_concept", symbol))
+            return pd.DataFrame({
+                "行业": ["AI算力", "机器人", "低空经济"],
+                "净额": ["2.50亿", "8000万", "-9000万"],
+            })
+
+        def stock_board_concept_summary_ths(self):
+            self.calls.append(("stock_board_concept_summary_ths",))
+            return pd.DataFrame()
+
+    fake = _ConceptFlowAkshare()
+    monkeypatch.setattr(dc, "ak", fake)
+
+    result = dc.fetch_concept_flows(limit_n=1)
+
+    assert [row["name"] for row in result] == ["AI算力", "低空经济"]
+    assert [row["net_flow"] for row in result] == [2.5, -0.9]
+    assert fake.calls == [("stock_fund_flow_concept", "即时")]
 
 
 def test_fetch_theme_boards_returns_list():

@@ -117,6 +117,54 @@ def test_collect_market_intel_partial_failure_continues():
     assert any(e["field"] == "concept_sectors" for e in result["errors"])
 
 
+def test_refresh_async_uses_target_date():
+    """refresh_market_intel_async(target_date='2026-07-07') 后,任务用该日采集,
+    而不是默认的今天。防止 UI 选"昨日"+刷新仍抓今天导致的"刷了看不到"bug。
+    """
+    from backend.services import market_intel_service
+    import time
+
+    captured = {}
+
+    def fake_collect(trade_date, snapshot_type, session=None):
+        captured["trade_date"] = trade_date
+        return {"trade_date": trade_date, "snapshot_type": snapshot_type}
+
+    class SyncExecutor:
+        def submit(self, fn, *args, **kwargs):
+            fn()
+            return None
+
+    with patch.object(market_intel_service, "_async_executor", SyncExecutor()), \
+         patch.object(market_intel_service, "collect_market_intel", side_effect=fake_collect):
+        result = market_intel_service.refresh_market_intel_async(trigger="manual", target_date="2026-07-07")
+
+    assert result["target_date"] == "2026-07-07"
+    # 同步 executor 已跑完,直接验证
+    assert str(captured.get("trade_date")) == "2026-07-07", f"expected 2026-07-07, got {captured}"
+
+
+def test_refresh_async_invalid_date_falls_back_to_today():
+    """target_date 解析失败时,降级为今天(向后兼容 + 防爆)。"""
+    from backend.services import market_intel_service
+
+    def fake_collect(trade_date, snapshot_type, session=None):
+        return {}
+
+    class SyncExecutor:
+        def submit(self, fn, *args, **kwargs):
+            fn()
+            return None
+
+    with patch.object(market_intel_service, "_async_executor", SyncExecutor()), \
+         patch.object(market_intel_service, "collect_market_intel", side_effect=fake_collect):
+        result = market_intel_service.refresh_market_intel_async(trigger="manual", target_date="not-a-date")
+
+    assert result["status"] == "started"
+    import re
+    assert re.match(r"\d{4}-\d{2}-\d{2}", result["target_date"]), result["target_date"]
+
+
 def test_collect_market_intel_uses_serial_executor():
     """Regression: collect_market_intel 的 ThreadPoolExecutor 必须 max_workers=1。
     防止有人未来把它改回 6 路并发, 触发 libmini_racer worker pool race。

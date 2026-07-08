@@ -3,8 +3,8 @@ import { useRefreshMarket } from "@/lib/market";
 import { Button } from "@/components/ui/button";
 import { RefreshCw } from "lucide-react";
 
-export function SnapshotRefreshButton() {
-  const { mutate, isPending } = useRefreshMarket();
+export function SnapshotRefreshButton({ date }: { date?: string }) {
+  const { mutate, isPending } = useRefreshMarket(date);
   return (
     <Button
       variant="ghost"
