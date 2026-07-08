@@ -1,8 +1,6 @@
 """财联社电报客户端。
 
-This module owns CLS signing, text cleanup, timestamp normalization, and
-conversion from raw CLS telegraph JSON to the normalized item shape used by
-market evidence and QA tools.
+该模块负责 CLS 签名、文本清理、时间戳标准化，以及将原始 CLS 电报 JSON 转换为市场证据和 QA 工具所使用的标准化条目格式。
 """
 from __future__ import annotations
 
@@ -10,11 +8,12 @@ import hashlib
 import html
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
 
 logger = logging.getLogger(__name__)
+CLS_TIMEZONE = timezone(timedelta(hours=8))
 
 BASE_URL = "https://www.cls.cn"
 TELEGRAPH_REFERER = "https://www.cls.cn/telegraph"
@@ -77,7 +76,7 @@ def parse_cls_time(value: Any, *, fallback: datetime | None = None) -> str:
                 dt = dt.replace(tzinfo=timezone.utc)
     except Exception:
         dt = fallback or datetime.now(timezone.utc)
-    return dt.astimezone(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    return dt.astimezone(CLS_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _detail_url(item_id: Any) -> str | None:
@@ -156,7 +155,6 @@ def normalize_telegraph_item(
             "images": images if isinstance(images, list) else [],
             "audio_url": audio_url if isinstance(audio_url, list) else [],
         },
-        "raw": dict(item),
     }
 
 

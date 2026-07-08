@@ -24,6 +24,7 @@
 """
 from __future__ import annotations
 
+import logging
 from typing import Iterable
 
 from backend.services.market_sources.policy_page import PolicyPageAdapter
@@ -31,6 +32,9 @@ from backend.services.market_sources.fred import FredSeriesAdapter
 from backend.services.market_sources.cninfo import CninfoAnnouncementAdapter
 from backend.services.market_sources.sector import SectorHeatAdapter
 from backend.services.market_sources.cls_telegraph import ClsTelegraphAdapter
+
+
+logger = logging.getLogger(__name__)
 
 
 # 盘前 (pre_market) 关心的政策/宏观源
@@ -97,8 +101,12 @@ def build_default_adapters(*, client, brief_type: str = "post_market",
                     timeout_seconds=settings.cls_timeout_seconds,
                     app_version=settings.cls_app_version,
                 ))
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "CLS adapter disabled due to configuration error: %s",
+                exc,
+                exc_info=True,
+            )
     return adapters
 
 

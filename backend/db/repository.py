@@ -753,12 +753,18 @@ def upsert_market_evidence(s, row: dict) -> bool:
 
     返回 True 表示新建，False 表示已存在。
     """
+    import hashlib
     import json as _json
+    from datetime import datetime
 
     symbols = row.get("symbols") or []
     metrics = row.get("metrics")
     if not isinstance(symbols, list):
         symbols = [str(symbols)]
+    raw_hash = hashlib.sha256(
+        f"{row['source_url']}|{row['title']}".encode()
+    ).hexdigest()[:32]
+    now = datetime.utcnow()
     payload = {
         "trade_date": row["trade_date"],
         "brief_type": row["brief_type"],
@@ -771,6 +777,10 @@ def upsert_market_evidence(s, row: dict) -> bool:
         "source_url": row["source_url"],
         "published_at": row.get("published_at"),
         "reliability": row.get("reliability") or "official",
+        "raw_hash": raw_hash,
+        "fetched_at": now,
+        "created_at": now,
+        "updated_at": now,
     }
     existing = s.scalar(
         select(MarketEvidence).where(

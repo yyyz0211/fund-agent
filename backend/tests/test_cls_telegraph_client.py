@@ -43,6 +43,28 @@ def test_parse_cls_time_falls_back_to_now():
     assert parse_cls_time("bad", fallback=fallback) == "2026-07-08 20:00:00"
 
 
+def test_parse_cls_time_is_independent_of_process_timezone(monkeypatch):
+    import os
+    import time
+
+    from backend.services.cls_telegraph_client import parse_cls_time
+
+    original_tz = os.environ.get("TZ")
+    try:
+        monkeypatch.setenv("TZ", "UTC")
+        if hasattr(time, "tzset"):
+            time.tzset()
+
+        assert parse_cls_time(1783481506) == "2026-07-08 11:31:46"
+    finally:
+        if original_tz is None:
+            monkeypatch.delenv("TZ", raising=False)
+        else:
+            monkeypatch.setenv("TZ", original_tz)
+        if hasattr(time, "tzset"):
+            time.tzset()
+
+
 def test_normalize_telegraph_item_maps_symbols_and_metrics():
     from backend.services.cls_telegraph_client import normalize_telegraph_item
 
@@ -74,6 +96,7 @@ def test_normalize_telegraph_item_maps_symbols_and_metrics():
     assert row["metrics"]["cls_category"] == "watch"
     assert row["metrics"]["level"] == "B"
     assert row["metrics"]["images"] == ["https://image.cls.cn/a.jpg"]
+    assert "raw" not in row
 
 
 # ---------------------------------------------------------------------------

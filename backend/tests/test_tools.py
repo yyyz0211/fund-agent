@@ -169,6 +169,33 @@ def test_search_cls_telegraph_tool_forwards_to_client(monkeypatch):
     assert out["error"] == ""
 
 
+def test_search_cls_telegraph_tool_strips_raw_fields(monkeypatch):
+    monkeypatch.setenv("CLS_SEARCH_ENABLED", "true")
+    get_settings.cache_clear()
+
+    def fake_search_telegraph(**kwargs):
+        return [{
+            "title": "基金快讯",
+            "summary": "摘要",
+            "published_at": "2026-07-08 11:31:46",
+            "source": "财联社",
+            "source_url": "https://www.cls.cn/detail/1",
+            "symbols": ["基金"],
+            "metrics": {"cls_id": 1},
+            "raw": {"content": "不应进入工具返回"},
+        }]
+
+    monkeypatch.setattr(cls_client, "search_telegraph", fake_search_telegraph)
+
+    out = mt.search_cls_telegraph.invoke({"keyword": "基金"})
+
+    assert "raw" not in out["items"][0]
+    assert set(out["items"][0]) == {
+        "title", "summary", "published_at", "source",
+        "source_url", "symbols", "metrics",
+    }
+
+
 def test_search_cls_telegraph_tool_respects_disable(monkeypatch):
     monkeypatch.setenv("CLS_SEARCH_ENABLED", "false")
     get_settings.cache_clear()

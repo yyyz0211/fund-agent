@@ -19,6 +19,21 @@ from backend.services import market_evidence_service
 from backend.services import briefing_service
 
 
+_CLS_TELEGRAPH_PUBLIC_KEYS = (
+    "title",
+    "summary",
+    "published_at",
+    "source",
+    "source_url",
+    "symbols",
+    "metrics",
+)
+
+
+def _public_cls_telegraph_item(row: dict) -> dict:
+    return {key: row.get(key) for key in _CLS_TELEGRAPH_PUBLIC_KEYS if key in row}
+
+
 @tool
 def get_market_indices() -> dict:
     """获取最新一个交易日的主要市场指数（来自本地库，需先 refresh_market）。"""
@@ -125,7 +140,8 @@ def search_cls_telegraph(
                 timeout_seconds=settings.cls_timeout_seconds,
                 app_version=settings.cls_app_version,
             )
-        return {"count": len(rows), "items": rows, "error": ""}
+        items = [_public_cls_telegraph_item(row) for row in rows]
+        return {"count": len(items), "items": items, "error": ""}
     except Exception as exc:  # noqa: BLE001
         return {"count": 0, "items": [], "error": str(exc)}
 

@@ -13,6 +13,7 @@ const CATEGORY_LABELS: Record<EvidenceCategory, string> = {
   overseas_disclosure: "海外披露",
   macro: "宏观",
   sector: "行业热点",
+  news: "财联社快讯",
 };
 
 const CATEGORY_ORDER: EvidenceCategory[] = [
@@ -21,6 +22,7 @@ const CATEGORY_ORDER: EvidenceCategory[] = [
   "overseas_disclosure",
   "macro",
   "sector",
+  "news",
 ];
 
 const RELIABILITY_LABEL: Record<EvidenceReliability, string> = {
@@ -64,7 +66,7 @@ export function MarketEvidencePanel({ date }: MarketEvidencePanelProps) {
     return (
       <div className="rounded-xl border border-gray-200 bg-white px-4 py-10 text-center text-sm text-gray-400 shadow-sm">
         <FileSearch2 className="mx-auto mb-2 h-5 w-5 text-gray-300" />
-        暂无可验证证据（政策/公告/宏观）。本地未采集到当日证据，证据面板留空并不代表市场没有事件。
+        暂无可验证证据（政策/公告/宏观/行业/财联社快讯）。本地未采集到当日证据，证据面板留空并不代表市场没有事件。
       </div>
     );
   }
@@ -90,7 +92,7 @@ export function MarketEvidencePanel({ date }: MarketEvidencePanelProps) {
                   {items.length} 条
                 </span>
               </div>
-              <span className="text-[11px] text-gray-400">来源：官方公开页 / 公开数据</span>
+              <span className="text-[11px] text-gray-400">来源：官方公开页 / 宏观数据 / 财联社聚合</span>
             </header>
             <ul className="divide-y divide-gray-100">
               {items.map((item) => (
@@ -101,7 +103,7 @@ export function MarketEvidencePanel({ date }: MarketEvidencePanelProps) {
         );
       })}
       <p className="px-1 text-[11px] text-gray-400">
-        面板数据来源于本地 market_evidence 表, 抓取自公开政策页 / 公开宏观数据 / 公开公告; 仅供研究参考, 不构成投资建议。
+        面板数据来源于本地 market_evidence 表, 抓取自公开政策页 / 公开宏观数据 / 公开公告 / 财联社电报; 仅供研究参考, 不构成投资建议。
       </p>
     </div>
   );

@@ -253,9 +253,10 @@ class MarketEvidence(Base):
 
     唯一键 `(trade_date, brief_type, source_url)` 用于去重 upsert。
     `symbols_json` / `metrics_json` 用 JSON 字符串保存，避免对 SQLite 强依赖 JSON 列。
-    `category` 取值: policy / announcement / overseas_disclosure / macro / sector。
+    `category` 取值: policy / announcement / overseas_disclosure / macro / sector / news。
     `reliability` 取值: official / wire / rumor（默认 official）。
     `brief_type` 取值: pre_market / post_market。
+    `raw_hash` 是 `(source_url, title)` 的 SHA-256 前缀，用于快速去重参考。
     """
     __tablename__ = "market_evidence"
     __table_args__ = (
@@ -277,4 +278,7 @@ class MarketEvidence(Base):
     source_url: Mapped[str] = mapped_column(String)
     published_at: Mapped[str | None] = mapped_column(String)
     reliability: Mapped[str] = mapped_column(String, default="official")
+    raw_hash: Mapped[str] = mapped_column(String, default="")
     fetched_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())

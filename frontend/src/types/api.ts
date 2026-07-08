@@ -23,7 +23,8 @@ export type EvidenceCategory =
   | "announcement"
   | "overseas_disclosure"
   | "macro"
-  | "sector";
+  | "sector"
+  | "news";
 
 export type EvidenceReliability = "official" | "wire" | "rumor";
 
