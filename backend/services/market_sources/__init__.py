@@ -30,6 +30,7 @@ from backend.services.market_sources.policy_page import PolicyPageAdapter
 from backend.services.market_sources.fred import FredSeriesAdapter
 from backend.services.market_sources.cninfo import CninfoAnnouncementAdapter
 from backend.services.market_sources.sector import SectorHeatAdapter
+from backend.services.market_sources.cls_telegraph import ClsTelegraphAdapter
 
 
 # 盘前 (pre_market) 关心的政策/宏观源
@@ -85,6 +86,19 @@ def build_default_adapters(*, client, brief_type: str = "post_market",
         )
         if sector_snapshot is not None:
             adapters.append(SectorHeatAdapter(sector_snapshot=sector_snapshot))
+        try:
+            from backend.config.settings import get_settings
+            settings = get_settings()
+            if settings.cls_enabled:
+                adapters.append(ClsTelegraphAdapter(
+                    client=client,
+                    categories=settings.cls_categories,
+                    per_category_limit=settings.cls_per_category_limit,
+                    timeout_seconds=settings.cls_timeout_seconds,
+                    app_version=settings.cls_app_version,
+                ))
+        except Exception:
+            pass
     return adapters
 
 
@@ -93,6 +107,7 @@ __all__ = [
     "FredSeriesAdapter",
     "CninfoAnnouncementAdapter",
     "SectorHeatAdapter",
+    "ClsTelegraphAdapter",
     "build_default_adapters",
     "DEFAULT_POLICY_ADAPTERS",
     "DEFAULT_FRED_SERIES",

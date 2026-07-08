@@ -55,6 +55,15 @@ class Settings(BaseSettings):
     briefing_max_watchlist_funds: int = 30
     briefing_llm_model: str = "deepseek-chat"
 
+    # 财联社电报信息源。v1 只用于 post_market evidence + 实时搜索 tool。
+    cls_enabled: bool = True
+    cls_search_enabled: bool = True
+    cls_timeout_seconds: float = 5.0
+    cls_categories: str = "fund,watch,announcement,hk_us,red,remind"
+    cls_per_category_limit: int = 10
+    cls_max_search_limit: int = 10
+    cls_app_version: str = "8.7.9"
+
 
 @lru_cache
 def get_settings() -> Settings:

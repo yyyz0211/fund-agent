@@ -72,3 +72,66 @@ def test_adapter_network_failure_returns_empty_list():
     adapter = PolicyPageAdapter(source="CSRC", url="https://www.csrc.gov.cn/")
 
     assert adapter.fetch(client=client, trade_date="2026-07-07") == []
+
+
+def test_cls_telegraph_adapter_maps_client_rows_to_news_evidence(monkeypatch):
+    from backend.services.market_sources.cls_telegraph import ClsTelegraphAdapter
+    from backend.services import cls_telegraph_client as client_mod
+
+    def fake_fetch_roll_list(**kwargs):
+        assert kwargs["category"] == "fund"
+        assert kwargs["limit"] == 2
+        return [{
+            "title": "基金快讯",
+            "summary": "基金摘要",
+            "published_at": "2026-07-08 11:31:46",
+            "source": "财联社",
+            "source_url": "https://www.cls.cn/detail/1",
+            "symbols": ["基金"],
+            "metrics": {"cls_id": 1, "cls_category": "fund"},
+        }]
+
+    monkeypatch.setattr(client_mod, "fetch_roll_list", fake_fetch_roll_list)
+    adapter = ClsTelegraphAdapter(categories=["fund"], per_category_limit=2)
+
+    rows = adapter.fetch(client=object(), trade_date="2026-07-08", brief_type="post_market")
+
+    assert rows == [{
+        "trade_date": "2026-07-08",
+        "brief_type": "post_market",
+        "category": "news",
+        "title": "基金快讯",
+        "summary": "基金摘要",
+        "symbols": ["基金"],
+        "metrics": {"cls_id": 1, "cls_category": "fund"},
+        "source": "财联社",
+        "source_url": "https://www.cls.cn/detail/1",
+        "published_at": "2026-07-08 11:31:46",
+        "reliability": "wire",
+    }]
+
+
+def test_cls_telegraph_adapter_isolates_category_failure(monkeypatch):
+    from backend.services.market_sources.cls_telegraph import ClsTelegraphAdapter
+    from backend.services import cls_telegraph_client as client_mod
+
+    def fake_fetch_roll_list(**kwargs):
+        if kwargs["category"] == "fund":
+            raise RuntimeError("boom")
+        return [{
+            "title": "看盘快讯",
+            "summary": "摘要",
+            "published_at": "2026-07-08 11:31:46",
+            "source": "财联社",
+            "source_url": "https://www.cls.cn/detail/2",
+            "symbols": [],
+            "metrics": {"cls_id": 2, "cls_category": "watch"},
+        }]
+
+    monkeypatch.setattr(client_mod, "fetch_roll_list", fake_fetch_roll_list)
+    adapter = ClsTelegraphAdapter(categories=["fund", "watch"], per_category_limit=2)
+
+    rows = adapter.fetch(client=object(), trade_date="2026-07-08")
+
+    assert len(rows) == 1
+    assert rows[0]["title"] == "看盘快讯"

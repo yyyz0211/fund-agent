@@ -66,3 +66,44 @@ def test_sqlite_memory_engine_accepts_pragmas_without_wal_requirement():
 
     assert busy_timeout == 5000
     assert foreign_keys == 1
+
+
+def test_cls_settings_defaults(monkeypatch):
+    for key in [
+        "CLS_ENABLED",
+        "CLS_SEARCH_ENABLED",
+        "CLS_TIMEOUT_SECONDS",
+        "CLS_CATEGORIES",
+        "CLS_PER_CATEGORY_LIMIT",
+        "CLS_MAX_SEARCH_LIMIT",
+        "CLS_APP_VERSION",
+    ]:
+        monkeypatch.delenv(key, raising=False)
+    get_settings.cache_clear()
+    s = get_settings()
+    assert s.cls_enabled is True
+    assert s.cls_search_enabled is True
+    assert s.cls_timeout_seconds == 5.0
+    assert s.cls_categories == "fund,watch,announcement,hk_us,red,remind"
+    assert s.cls_per_category_limit == 10
+    assert s.cls_max_search_limit == 10
+    assert s.cls_app_version == "8.7.9"
+
+
+def test_cls_settings_read_env(monkeypatch):
+    monkeypatch.setenv("CLS_ENABLED", "false")
+    monkeypatch.setenv("CLS_SEARCH_ENABLED", "false")
+    monkeypatch.setenv("CLS_TIMEOUT_SECONDS", "3.5")
+    monkeypatch.setenv("CLS_CATEGORIES", "fund,watch")
+    monkeypatch.setenv("CLS_PER_CATEGORY_LIMIT", "2")
+    monkeypatch.setenv("CLS_MAX_SEARCH_LIMIT", "4")
+    monkeypatch.setenv("CLS_APP_VERSION", "9.0.0")
+    get_settings.cache_clear()
+    s = get_settings()
+    assert s.cls_enabled is False
+    assert s.cls_search_enabled is False
+    assert s.cls_timeout_seconds == 3.5
+    assert s.cls_categories == "fund,watch"
+    assert s.cls_per_category_limit == 2
+    assert s.cls_max_search_limit == 4
+    assert s.cls_app_version == "9.0.0"
