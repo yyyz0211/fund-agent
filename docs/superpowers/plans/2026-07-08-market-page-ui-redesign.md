@@ -1,26 +1,26 @@
-# Market Page UI 优化 实现计划
+# Market Page UI 优化 + Sparkline 真接入 实现计划
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+>
+> **执行模式：** 所有 task 完成后由 reviewer 一次性 commit，task 内部的 commit 步骤只是代码操作描述，不真实执行 `git commit`。
 
-**Goal:** 重构 `/market` 页面（保留数据流不变），实现 5 区信息架构（核心指数 → 证据面板 → 板块强弱 → 外围+公告 → 题材）、为指数卡片增加 sparkline 微图、统一视觉风格（与现有 AppShell/StateBlock 风格一致）、为板块强弱行增加 sparkline。
+**Goal:** 重构 `/market` 页面（信息架构重组 + 视觉统一 + sparkline 真接入），让指数卡和板块强弱行内显示真实历史走势。
 
-**Architecture:** 不改 API 形状、不改 `MarketSnapshot` 类型、不改 React Query hooks。纯组件层重排：
-- 顶部 Hero：核心指数 + 市场宽度合一
-- 证据面板：移到第 2 段（前置），增加 category 图标 + 数量 chip
-- 板块强弱：行业/概念合并为单卡（tab 切换），表行加 sparkline
-- 外围 + 公告：保持横向并排
-- 题材：sparkline 强度条
+**Architecture:** 双侧改动：
+- **后端**：在 `MarketSnapshot` 索引/板块 JSON 中注入 `history: number[]`（指数近 30 日收盘价；板块近 10 日涨跌幅）。
+- **前端**：5 区布局（Hero → 证据 → 板块 → 外围+公告 → 题材），零依赖 `Sparkline` SVG 组件，指数卡 + 板块行渲染真历史折线。
 
-**Tech Stack:** Next.js 14 + React 18 + TypeScript + Tailwind CSS 3.4 + lucide-react + recharts（sparkline）。
+**Tech Stack:** Next.js 14 + React 18 + TypeScript + Tailwind 3.4 + lucide-react + FastAPI + akshare + SQLAlchemy。
 
 ## Global Constraints
 
-- **不引入新依赖**；只使用项目已安装的 `recharts`、`lucide-react`、`clsx`/`tailwind-merge`、`class-variance-authority`。
-- **中国 A 股配色惯例**保留：红涨绿跌（`text-red-*` / `text-green-*`）。
-- **不变 API**：`useMarketSnapshot`、`useMarketEvidence`、`MarketSnapshot` 类型全部保留；不改后端。
-- **统一风格**：卡片用 `rounded-xl border border-gray-200 bg-white shadow-sm`（与 AppShell/SectorTable/StateBlock 一致）；eyebrow 用 `text-xs font-semibold uppercase tracking-wide text-blue-700`（与 `PageHeader` 一致）；空/错/加载态用 `StateBlock` 组件（已存在）。
-- **可访问性**：图标 `aria-hidden`；交互元素用 `aria-label`；颜色不作为唯一信息载体（涨跌同时显示正负号）。
-- **不破坏现有 build/lint**：`pnpm typecheck`（如有）和 `next build` 通过；既有测试不受影响（本计划不涉及后端）。
+- **不引入新依赖**（前端无新增 npm 包；后端仅复用已装的 akshare）。
+- **向后兼容**：`MarketSnapshot` 现有 JSON 字段全部保留；`history` 为 optional，无历史数据时前端降级为「不画线」。
+- **中国 A 股配色**保留：红涨绿跌。
+- **风格统一**：所有卡片 `rounded-xl border border-gray-200 bg-white shadow-sm`；空/错/加载态用 `StateBlock`。
+- **可访问性**：装饰性图标 `aria-hidden`；颜色不作为唯一信息载体。
+- **API 单测** 不被破坏；新增函数有单测。
+- **commit 模式**：所有任务在 reviewer 确认前 **不真实 commit**；task 内部出现的 `git commit` 描述只是代码组织提示，最后一个 task 末尾由 reviewer 一次性 commit。
 
 ---
 
@@ -28,29 +28,407 @@
 
 | 文件 | 操作 | 职责 |
 |------|------|------|
-| `frontend/src/lib/market-format.ts` | 新建 | 涨跌色、相对时间、涨幅 chip 配色等纯函数工具 |
-| `frontend/src/components/market/Sparkline.tsx` | 新建 | 通用 sparkline（接受 number[] + color，输出 SVG，零依赖） |
-| `frontend/src/components/market/MarketIndexCard.tsx` | 新建 | 指数卡片：含 sparkline + chip + 涨跌色 |
-| `frontend/src/components/market/MarketHero.tsx` | 新建 | Hero 区：核心指数 grid + 市场宽度 |
-| `frontend/src/components/market/SectorTabbedTable.tsx` | 新建 | 板块强弱：行业/概念 tab 切换，行带 sparkline |
+| `backend/services/data_collector.py` | 修改 | 新增 `fetch_index_history` / `fetch_sector_history` |
+| `backend/services/market_intel_service.py` | 修改 | `collect_market_intel` 注入 history |
+| `backend/tests/test_data_collector.py` | 修改（追加） | 单测两个新函数（mock akshare） |
+| `backend/tests/test_market_intel_service.py` | 修改（追加） | 单测 payload 包含 history |
+| `frontend/src/lib/market-format.ts` | 新建 | 涨跌色 / 相对时间 / 格式化 |
+| `frontend/src/lib/market.ts` | 修改 | `MarketSnapshot` 类型加 optional `history` |
+| `frontend/src/components/market/Sparkline.tsx` | 新建 | 零依赖 SVG sparkline |
+| `frontend/src/components/market/MarketIndexCard.tsx` | 新建 | 指数卡（含 sparkline） |
+| `frontend/src/components/market/MarketHero.tsx` | 新建 | Hero 区（指数+宽度合一） |
+| `frontend/src/components/market/SectorTabbedTable.tsx` | 新建 | 板块强弱 tab + 行 sparkline |
 | `frontend/src/components/market/MarketEvidencePanel.tsx` | 修改 | 视觉升级：category 图标 + 数量 chip + 相对时间 |
-| `frontend/src/components/market/MarketTableUtils.tsx` | 修改 | 暴露共享 `trendTextClass` 辅助 |
-| `frontend/app/market/page.tsx` | 重写 | 新 5 区布局 |
+| `frontend/src/components/market/MarketTableUtils.tsx` | 修改 | 复用 `trendTextClass` |
+| `frontend/app/market/page.tsx` | 重写 | 5 区布局 |
 
 ---
 
-## Task 1: 创建 `market-format.ts` 工具库
+## Task 1: 后端 — 新增 `fetch_index_history`
+
+**Files:**
+- Modify: `backend/services/data_collector.py:175-204`（紧跟 `fetch_market_indices` 之后）
+
+**Interfaces:**
+- Produces: `fetch_index_history(symbol: str, days: int = 30) -> list[dict] | dict`
+  - 成功: `[{"date": "YYYY-MM-DD", "close": float}, ...]` 升序，最长 `days` 条
+  - 失败: `{"error": str, "source": str}`
+
+- [ ] **Step 1: 写单测（先失败）**
+
+创建 `backend/tests/test_data_collector_index_history.py`（追加到现有 `test_data_collector.py` 也可，新建更清晰）：
+
+```python
+"""fetch_index_history 的单测,mock akshare 避免外网依赖。"""
+from unittest.mock import patch, MagicMock
+import pandas as pd
+import pytest
+
+from backend.services import data_collector as dc
+
+
+def _fake_daily_df():
+    # ak.stock_zh_index_daily 返回列: date, open, close, high, low, volume, ...
+    return pd.DataFrame({
+        "date": pd.to_datetime([
+            "2026-06-15", "2026-06-16", "2026-06-17", "2026-06-18", "2026-06-19",
+        ]),
+        "close": [3000.0, 3010.5, 3005.2, 3020.0, 3030.0],
+    })
+
+
+def test_fetch_index_history_success():
+    with patch.object(dc.ak, "stock_zh_index_daily", return_value=_fake_daily_df()):
+        result = dc.fetch_index_history("000300", days=5)
+    assert isinstance(result, list)
+    assert len(result) == 5
+    assert result[0]["date"] == "2026-06-15"
+    assert result[-1]["close"] == 3030.0
+    assert result[0]["source"] == dc.SOURCE
+
+
+def test_fetch_index_history_truncates_to_days():
+    df = _fake_daily_df()
+    with patch.object(dc.ak, "stock_zh_index_daily", return_value=df):
+        result = dc.fetch_index_history("000300", days=3)
+    assert len(result) == 3
+    assert result[-1]["date"] == "2026-06-19"
+
+
+def test_fetch_index_history_returns_error_on_failure():
+    with patch.object(dc.ak, "stock_zh_index_daily", side_effect=Exception("network down")):
+        result = dc.fetch_index_history("000300", days=10)
+    assert isinstance(result, dict)
+    assert "error" in result
+    assert "network down" in result["error"]
+```
+
+- [ ] **Step 2: 跑测试，确认失败（无此函数）**
+
+Run: `cd /Users/leon/fund-agent && python -m pytest backend/tests/test_data_collector_index_history.py -v`
+Expected: `ImportError` 或 `AttributeError: module 'backend.services.data_collector' has no attribute 'fetch_index_history'`
+
+- [ ] **Step 3: 实现 `fetch_index_history`**
+
+在 `backend/services/data_collector.py` 紧跟 `fetch_market_indices` 函数末尾后追加：
+
+```python
+@_akshare_serial
+def fetch_index_history(symbol: str, days: int = 30) -> list[dict] | dict:
+    """拉取某指数近 N 个交易日的收盘价序列(升序)。
+
+    使用 ``ak.stock_zh_index_daily(symbol=...)``。结果只保留
+    ``date`` / ``close`` 两列,便于前端 sparkline 直接消费。
+
+    成功: ``[{"date": "YYYY-MM-DD", "close": float, "source": str}, ...]``
+          按日期升序,长度 <= ``days``。
+    失败: ``{"error": str, "source": str}``。
+    """
+    try:
+        df = with_retry(ak.stock_zh_index_daily, symbol=symbol)
+        if df is None or getattr(df, "empty", True):
+            return {"error": f"fetch_index_history empty for {symbol}", "source": SOURCE}
+        date_col = _find_col(df, "date", "日期")
+        close_col = _find_col(df, "close", "收盘", "收盘价", "最新价")
+        if date_col is None or close_col is None:
+            return {"error": f"fetch_index_history cols miss for {symbol}: "
+                              f"date={date_col} close={close_col}", "source": SOURCE}
+        df = df[[date_col, close_col]].copy()
+        df[date_col] = pd.to_datetime(df[date_col])
+        df = df.sort_values(date_col).tail(days)
+        out: list[dict] = []
+        for _, r in df.iterrows():
+            close = _to_float(r[close_col])
+            if close is None:
+                continue
+            out.append({
+                "date": r[date_col].strftime("%Y-%m-%d"),
+                "close": close,
+                "source": SOURCE,
+            })
+        if not out:
+            return {"error": f"fetch_index_history no rows for {symbol}", "source": SOURCE}
+        return out
+    except Exception as e:  # noqa: BLE001
+        return {"error": f"fetch_index_history failed for {symbol}: {e}", "source": SOURCE}
+```
+
+并在文件顶部 `import pandas as pd`（如果还没有；查 `data_collector.py` 顶部，按需追加）。
+
+- [ ] **Step 4: 跑测试，确认通过**
+
+Run: `cd /Users/leon/fund-agent && python -m pytest backend/tests/test_data_collector_index_history.py -v`
+Expected: 3 passed
+
+---
+
+## Task 2: 后端 — 新增 `fetch_sector_history`
+
+**Files:**
+- Modify: `backend/services/data_collector.py`（紧跟 `fetch_concept_flows` 之后）
+
+**Interfaces:**
+- Produces: `fetch_sector_history(name: str, kind: str = "industry", days: int = 10) -> list[dict] | dict`
+  - `kind: "industry"` 用 `ak.stock_board_industry_index_ths(symbol=板块名, period="日k")`
+  - `kind: "concept"` 用 `ak.stock_board_concept_index_ths(symbol=板块名, period="日k")`
+  - 成功: `[{"date": "YYYY-MM-DD", "change_pct": float}, ...]` 升序,长度 <= days
+  - 失败: `{"error": str, "source": str}`
+
+- [ ] **Step 1: 写单测（先失败）**
+
+创建 `backend/tests/test_data_collector_sector_history.py`：
+
+```python
+"""fetch_sector_history 的单测。"""
+from unittest.mock import patch
+import pandas as pd
+import pytest
+
+from backend.services import data_collector as dc
+
+
+def _fake_sector_df():
+    # ak.stock_board_industry_index_ths 返回列: date, open, high, low, close, 涨跌幅, 涨跌额, 成交量, 成交额
+    return pd.DataFrame({
+        "date": pd.to_datetime([
+            "2026-06-12", "2026-06-13", "2026-06-16", "2026-06-17", "2026-06-18",
+        ]),
+        "涨跌幅": [0.5, -0.3, 1.2, 0.8, 2.1],
+    })
+
+
+def test_fetch_industry_history_success():
+    with patch.object(dc.ak, "stock_board_industry_index_ths", return_value=_fake_sector_df()):
+        result = dc.fetch_sector_history("电子", kind="industry", days=10)
+    assert isinstance(result, list)
+    assert len(result) == 5
+    assert result[0]["date"] == "2026-06-12"
+    assert result[-1]["change_pct"] == 2.1
+    assert result[0]["source"] == dc.SOURCE
+
+
+def test_fetch_concept_history_truncates_to_days():
+    with patch.object(dc.ak, "stock_board_concept_index_ths", return_value=_fake_sector_df()):
+        result = dc.fetch_sector_history("AI算力", kind="concept", days=3)
+    assert len(result) == 3
+    assert result[-1]["date"] == "2026-06-18"
+
+
+def test_fetch_sector_history_returns_error_on_failure():
+    with patch.object(dc.ak, "stock_board_industry_index_ths", side_effect=Exception("api down")):
+        result = dc.fetch_sector_history("电子", kind="industry", days=10)
+    assert isinstance(result, dict)
+    assert "error" in result
+    assert "api down" in result["error"]
+
+
+def test_fetch_sector_history_invalid_kind():
+    result = dc.fetch_sector_history("X", kind="bad", days=10)
+    assert isinstance(result, dict)
+    assert "error" in result
+```
+
+- [ ] **Step 2: 跑测试，确认失败**
+
+Run: `cd /Users/leon/fund-agent && python -m pytest backend/tests/test_data_collector_sector_history.py -v`
+Expected: ImportError / AttributeError
+
+- [ ] **Step 3: 实现 `fetch_sector_history`**
+
+在 `backend/services/data_collector.py` 末尾追加（`fetch_breadth_indicators` 之前或之后皆可）：
+
+```python
+@_akshare_serial
+def fetch_sector_history(name: str, kind: str = "industry", days: int = 10) -> list[dict] | dict:
+    """拉取某行业/概念板块近 N 个交易日的日涨跌幅序列(升序,百分比小数,如 0.0123 = +1.23%)。
+
+    Args:
+        name: 板块名,例如 "电子" / "AI算力"
+        kind: ``"industry"`` 或 ``"concept"``
+        days: 保留尾 N 条
+
+    成功: ``[{"date": "YYYY-MM-DD", "change_pct": float, "source": str}, ...]``
+    失败: ``{"error": str, "source": str}``
+    """
+    if kind not in ("industry", "concept"):
+        return {"error": f"fetch_sector_history kind must be industry|concept, got {kind!r}", "source": SOURCE}
+    fn = ak.stock_board_industry_index_ths if kind == "industry" else ak.stock_board_concept_index_ths
+    try:
+        df = with_retry(fn, symbol=name, period="日k")
+        if df is None or getattr(df, "empty", True):
+            return {"error": f"fetch_sector_history empty for {name} ({kind})", "source": SOURCE}
+        date_col = _find_col(df, "date", "日期")
+        change_col = _find_col(df, "涨跌幅", "change_pct", "涨跌幅(%)")
+        if date_col is None or change_col is None:
+            return {"error": f"fetch_sector_history cols miss for {name} ({kind}): "
+                              f"date={date_col} change={change_col}", "source": SOURCE}
+        df = df[[date_col, change_col]].copy()
+        df[date_col] = pd.to_datetime(df[date_col])
+        df = df.sort_values(date_col).tail(days)
+        out: list[dict] = []
+        for _, r in df.iterrows():
+            v = _to_float(r[change_col])
+            # 百分比统一转换为小数 (1.23% -> 0.0123)
+            if v is not None and abs(v) > 1:
+                v = v / 100.0
+            if v is None:
+                continue
+            out.append({
+                "date": r[date_col].strftime("%Y-%m-%d"),
+                "change_pct": v,
+                "source": SOURCE,
+            })
+        if not out:
+            return {"error": f"fetch_sector_history no rows for {name} ({kind})", "source": SOURCE}
+        return out
+    except Exception as e:  # noqa: BLE001
+        return {"error": f"fetch_sector_history failed for {name} ({kind}): {e}", "source": SOURCE}
+```
+
+- [ ] **Step 4: 跑测试，确认通过**
+
+Run: `cd /Users/leon/fund-agent && python -m pytest backend/tests/test_data_collector_sector_history.py -v`
+Expected: 4 passed
+
+---
+
+## Task 3: 后端 — `collect_market_intel` 注入 history 字段
+
+**Files:**
+- Modify: `backend/services/market_intel_service.py:36-114`
+
+**Interfaces:**
+- 现有 payload 不变；每个 `indices[i]` 增加 `history?: number[]`；每个 `industry_sectors[i]` / `concept_sectors[i]` 增加 `history?: number[]`。
+- history 采集失败不影响整体（按 dict 错误处理，已存在的 errors 列表机制）。
+
+- [ ] **Step 1: 写单测（先失败）**
+
+创建 `backend/tests/test_market_intel_history.py`：
+
+```python
+"""collect_market_intel 把 history 注入 payload 的单测。"""
+from unittest.mock import patch
+from backend.services import market_intel_service as svc
+
+
+def test_indices_have_history():
+    with patch.object(svc.dc, "fetch_market_indices", return_value=[
+        {"symbol": "000001", "name": "上证指数", "close": 3000.0, "change_pct": 0.5, "market_date": "2026-07-08", "source": "akshare"},
+    ]), \
+         patch.object(svc.dc, "fetch_market_breadth", return_value={"up": 1, "down": 0, "limit_up": 0, "limit_down": 0, "volume": 0, "amount": 0, "total": 1, "source": "akshare", "as_of": "2026-07-08"}), \
+         patch.object(svc.dc, "fetch_sector_snapshot", return_value=[]), \
+         patch.object(svc.dc, "fetch_industry_flows", return_value=[]), \
+         patch.object(svc.dc, "fetch_concept_sectors", return_value=[]), \
+         patch.object(svc.dc, "fetch_concept_flows", return_value=[]), \
+         patch.object(svc.dc, "fetch_theme_boards", return_value=[]), \
+         patch.object(svc.dc, "fetch_breadth_indicators", return_value={"board_height": [], "source": "akshare", "as_of": "2026-07-08"}), \
+         patch.object(svc.dc, "fetch_overseas_markets", return_value=[]), \
+         patch.object(svc.dc, "fetch_announcements", return_value=[]), \
+         patch.object(svc.dc, "fetch_index_history", return_value=[
+             {"date": "2026-07-07", "close": 2990.0, "source": "akshare"},
+             {"date": "2026-07-08", "close": 3000.0, "source": "akshare"},
+         ]):
+        payload = svc.collect_market_intel(trade_date="2026-07-08", snapshot_type="post_market", session=None)
+    assert len(payload["indices"]) == 1
+    assert payload["indices"][0]["history"] == [2990.0, 3000.0]
+
+
+def test_history_failure_does_not_block_payload():
+    with patch.object(svc.dc, "fetch_market_indices", return_value=[
+        {"symbol": "000001", "name": "上证指数", "close": 3000.0, "change_pct": 0.5, "market_date": "2026-07-08", "source": "akshare"},
+    ]), \
+         patch.object(svc.dc, "fetch_market_breadth", return_value={"up": 1, "down": 0, "limit_up": 0, "limit_down": 0, "volume": 0, "amount": 0, "total": 1, "source": "akshare", "as_of": "2026-07-08"}), \
+         patch.object(svc.dc, "fetch_sector_snapshot", return_value=[]), \
+         patch.object(svc.dc, "fetch_industry_flows", return_value=[]), \
+         patch.object(svc.dc, "fetch_concept_sectors", return_value=[]), \
+         patch.object(svc.dc, "fetch_concept_flows", return_value=[]), \
+         patch.object(svc.dc, "fetch_theme_boards", return_value=[]), \
+         patch.object(svc.dc, "fetch_breadth_indicators", return_value={"board_height": [], "source": "akshare", "as_of": "2026-07-08"}), \
+         patch.object(svc.dc, "fetch_overseas_markets", return_value=[]), \
+         patch.object(svc.dc, "fetch_announcements", return_value=[]), \
+         patch.object(svc.dc, "fetch_index_history", return_value={"error": "boom", "source": "akshare"}):
+        payload = svc.collect_market_intel(trade_date="2026-07-08", snapshot_type="post_market", session=None)
+    assert payload["indices"][0].get("history") is None
+    assert any(e["field"].startswith("index_history:") for e in payload["errors"])
+```
+
+- [ ] **Step 2: 跑测试，确认失败**
+
+Run: `cd /Users/leon/fund-agent && python -m pytest backend/tests/test_market_intel_history.py -v`
+Expected: KeyError 或 AssertionError（payload 中无 history 字段 / 有 history 但不像预期）
+
+- [ ] **Step 3: 修改 `collect_market_intel` 注入 history**
+
+在 `backend/services/market_intel_service.py` 中：
+
+1. 紧跟 `indices = _collect_field("indices", ...)` 之后（约第 73 行后）追加：
+
+```python
+    # 给每个 index 注入近 30 日收盘价序列(history)。单项失败记录到 errors,不影响整体。
+    if isinstance(indices, dict):
+        indices_list = indices.get("indices", []) if "indices" in indices else []
+    else:
+        indices_list = indices or []
+    for idx in indices_list:
+        sym = idx.get("symbol")
+        if not sym:
+            continue
+        hist = _collect_field(f"index_history:{sym}", dc.fetch_index_history, sym, 30)
+        if isinstance(hist, list) and hist:
+            idx["history"] = [float(p["close"]) for p in hist if p.get("close") is not None]
+        else:
+            idx["history"] = None
+```
+
+2. 给板块注入 history — 紧跟 `industry_sectors = ...` 之后：
+
+```python
+    for s in (industry_sectors or []):
+        nm = s.get("name")
+        if not nm:
+            continue
+        hist = _collect_field(f"industry_history:{nm}", dc.fetch_sector_history, nm, "industry", 10)
+        if isinstance(hist, list) and hist:
+            s["history"] = [float(p["change_pct"]) for p in hist if p.get("change_pct") is not None]
+        else:
+            s["history"] = None
+```
+
+3. 给概念注入 history — 紧跟 `concept_sectors = ...` 之后：
+
+```python
+    for s in (concept_sectors or []):
+        nm = s.get("name")
+        if not nm:
+            continue
+        hist = _collect_field(f"concept_history:{nm}", dc.fetch_sector_history, nm, "concept", 10)
+        if isinstance(hist, list) and hist:
+            s["history"] = [float(p["change_pct"]) for p in hist if p.get("change_pct") is not None]
+        else:
+            s["history"] = None
+```
+
+- [ ] **Step 4: 跑测试，确认通过**
+
+Run: `cd /Users/leon/fund-agent && python -m pytest backend/tests/test_market_intel_history.py -v`
+Expected: 2 passed
+
+- [ ] **Step 5: 跑后端全部测试，确保无回归**
+
+Run: `cd /Users/leon/fund-agent && python -m pytest backend/tests -q`
+Expected: 既有测试全过；新增 3 个文件共 9 个新测试全过。
+
+---
+
+## Task 4: 前端 — `market-format.ts` 工具库
 
 **Files:**
 - Create: `frontend/src/lib/market-format.ts`
 
 **Interfaces:**
-- Consumes: 无
-- Produces: `trendTextClass(v)`, `trendChipClass(v)`, `relativeTime(iso)`, `formatPctWithSign(v)`
+- Produces: `trendTextClass(v)`, `trendBgClass(v)`, `formatPctWithSign(v)`, `relativeTime(iso, now?)`
 
 - [ ] **Step 1: 新建文件**
-
-创建 `frontend/src/lib/market-format.ts`：
 
 ```ts
 /** A 股配色：红涨绿跌 */
@@ -94,32 +472,20 @@ export function relativeTime(iso: string | null | undefined, now: Date = new Dat
 }
 ```
 
-- [ ] **Step 2: 验证 TypeScript 编译**
+- [ ] **Step 2: 验证 TS**
 
-Run:
-```bash
-cd /Users/leon/fund-agent/frontend && pnpm exec tsc --noEmit
-```
-
-Expected: 无报错（仅前既有错误，本文件无误）。
-
-- [ ] **Step 3: 提交**
-
-```bash
-cd /Users/leon/fund-agent && git add frontend/src/lib/market-format.ts
-git commit -m "feat(market): add market-format helpers (trend class, relative time)"
-```
+Run: `cd /Users/leon/fund-agent/frontend && pnpm exec tsc --noEmit`
+Expected: 无新错误。
 
 ---
 
-## Task 2: 创建通用 `Sparkline` 组件（纯 SVG,零依赖）
+## Task 5: 前端 — 零依赖 `Sparkline` 组件
 
 **Files:**
 - Create: `frontend/src/components/market/Sparkline.tsx`
 
 **Interfaces:**
-- Consumes: `points: number[]`, `color?: string` (默认 `currentColor` 让父级 color 控制), `width?: number`, `height?: number`, `className?: string`
-- Produces: 内联 `<svg>` sparkline。值全为相同或空时渲染细灰线。
+- Produces: `<Sparkline points={number[]} ... />` 内联 SVG，<2 个点时画细灰线占位。
 
 - [ ] **Step 1: 新建文件**
 
@@ -131,12 +497,9 @@ interface SparklineProps {
   points: number[];
   width?: number;
   height?: number;
-  /** tailwind text class like "text-red-500";used when color is undefined */
   toneClass?: string;
-  /** 直接 SVG stroke;优先级高于 toneClass */
   color?: string;
   className?: string;
-  /** 是否绘制面积 */
   area?: boolean;
   ariaLabel?: string;
 }
@@ -163,7 +526,7 @@ export function Sparkline({
     });
     const line = ys.map((y, i) => `${i === 0 ? "M" : "L"}${i * dx.toFixed(2)} ${y.toFixed(2)}`).join(" ");
     const fill = `${line} L${width.toFixed(2)} ${height} L0 ${height} Z`;
-    return { line, fill, min, max };
+    return { line, fill };
   }, [points, width, height]);
 
   if (!path) {
@@ -175,7 +538,6 @@ export function Sparkline({
   }
 
   const stroke = color ?? "currentColor";
-
   return (
     <svg
       width={width}
@@ -185,37 +547,26 @@ export function Sparkline({
       role={ariaLabel ? "img" : undefined}
       aria-label={ariaLabel}
     >
-      {area ? (
-        <path d={path.fill} fill={stroke} fillOpacity={0.12} stroke="none" />
-      ) : null}
+      {area ? <path d={path.fill} fill={stroke} fillOpacity={0.12} stroke="none" /> : null}
       <path d={path.line} fill="none" stroke={stroke} strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
 ```
 
-- [ ] **Step 2: 验证 TypeScript**
+- [ ] **Step 2: 验证 TS**
 
 Run: `cd /Users/leon/fund-agent/frontend && pnpm exec tsc --noEmit`
-Expected: 无新增错误。
-
-- [ ] **Step 3: 提交**
-
-```bash
-cd /Users/leon/fund-agent && git add frontend/src/components/market/Sparkline.tsx
-git commit -m "feat(market): add zero-dep Sparkline component"
-```
 
 ---
 
-## Task 3: 创建 `MarketIndexCard`（指数卡 + sparkline）
+## Task 6: 前端 — `MarketIndexCard` 含真 sparkline
 
 **Files:**
 - Create: `frontend/src/components/market/MarketIndexCard.tsx`
 
 **Interfaces:**
-- Consumes: `name: string`, `close: number`, `changePct: number`, `history?: number[]` (近 30 日收盘价), `weight?: "lead" | "normal"`
-- Produces: 与现有 `IndexCard` 视觉一致 + sparkline。
+- Produces: `<MarketIndexCard name close changePct history? weight? />`，`history` 为可选数组。
 
 - [ ] **Step 1: 新建文件**
 
@@ -229,7 +580,7 @@ export interface MarketIndexCardProps {
   name: string;
   close: number;
   changePct: number;
-  history?: number[];
+  history?: number[] | null;
   weight?: "lead" | "normal";
 }
 
@@ -270,29 +621,56 @@ export function MarketIndexCard({ name, close, changePct, history, weight = "nor
 }
 ```
 
-> **说明：** `history` 在本次前端重构中尚无数据源（API 未返回指数历史序列）。保留为可选 prop，无数据时不渲染 sparkline — 不影响其它改动。后续如需接入,只需把 `snap.indices[i].history` 传进来。
+- [ ] **Step 2: 验证 TS**
+
+Run: `cd /Users/leon/fund-agent/frontend && pnpm exec tsc --noEmit`
+
+---
+
+## Task 7: 前端 — `MarketSnapshot` 类型加 `history` 字段
+
+**Files:**
+- Modify: `frontend/src/lib/market.ts:17-32`
+
+**Interfaces:**
+- 现有类型不变；为 indices / industry_sectors / concept_sectors 元素增加 optional `history?: number[] | null`。
+
+- [ ] **Step 1: 修改 `MarketSnapshot` interface**
+
+把 `frontend/src/lib/market.ts` 第 17-32 行替换为：
+
+```ts
+export interface MarketSnapshot {
+  trade_date: string;
+  snapshot_type: string;
+  indices: Array<{ symbol: string; name: string; close: number; change_pct: number; history?: number[] | null }>;
+  breadth: Partial<MarketBreadth> & { error?: string; source?: string };
+  industry_sectors: Array<{ name: string; change_pct: number; history?: number[] | null }>;
+  concept_sectors: Array<{ name: string; change_pct: number; history?: number[] | null }>;
+  industry_flows: Array<{ name: string; net_flow: number }>;
+  concept_flows: Array<{ name: string; net_flow: number }>;
+  themes: Array<{ theme: string; count: number; stocks: Array<{ name: string }> }>;
+  breadth_indicators: { board_height: Array<{ name: string; boards: number }> };
+  overseas: Array<{ market: string; name: string; symbol: string; close: number | null; change_pct: number | null }>;
+  announcements: Array<{ title: string; ann_date: string; fund_code: string; fund_name: string }>;
+  source: string;
+  as_of: string;
+}
+```
 
 - [ ] **Step 2: 验证 TS**
 
 Run: `cd /Users/leon/fund-agent/frontend && pnpm exec tsc --noEmit`
 
-- [ ] **Step 3: 提交**
-
-```bash
-cd /Users/leon/fund-agent && git add frontend/src/components/market/MarketIndexCard.tsx
-git commit -m "feat(market): add MarketIndexCard with optional sparkline"
-```
-
 ---
 
-## Task 4: 创建 `MarketHero`（核心指数 + 市场宽度合一）
+## Task 8: 前端 — `MarketHero`
 
 **Files:**
 - Create: `frontend/src/components/market/MarketHero.tsx`
 
 **Interfaces:**
-- Consumes: `snap: MarketSnapshot`
-- Produces: 单卡，内部为「核心指数 grid + 市场宽度横向条」
+- Produces: `<MarketHero snap />`，把核心指数 + 市场宽度合并展示。
 
 - [ ] **Step 1: 新建文件**
 
@@ -300,8 +678,7 @@ git commit -m "feat(market): add MarketIndexCard with optional sparkline"
 "use client";
 import { MarketSnapshot, normalizeMarketBreadth } from "@/lib/market";
 import { MarketIndexCard } from "./MarketIndexCard";
-import { Sparkline } from "./Sparkline";
-import { trendTextClass, trendBgClass, formatPctWithSign } from "@/lib/market-format";
+import { trendBgClass, formatPctWithSign, trendTextClass } from "@/lib/market-format";
 
 const LEAD_INDEX_NAMES = new Set(["上证指数", "深证成指", "创业板指", "科创50"]);
 
@@ -322,33 +699,23 @@ export function MarketHero({ snap }: { snap: MarketSnapshot }) {
 
   const lead = snap.indices.filter((i) => LEAD_INDEX_NAMES.has(i.name));
   const rest = snap.indices.filter((i) => !LEAD_INDEX_NAMES.has(i.name));
+  const shown = lead.length > 0 ? lead : snap.indices.slice(0, 4);
 
   return (
     <div className="space-y-4">
-      {/* 核心指数 grid */}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-        {lead.length > 0
-          ? lead.map((idx) => (
-              <MarketIndexCard
-                key={idx.symbol}
-                name={idx.name}
-                close={idx.close}
-                changePct={idx.change_pct}
-                weight="lead"
-              />
-            ))
-          : snap.indices.slice(0, 4).map((idx) => (
-              <MarketIndexCard
-                key={idx.symbol}
-                name={idx.name}
-                close={idx.close}
-                changePct={idx.change_pct}
-                weight="lead"
-              />
-            ))}
+        {shown.map((idx) => (
+          <MarketIndexCard
+            key={idx.symbol}
+            name={idx.name}
+            close={idx.close}
+            changePct={idx.change_pct}
+            history={idx.history}
+            weight="lead"
+          />
+        ))}
       </div>
 
-      {/* 市场宽度横条 */}
       <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="min-w-0 flex-1">
@@ -380,7 +747,6 @@ export function MarketHero({ snap }: { snap: MarketSnapshot }) {
         </div>
       </div>
 
-      {/* 其余指数（如果有）以更紧凑的 chip 形式展示 */}
       {rest.length > 0 ? (
         <div className="flex flex-wrap items-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm">
           <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">其他指数</span>
@@ -416,25 +782,15 @@ function Stat({ label, value, toneClass, sub }: { label: string; value: number; 
 
 Run: `cd /Users/leon/fund-agent/frontend && pnpm exec tsc --noEmit`
 
-- [ ] **Step 3: 提交**
-
-```bash
-cd /Users/leon/fund-agent && git add frontend/src/components/market/MarketHero.tsx
-git commit -m "feat(market): add MarketHero (indices + breadth unified)"
-```
-
 ---
 
-## Task 5: 创建 `SectorTabbedTable`（行业/概念 tab 切换 + sparkline）
+## Task 9: 前端 — `SectorTabbedTable` 含真 sparkline
 
 **Files:**
 - Create: `frontend/src/components/market/SectorTabbedTable.tsx`
 
 **Interfaces:**
-- Consumes: `snap: MarketSnapshot`
-- Produces: 单卡，含「行业 / 概念」tab，行带 sparkline（基于该板块近 N 个交易日的涨跌幅推算 — 实际本次没有历史序列，行内只显示 chip + 涨跌幅 + 净流入）
-
-> 注：本计划不引入新接口数据，sparkline 在板块行暂时显示占位（数据缺失时降级为"—"）。tab 切换 + 视觉升级是核心。
+- Produces: `<SectorTabbedTable snap />`，单卡含「行业 / 概念」tab，行内用 `s.history` 渲染 sparkline。
 
 - [ ] **Step 1: 新建文件**
 
@@ -461,7 +817,9 @@ export function SectorTabbedTable({ snap }: { snap: MarketSnapshot }) {
   const flows = tab === "industry" ? snap.industry_flows : snap.concept_flows;
   const flowMap = new Map(flows.map((f) => [f.name, f.net_flow]));
 
-  const sorted = [...rows].sort((a, b) => Math.abs(b.change_pct) - Math.abs(a.change_pct)).slice(0, 15);
+  const sorted = [...rows]
+    .sort((a, b) => Math.abs(b.change_pct) - Math.abs(a.change_pct))
+    .slice(0, 15);
   const strongest = sorted[0];
   const weakest = sorted[sorted.length - 1];
 
@@ -520,28 +878,28 @@ export function SectorTabbedTable({ snap }: { snap: MarketSnapshot }) {
               {sorted.map((s) => {
                 const nf = flowMap.get(s.name) ?? null;
                 const flowY = nf == null ? null : nf / 10000;
-                const flowText = flowY == null
-                  ? "—"
-                  : `${flowY > 0 ? "+" : ""}${flowY.toFixed(2)}亿`;
-                const flowColor = flowY == null
-                  ? "text-gray-400"
-                  : flowY > 0
-                  ? "text-red-700"
-                  : flowY < 0
-                  ? "text-green-700"
+                const flowText = flowY == null ? "—" : `${flowY > 0 ? "+" : ""}${flowY.toFixed(2)}亿`;
+                const flowColor =
+                  flowY == null ? "text-gray-400"
+                  : flowY > 0 ? "text-red-700"
+                  : flowY < 0 ? "text-green-700"
                   : "text-gray-500";
                 const positive = s.change_pct > 0;
                 return (
                   <tr key={s.name} className="border-t border-gray-100 transition hover:bg-gray-50/70">
                     <td className="whitespace-nowrap px-4 py-3 font-medium text-gray-950">{s.name}</td>
                     <td className="px-4 py-3">
-                      <Sparkline
-                        points={barToFakeSparkline(s.change_pct)}
-                        width={80}
-                        height={24}
-                        toneClass={positive ? "text-red-400" : "text-green-400"}
-                        area={false}
-                      />
+                      {s.history && s.history.length >= 2 ? (
+                        <Sparkline
+                          points={s.history}
+                          width={80}
+                          height={24}
+                          toneClass={positive ? "text-red-400" : "text-green-400"}
+                          area={false}
+                        />
+                      ) : (
+                        <span className="text-xs text-gray-300">—</span>
+                      )}
                     </td>
                     <td className={`whitespace-nowrap px-4 py-3 text-right font-semibold tabular-nums ${trendTextClass(s.change_pct)}`}>
                       {formatPctWithSign(s.change_pct)}
@@ -559,46 +917,25 @@ export function SectorTabbedTable({ snap }: { snap: MarketSnapshot }) {
     </div>
   );
 }
-
-/** 临时用单点 change_pct 合成"上/下倾斜"的伪 sparkline,占位用,后续接入历史数据后删除 */
-function barToFakeSparkline(pct: number): number[] {
-  const len = 8;
-  const arr: number[] = [];
-  for (let i = 0; i < len; i++) {
-    arr.push((i / (len - 1)) * pct);
-  }
-  return arr;
-}
 ```
 
 - [ ] **Step 2: 验证 TS**
 
 Run: `cd /Users/leon/fund-agent/frontend && pnpm exec tsc --noEmit`
 
-- [ ] **Step 3: 提交**
-
-```bash
-cd /Users/leon/fund-agent && git add frontend/src/components/market/SectorTabbedTable.tsx
-git commit -m "feat(market): add SectorTabbedTable (industry/concept tabs + sparkline)"
-```
-
 ---
 
-## Task 6: 升级 `MarketEvidencePanel` 视觉（category 图标 + chip + 相对时间）
+## Task 10: 前端 — 升级 `MarketEvidencePanel`
 
 **Files:**
-- Modify: `frontend/src/components/market/MarketEvidencePanel.tsx`
+- Modify: `frontend/src/components/market/MarketEvidencePanel.tsx`（完整重写）
 
-**Interfaces:**
-- Consumes: `date: string` (不变)
-- Produces: 同样的 props；内部用 `StateBlock` 做空/错/加载态、用 `relativeTime` 替换时间显示、用 category 图标 + 数量 chip。
-
-- [ ] **Step 1: 完整重写该文件**
+- [ ] **Step 1: 用以下内容覆盖整个文件**
 
 ```tsx
 "use client";
 import { useMemo } from "react";
-import { Building2, FileSearch2, ExternalLink, Landmark, Megaphone, Newspaper, ShieldAlert, ShieldCheck, Tag, Globe2 } from "lucide-react";
+import { Building2, ExternalLink, Landmark, Megaphone, Newspaper, ShieldAlert, ShieldCheck, Tag, Globe2 } from "lucide-react";
 import { useMarketEvidence } from "@/lib/market";
 import type {
   EvidenceCategory,
@@ -653,16 +990,8 @@ export function MarketEvidencePanel({ date }: MarketEvidencePanelProps) {
     [groups],
   );
 
-  if (isLoading) {
-    return <StateBlock title="正在加载证据…" tone="loading" />;
-  }
-  if (error) {
-    return (
-      <StateBlock title="证据加载失败" tone="error">
-        {String(error)}
-      </StateBlock>
-    );
-  }
+  if (isLoading) return <StateBlock title="正在加载证据…" tone="loading" />;
+  if (error) return <StateBlock title="证据加载失败" tone="error">{String(error)}</StateBlock>;
   if (!hasAny) {
     return (
       <StateBlock
@@ -676,7 +1005,6 @@ export function MarketEvidencePanel({ date }: MarketEvidencePanelProps) {
 
   return (
     <div className="space-y-4">
-      {/* category 概要 chips */}
       <div className="flex flex-wrap items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 shadow-sm">
         <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">分类概览</span>
         {presentCategories.map((cat) => {
@@ -702,11 +1030,7 @@ export function MarketEvidencePanel({ date }: MarketEvidencePanelProps) {
         const meta = CATEGORY_META[cat];
         const Icon = meta.icon;
         return (
-          <section
-            key={cat}
-            className="rounded-xl border border-gray-200 bg-white shadow-sm"
-            aria-label={meta.label}
-          >
+          <section key={cat} className="rounded-xl border border-gray-200 bg-white shadow-sm" aria-label={meta.label}>
             <header className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
               <div className="flex items-center gap-2">
                 <span className={`flex h-6 w-6 items-center justify-center rounded-md ${meta.tone}`}>
@@ -754,17 +1078,11 @@ function EvidenceRow({ item }: { item: MarketEvidenceItem }) {
           <span
             className={`inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium ring-1 ring-inset ${RELIABILITY_BADGE[reliability]}`}
           >
-            {reliability === "official" ? (
-              <ShieldCheck className="h-3 w-3" />
-            ) : (
-              <ShieldAlert className="h-3 w-3" />
-            )}
+            {reliability === "official" ? <ShieldCheck className="h-3 w-3" /> : <ShieldAlert className="h-3 w-3" />}
             {RELIABILITY_LABEL[reliability]}
           </span>
         </div>
-        {item.summary ? (
-          <p className="mt-1 line-clamp-2 text-xs leading-5 text-gray-500">{item.summary}</p>
-        ) : null}
+        {item.summary ? <p className="mt-1 line-clamp-2 text-xs leading-5 text-gray-500">{item.summary}</p> : null}
         <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-gray-400">
           <span>来源 · {item.source}</span>
           {item.published_at ? <span>· {relativeTime(item.published_at)}</span> : null}
@@ -782,32 +1100,20 @@ function EvidenceRow({ item }: { item: MarketEvidenceItem }) {
 
 Run: `cd /Users/leon/fund-agent/frontend && pnpm exec tsc --noEmit`
 
-- [ ] **Step 3: 提交**
-
-```bash
-cd /Users/leon/fund-agent && git add frontend/src/components/market/MarketEvidencePanel.tsx
-git commit -m "feat(market): upgrade MarketEvidencePanel with category icons & relative time"
-```
-
 ---
 
-## Task 7: 升级 `MarketTableUtils` 暴露 `trendTextClass` 共享
+## Task 11: 前端 — `MarketTableUtils` 复用 `trendTextClass`
 
 **Files:**
 - Modify: `frontend/src/components/market/MarketTableUtils.tsx`
 
-**Interfaces:**
-- Consumes: 无变化
-- Produces: 复用 `trendTextClass`（从 `@/lib/market-format` 重新导出，保持现有 import 路径工作）
-
-- [ ] **Step 1: 编辑文件**
-
-将整个文件替换为：
+- [ ] **Step 1: 替换整个文件为**
 
 ```tsx
 "use client";
-export { trendTextClass as ChangeCellClass } from "@/lib/market-format";
 import { trendTextClass } from "@/lib/market-format";
+
+export { trendTextClass as ChangeCellClass };
 
 export function ChangeCell({ pct }: { pct: number }) {
   const color = pct > 0 ? "text-red-600" : pct < 0 ? "text-green-600" : "text-gray-500";
@@ -842,42 +1148,20 @@ export function ChangeBar({ pct }: { pct: number }) {
     </div>
   );
 }
-
-export { trendTextClass };
 ```
 
 - [ ] **Step 2: 验证 TS**
 
 Run: `cd /Users/leon/fund-agent/frontend && pnpm exec tsc --noEmit`
 
-- [ ] **Step 3: 提交**
-
-```bash
-cd /Users/leon/fund-agent && git add frontend/src/components/market/MarketTableUtils.tsx
-git commit -m "refactor(market): re-export trendTextClass from market-format"
-```
-
 ---
 
-## Task 8: 重写 `app/market/page.tsx` 5 区布局
+## Task 12: 前端 — 重写 `app/market/page.tsx` 5 区布局
 
 **Files:**
-- Modify: `frontend/app/market/page.tsx`
+- Modify: `frontend/app/market/page.tsx`（完整重写）
 
-**Interfaces:**
-- Consumes: 不变（hooks + date 切换）
-- Produces: 5 区新布局
-
-> **新顺序：**
-> 1. 页面 header（保留 — 不动）
-> 2. **Hero**: `MarketHero` (核心指数 + 市场宽度)
-> 3. **证据面板（前置）**: `MarketEvidencePanel`
-> 4. **板块强弱**: `SectorTabbedTable`（单卡 tab 切换）
-> 5. **外围 + 公告**: 横向并排（保留）
-> 6. **题材**: `ThemeBoards`（保留）
-> 7. footer disclaimer
-
-- [ ] **Step 1: 完整重写该文件**
+- [ ] **Step 1: 用以下内容覆盖整个文件**
 
 ```tsx
 "use client";
@@ -903,13 +1187,11 @@ export default function MarketPage() {
   const [dateOpt, setDateOpt] = useState("today");
   const date = resolveMarketDate(dateOpt);
   const { data: snap, isLoading, error } = useMarketSnapshot(date, "post_market");
-  // 同步触发 evidence 缓存(在 panel 子组件内另作主消费)
   const evidence = useMarketEvidence(date);
   const evidenceCount = evidence.data?.count ?? 0;
 
   return (
     <div className="mx-auto max-w-7xl space-y-7 px-4 pb-10 sm:px-6 lg:px-8">
-      {/* 页面 header (保留原设计) */}
       <div className="rounded-2xl border border-gray-200 bg-white/90 p-5 shadow-sm">
         <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
           <div className="max-w-3xl">
@@ -944,9 +1226,7 @@ export default function MarketPage() {
         </div>
       </div>
 
-      {isLoading && (
-        <StateBlock title="加载市场数据…" tone="loading" />
-      )}
+      {isLoading && <StateBlock title="加载市场数据…" tone="loading" />}
 
       {error && !isLoading && (
         <div className="flex items-start gap-3 rounded-2xl border border-red-200 bg-red-50 p-5 text-sm text-red-700">
@@ -960,7 +1240,6 @@ export default function MarketPage() {
 
       {snap && !isLoading && (
         <div className="space-y-7">
-          {/* ① Hero：核心指数 + 市场宽度 */}
           <section className="space-y-3">
             <SectionHeader
               title="今日市场"
@@ -969,7 +1248,6 @@ export default function MarketPage() {
             <MarketHero snap={snap} />
           </section>
 
-          {/* ② 证据面板（前置） */}
           <section className="space-y-3">
             <SectionHeader
               title="证据面板"
@@ -978,16 +1256,14 @@ export default function MarketPage() {
             <MarketEvidencePanel date={date} />
           </section>
 
-          {/* ③ 板块强弱（行业/概念 tab） */}
           <section className="space-y-3">
             <SectionHeader
               title="板块强弱"
-              description="按涨跌幅绝对值排序，行内 sparkline 展示趋势，净流入以亿为单位。"
+              description="按涨跌幅绝对值排序，行内 sparkline 展示近 10 日涨跌幅，净流入以亿为单位。"
             />
             <SectorTabbedTable snap={snap} />
           </section>
 
-          {/* ④ 外围 + 公告 */}
           <section className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,0.9fr)_minmax(360px,0.7fr)]">
             <div className="space-y-3">
               <SectionHeader title="外围市场" description="隔夜市场和港美股快览" />
@@ -999,7 +1275,6 @@ export default function MarketPage() {
             </div>
           </section>
 
-          {/* ⑤ 题材 */}
           <section className="space-y-3">
             <SectionHeader title="热门题材" description="题材概念与代表个股汇总" />
             <ThemeBoards snap={snap} />
@@ -1015,80 +1290,81 @@ export default function MarketPage() {
 }
 ```
 
-- [ ] **Step 2: 验证 TS**
+- [ ] **Step 2: 验证 TS + build**
 
-Run: `cd /Users/leon/fund-agent/frontend && pnpm exec tsc --noEmit`
-Expected: 无错误。
-
-- [ ] **Step 3: 运行 next build（快速 smoke test）**
-
-Run: `cd /Users/leon/fund-agent/frontend && pnpm build 2>&1 | tail -30`
-Expected: 编译成功，无 TS/lint 错误。
-
-- [ ] **Step 4: 提交**
-
+Run:
 ```bash
-cd /Users/leon/fund-agent && git add frontend/app/market/page.tsx
-git commit -m "feat(market): restructure layout (hero → evidence → sectors → overseas+ann → themes)"
+cd /Users/leon/fund-agent/frontend && pnpm exec tsc --noEmit && pnpm build 2>&1 | tail -30
 ```
+
+Expected: 编译成功，无 TS / lint 错误。
 
 ---
 
-## Task 9: 浏览器目视检查 + 微调
+## Task 13: 全量回归（reviewer 检查点）
 
-**Files:**
-- 无（视觉微调）
-- 用 git 直接 amend 或独立 commit
+**Files:** 无改动
 
-- [ ] **Step 1: 启动 dev 服务器**
+- [ ] **Step 1: 后端全量测试**
+
+Run: `cd /Users/leon/fund-agent && python -m pytest backend/tests -q`
+Expected: 所有既有 + 新增测试全过。
+
+- [ ] **Step 2: 前端 typecheck + build**
+
+Run:
+```bash
+cd /Users/leon/fund-agent/frontend && pnpm exec tsc --noEmit && pnpm build 2>&1 | tail -30
+```
+
+Expected: 成功。
+
+- [ ] **Step 3: 启动 dev server，目视检查**
 
 ```bash
 cd /Users/leon/fund-agent/frontend && pnpm dev
 ```
 
-访问 `http://localhost:3000/market`。
-
-- [ ] **Step 2: 检查清单**
-
-- [ ] Hero 区 4 个核心指数卡正常显示（即使没 sparkline 数据也无报错）
+访问 `http://localhost:3000/market`，检查清单：
+- [ ] Hero 区 4 个核心指数卡含真实 sparkline（如果数据已采集）
 - [ ] 市场宽度条按上下家数比例显示
-- [ ] 证据面板 6 个 category 的 chips + 列表正常
-- [ ] 板块 tab 切换可点击，行业/概念各自数据
-- [ ] 板块行 sparkline 倾斜方向（正→红、负→绿）
+- [ ] 证据面板分类 chips 正常 + 相对时间显示
+- [ ] 板块 tab 切换可点击
+- [ ] 板块行 sparkline 显示真实曲线（如果 history 已采集）
 - [ ] 外围市场 + 公告 横向并排
 - [ ] 题材卡片正常
 - [ ] 切换"今日/昨日"无控制台报错
 
-- [ ] **Step 3: 修复发现的小问题（commit）**
+- [ ] **Step 4: 把 `git status` / `git diff --stat` 报告给 reviewer**
 
-针对目视检查中发现的样式/布局小问题，修改后：
-
+执行:
 ```bash
-cd /Users/leon/fund-agent && git add -A && git commit -m "style(market): visual polish from manual QA"
+cd /Users/leon/fund-agent && git status && echo "---" && git diff --stat
 ```
+
+把输出贴给 reviewer 等待确认。
 
 ---
 
 ## 验收标准
 
-1. **TypeScript 编译**：`pnpm exec tsc --noEmit` 无新增错误。
-2. **build 通过**：`pnpm build` 成功。
-3. **5 区顺序**：Hero → 证据 → 板块 → 外围+公告 → 题材。
-4. **风格统一**：所有卡片用 `rounded-xl border border-gray-200 bg-white shadow-sm`；空/错/加载态用 `StateBlock`。
-5. **中国 A 股配色**：所有涨跌处仍为红涨绿跌。
-6. **Sparkline 已添加**：
-   - `MarketIndexCard`（条件渲染，等待指数历史 API）
-   - `SectorTabbedTable` 行内（用 `barToFakeSparkline` 占位）
-7. **不破坏 API/数据流**：后端、React Query hooks、`MarketSnapshot` 类型未变。
+1. 后端 `pytest backend/tests -q` 全过
+2. 前端 `pnpm exec tsc --noEmit && pnpm build` 成功
+3. 5 区顺序：Hero → 证据 → 板块 → 外围+公告 → 题材
+4. Sparkline 接入**真数据**（指数近 30 日收盘 / 板块近 10 日涨跌幅）
+5. 无历史数据时 sparkline 不渲染（不显示假线）
+6. 视觉统一：所有卡片用 `rounded-xl border border-gray-200 bg-white shadow-sm`；空/错/加载态用 `StateBlock`
+7. 中国 A 股配色保留：红涨绿跌
+8. 不引入新依赖
+9. `MarketSnapshot` 现有字段完全保留；`history` 仅为 optional
 
 ---
 
 ## 不在本次范围（明确 YAGNI）
 
-- 不实现指数历史 sparkline 真实数据接入（API 暂无该字段）
-- 不改 AppShell、navigation、字体、theme
-- 不加新依赖
-- 不重构 React Query 层、不改后端
+- 不改后端 scheduler、数据库迁移工具
+- 不改 AppShell / navigation / 主题
 - 不做暗色模式
-- 不动板块 tab 的键盘快捷键 / 折叠 / 排序交互
-- 不改 nav 中 `/market` 链接
+- 不做板块 tab 键盘快捷键
+- 不动 `/api/market/series` 等新接口（history 直接注入 snapshot payload）
+- 不重构 React Query 层
