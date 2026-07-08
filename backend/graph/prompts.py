@@ -174,12 +174,21 @@ $snapshot_json 中包含:
 - sector_snapshot: 行业板块涨跌（已有，简写版）
 - watchlist_changes: 自选基金各周期收益率 [{"fund_code": 代码, "fund_name": 名称, "period_returns": {"1d": 近1日, "1w": 近1周, "1m": 近1月}}, ...]
 
-evidence / 数据质量字段（Wave 1）：
-- evidence (list): 当日 market_evidence 证据列表, 每条含 {id, trade_date, category, title, summary, source, source_url, published_at, reliability}
-- evidence_by_category (dict): 按 category 分组的 evidence, 当前可能为空（本地证据不足）
+## 证据数据（财联社快讯）
+
+$evidence_json 中包含当日从各来源采集的市场证据，每条格式为:
+{id, trade_date, category, title, summary, source, source_url, published_at, reliability}
+
+categories 包括: policy（政策）、announcement（公告）、macro（宏观）等。
+证据是简报生成的重要参考——"操作观察"和"风险提示"段应直接引用证据内容，包括其 title / summary / source_url。
+
+## 数据质量元数据（供参照，不得写入正文）
+
 - data_quality: complete / partial / market_only / failed
 - confidence: high / medium / low
 - missing_data: 当前缺失的数据维度列表（与 evidence 维度对应）
+
+简报中"操作观察"和"风险提示"段，如涉及政策/公告/宏观原因，**必须**只在证据数据中存在该证据时才能陈述；
 
 简报中"操作观察"和"风险提示"段,如涉及政策/公告/宏观原因,**必须**只在 evidence 列表中存在该证据时才能陈述;
 evidence 为空时使用"本地暂无政策/公告/宏观证据,以上仅为板块涨跌事实"的描述,

@@ -298,8 +298,12 @@ def _safe_get(d: Any, key: str, default=None) -> Any:
 # 简报合成
 # ---------------------------------------------------------------------------
 
-def compose_briefing(snapshot: dict) -> dict:
-    """调用 DeepSeek 把 snapshot 合成 markdown + sections。
+def compose_briefing(snapshot: dict, evidence: list[dict] | None = None) -> dict:
+    """调用 DeepSeek 把 snapshot + evidence 合成 markdown + sections。
+
+    Args:
+        snapshot: 市场快照数据
+        evidence: 当日证据列表，将被拼入 prompt 供 LLM 引用
 
     Returns:
         dict，含 keys: markdown, sections, warnings, llm_model, prompt_used_chars
@@ -308,9 +312,12 @@ def compose_briefing(snapshot: dict) -> dict:
 
     warnings: list[str] = []
     snapshot_json = json.dumps(snapshot, ensure_ascii=False, indent=2)
+    evidence_json = json.dumps(evidence or [], ensure_ascii=False, indent=2)
     # 用 SafeFormatter 防止 JSON 中的 {key} 被二次解析为占位符
     from string import Template
-    safe_prompt = Template(BRIEFING_PROMPT_TEMPLATE).substitute(snapshot_json=snapshot_json)
+    safe_prompt = Template(BRIEFING_PROMPT_TEMPLATE).substitute(
+        snapshot_json=snapshot_json, evidence_json=evidence_json
+    )
     prompt = safe_prompt  # noqa: F841
 
     # 内部 lazy import 避免循环: backend.services.briefing_service ← market_tools ← fund_tools
@@ -436,7 +443,7 @@ def run_daily_briefing(*, trigger: str = "scheduled", session=None) -> dict:
     # compose
     if snapshot.get("watchlist_changes") or snapshot.get("market_snapshot"):
         try:
-            compose_result = compose_briefing(snapshot)
+            compose_result = compose_briefing(snapshot, evidence=evidence_rows)
             succeeded = 1
         except Exception as exc:  # noqa: BLE001
             failures.append({"stage": "llm", "message": str(exc)})

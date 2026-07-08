@@ -519,6 +519,56 @@ class TestComposeBriefing:
             "wrapped_json" in w or "wrapped" in w for w in result["warnings"]
         ), f"warnings 应记录 wrapped_json fallback, 实际: {result['warnings']}"
 
+    def test_compose_briefing_passes_evidence_to_prompt(self):
+        """evidence 参数应被拼入 prompt,LLM 可引用财联社快讯内容。"""
+        from backend.services import briefing_service
+        from langchain_core.messages import AIMessage
+
+        evidence = [
+            {
+                "id": 1,
+                "trade_date": "2026-07-08",
+                "category": "policy",
+                "title": "央行降准0.25个百分点",
+                "summary": "央行宣布下调存款准备金率0.25个百分点",
+                "source": "财联社",
+                "source_url": "https://example.com/news/1",
+                "published_at": "2026-07-08T09:30:00",
+                "reliability": 0.9,
+            },
+            {
+                "id": 2,
+                "trade_date": "2026-07-08",
+                "category": "announcement",
+                "title": "宁德时代发布超充电池",
+                "summary": "宁德时代发布4C超充电池新品",
+                "source": "财联社",
+                "source_url": "https://example.com/news/2",
+                "published_at": "2026-07-08T10:00:00",
+                "reliability": 0.85,
+            },
+        ]
+        prompt_captured = []
+
+        class FakeModel:
+            def invoke(self, prompt):
+                prompt_captured.append(prompt)
+                return AIMessage(content='{"markdown": "test", "sections": {}}')
+
+        with patch("backend.graph.model.build_model", return_value=FakeModel()):
+            briefing_service.compose_briefing(
+                {"market_snapshot": []},
+                evidence=evidence,
+            )
+
+        assert len(prompt_captured) == 1, "应恰好调用一次 LLM"
+        prompt_text = prompt_captured[0]
+        assert "央行降准0.25个百分点" in prompt_text, "evidence.title 应出现在 prompt 中"
+        assert "财联社" in prompt_text, "evidence.source 应出现在 prompt 中"
+        assert "test_compose_briefing_passes_evidence_to_prompt" not in prompt_text, (
+            "测试函数名不应出现在 prompt 中"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Task 4: run_daily_briefing
@@ -552,7 +602,7 @@ class TestRunDailyBriefing:
         def mock_collect(**_kwargs):
             return snapshot
 
-        def mock_compose(snap):
+        def mock_compose(snap, evidence=None):
             assert snap == snapshot
             return compose_result
 
@@ -592,7 +642,7 @@ class TestRunDailyBriefing:
         def mock_collect(**_kwargs):
             return snap_v1
 
-        def mock_compose(snap):
+        def mock_compose(snap, evidence=None):
             return comp_v1
 
         briefing_service.reset_for_tests()
@@ -603,7 +653,7 @@ class TestRunDailyBriefing:
 
         time.sleep(0.01)  # 确保 updated_at 能区分
 
-        def mock_compose_v2(snap):
+        def mock_compose_v2(snap, evidence=None):
             return comp_v2
 
         with patch.object(briefing_service, "collect_watchlist_snapshot", mock_collect), \
@@ -626,7 +676,7 @@ class TestRunDailyBriefing:
                 "collect_meta": {},
             }
 
-        def mock_compose(snap):
+        def mock_compose(snap, evidence=None):
             return {"markdown": "x", "sections": {}, "warnings": [], "llm_model": "test"}
 
         with patch.object(briefing_service, "collect_watchlist_snapshot", mock_collect), \
@@ -655,7 +705,7 @@ class TestRunDailyBriefing:
                 "collect_meta": {},
             }
 
-        def mock_compose(snap):
+        def mock_compose(snap, evidence=None):
             return {"markdown": "ok", "sections": {}, "warnings": [], "llm_model": "test"}
 
         briefing_service.reset_for_tests()
