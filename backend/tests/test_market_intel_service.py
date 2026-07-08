@@ -191,3 +191,62 @@ def test_collect_market_intel_uses_serial_executor():
         f"collect_market_intel ThreadPoolExecutor max_workers={found_workers}, "
         f"必须全为 1 才能防 libmini_racer race。"
     )
+
+
+def test_refresh_api_rejects_historical_date():
+    """API 守卫: refresh 传历史日(date < today)必须 400 拒绝。
+
+    akshare 的涨跌家数/板块接口只返回最新交易日, 抓历史日会把今天的数据写进
+    历史行, 覆盖当时的真实数据。守护: refresh_market 路由拒绝 date < today。
+    """
+    from fastapi.testclient import TestClient
+    from backend.api.app import app
+    from datetime import date, timedelta
+
+    client = TestClient(app)
+    yesterday = (date.today() - timedelta(days=1)).isoformat()
+
+    r = client.post(
+        f"/api/market/refresh?date={yesterday}",
+        headers={"X-Local-Trigger": "1"},
+    )
+    assert r.status_code == 400, f"expected 400, got {r.status_code}: {r.text}"
+    detail = r.json().get("detail", "")
+    assert "historical" in detail.lower() or "akshare" in detail.lower(), detail
+
+
+def test_refresh_api_allows_today():
+    """API 守卫: refresh 传今天/不传 必须通过(向后兼容)。"""
+    from fastapi.testclient import TestClient
+    from backend.api.app import app
+    from datetime import date
+
+    client = TestClient(app)
+    today = date.today().isoformat()
+
+    # 今天
+    r1 = client.post(
+        f"/api/market/refresh?date={today}",
+        headers={"X-Local-Trigger": "1"},
+    )
+    assert r1.status_code == 200, f"today: {r1.status_code} {r1.text}"
+
+    # 不传
+    r2 = client.post(
+        "/api/market/refresh",
+        headers={"X-Local-Trigger": "1"},
+    )
+    assert r2.status_code == 200, f"none: {r2.status_code} {r2.text}"
+
+
+def test_refresh_api_rejects_invalid_date_format():
+    """API 守卫: date 解析失败 → 400 而非 500(已存在;回归保护)。"""
+    from fastapi.testclient import TestClient
+    from backend.api.app import app
+
+    client = TestClient(app)
+    r = client.post(
+        "/api/market/refresh?date=not-a-date",
+        headers={"X-Local-Trigger": "1"},
+    )
+    assert r.status_code == 400, f"expected 400, got {r.status_code}: {r.text}"

@@ -87,6 +87,16 @@ export function resolveMarketDate(opt: string, now: Date = new Date()): string {
   return formatShanghaiDate(target);
 }
 
+/** 当前本地日历日(Asia/Shanghai),格式 YYYY-MM-DD。 */
+export function todayShanghai(now: Date = new Date()): string {
+  return formatShanghaiDate(now);
+}
+
+/** 给定 YYYY-MM-DD 是否为今天。 */
+export function isMarketDateToday(date: string, now: Date = new Date()): boolean {
+  return date === todayShanghai(now);
+}
+
 export function useMarketSnapshot(date: string, type: string) {
   return useQuery<MarketSnapshot>({
     queryKey: ["market", "snapshot", date, type],

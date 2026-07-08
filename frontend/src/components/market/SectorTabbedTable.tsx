@@ -9,7 +9,7 @@ import {
   TrendingDown,
   TrendingUp,
 } from "lucide-react";
-import { MarketSnapshot, useRefreshMarket } from "@/lib/market";
+import { MarketSnapshot, useRefreshMarket, isMarketDateToday } from "@/lib/market";
 import { Sparkline } from "./Sparkline";
 import { trendTextClass, formatPctWithSign } from "@/lib/market-format";
 import { cn } from "@/lib/cn";
@@ -69,9 +69,9 @@ export function SectorTabbedTable({ snap }: { snap: MarketSnapshot }) {
         <div className="ml-auto shrink-0">
           <button
             onClick={() => refresh.mutate()}
-            disabled={refresh.isPending}
-            className="inline-flex items-center gap-1.5 rounded-md border border-gray-200 bg-white px-2.5 py-1 text-xs font-medium text-gray-600 transition hover:bg-gray-50 disabled:opacity-50"
-            title="重新抓取外网板块数据"
+            disabled={refresh.isPending || !isMarketDateToday(snap.trade_date)}
+            className="inline-flex items-center gap-1.5 rounded-md border border-gray-200 bg-white px-2.5 py-1 text-xs font-medium text-gray-600 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+            title={isMarketDateToday(snap.trade_date) ? "重新抓取外网板块数据" : "历史日不支持刷新,只能抓今日数据"}
           >
             <RefreshCw className={cn("h-3 w-3", refresh.isPending && "animate-spin")} />
             {refresh.isPending ? "抓取中…" : "重新抓取"}

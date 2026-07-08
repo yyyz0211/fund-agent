@@ -1,6 +1,6 @@
 "use client";
 import { useState } from "react";
-import { resolveMarketDate, useMarketSnapshot, useMarketEvidence } from "@/lib/market";
+import { resolveMarketDate, isMarketDateToday, useMarketSnapshot, useMarketEvidence } from "@/lib/market";
 import { MarketHero } from "@/components/market/MarketHero";
 import { MarketEvidencePanel } from "@/components/market/MarketEvidencePanel";
 import { SectorTabbedTable } from "@/components/market/SectorTabbedTable";
@@ -55,7 +55,7 @@ export default function MarketPage() {
                 </button>
               ))}
             </div>
-            <SnapshotRefreshButton date={date} />
+            <SnapshotRefreshButton date={date} canRefresh={isMarketDateToday(date)} />
           </div>
         </div>
       </div>

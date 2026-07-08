@@ -78,11 +78,29 @@ def refresh_market(
 ):
     """手动触发市场情报采集（异步）。
 
-    `date` 用于从 UI 选"昨日"等历史日期时回填该日数据。
-    不传/解析失败 = 抓今天（向后兼容）。
+    `date` 默认 = 今天(向后兼容)。
+    **历史日刷新被拒绝**: akshare 的"涨跌家数/板块涨跌幅"接口是当日实时接口,
+    没有"指定交易日"参数。强制采集会把今天的数据写进历史日行, 覆盖当时的真实数据。
+    如需回填历史日, 应在当日采集时完成, 事后只能从备份恢复。
     """
     if _trigger is None:
         raise HTTPException(status_code=403, detail="Requires X-Local-Trigger header")
+    from datetime import date as _date
+    if date:
+        try:
+            td = _date.fromisoformat(date)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid date format: {date!r}")
+        today = _date.today()
+        if td < today:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Cannot refresh historical date {td.isoformat()}: "
+                    f"akshare breadth/sector APIs only return latest trading day, "
+                    f"refreshing would overwrite {td.isoformat()} with today's data."
+                ),
+            )
     return market_intel_service.refresh_market_intel_async(trigger="manual", target_date=date)
 
 
