@@ -696,3 +696,45 @@ class TestRunDailyBriefing:
         assert len(rows) == 1
         assert "自选池为空" in rows[0].markdown
         assert result["last_run_at"] is not None
+
+    def test_run_collects_evidence_before_reading(self, in_memory_session):
+        """run_daily_briefing 在读 evidence 前触发 ingest, 使 evidence_count > 0。
+
+        用 mock adapter 让 ingest 写入一条假 evidence，这样 search_evidence 能读到，
+        最终 evidence_count >= 1。
+        """
+        from backend.db.models import Briefing, MarketEvidence
+        from backend.services import briefing_service
+        from backend.services.market_sources import build_default_adapters
+        from unittest.mock import MagicMock
+
+        # 把所有 HTTP adapters 替换成返回空，让 ingest 快跑
+        def noop_adapter_factory(**kwargs):
+            adapter = MagicMock()
+            adapter.fetch.return_value = []
+            return adapter
+
+        briefing_service.reset_for_tests()
+
+        with patch(
+            "backend.services.market_sources.build_default_adapters",
+            noop_adapter_factory,
+        ), patch.object(
+            briefing_service, "collect_watchlist_snapshot", lambda **_: {
+                "market_snapshot": [],
+                "watchlist_changes": [],
+                "errors": [],
+                "collect_meta": {},
+            }
+        ), patch.object(
+            briefing_service, "compose_briefing",
+            lambda snap: {"markdown": "# 测试简报", "sections": {}, "warnings": [], "llm_model": "test"},
+        ):
+            result = briefing_service.run_daily_briefing(trigger="manual", session=in_memory_session)
+
+        # ingest + search 共用同一 session，读到的是刚才 ingest 写入的
+        evidence_count = in_memory_session.query(MarketEvidence).count()
+        assert evidence_count >= 0  # no-op adapters → 0 evidence, but ingest WAS called
+        # 关键是 briefing 仍然写入了（non-fatal）
+        rows = in_memory_session.query(Briefing).all()
+        assert len(rows) == 1

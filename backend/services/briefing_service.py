@@ -380,20 +380,38 @@ def run_daily_briefing(*, trigger: str = "scheduled", session=None) -> dict:
     """
     from backend.db.repository import upsert_briefing
 
+    # 提前创建 session 让 ingest 和 search 共用同一事务上下文
+    evidence_owns = session is None
+    evidence_session = session or get_session()
+    today = _today()
+
     snapshot: dict = {}
     compose_result: dict = {}
     failures: list[dict] = []
     succeeded = 0
     failed = 0
 
+    # ingest evidence (collect from all sources including CLS) before reading
+    try:
+        market_evidence_service.collect_and_run_for_brief_type(
+            brief_type="post_market", trade_date=today, sector_snapshot=None,
+            session=evidence_session,
+        )
+    except Exception:  # noqa: BLE001
+        pass  # ingestion failures are non-fatal; proceed with whatever is in DB
+
     # collect evidence
     evidence_rows: list[dict] = []
     try:
         evidence_rows = market_evidence_service.search_evidence(
-            trade_date=today, limit=20,
+            trade_date=today, limit=20, session=evidence_session,
         )
     except Exception:
         evidence_rows = []
+
+    # close evidence session (only if we own it)
+    if evidence_owns:
+        evidence_session.close()
 
     # collect
     try:
