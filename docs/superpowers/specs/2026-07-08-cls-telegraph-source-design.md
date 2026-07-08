@@ -73,21 +73,29 @@
 
 新增模块建议：
 
-- `backend/services/cls_client.py`
-  - `sign_params(params: dict) -> str`
-  - `fetch_roll_list(category: str, limit: int, last_time: int | None = None) -> list[dict]`
-  - `search_telegraph(keyword: str, category: str = "", limit: int = 10) -> list[dict]`
-  - `normalize_telegraph_item(item: dict, category: str | None = None) -> dict | None`
-- `backend/services/market_sources/cls.py`
-  - `ClsTelegraphAdapter`
-- `backend/tools/market_tools.py`
-  - 新增 `search_cls_telegraph` tool，供 QA 主动实时查询财联社。
-- `backend/config/settings.py`
-  - 新增 CLS 配置项。
+文件组织（遵循现有代码风格）：
+
+```
+backend/services/
+├── cls_telegraph_client.py      # 协议客户端
+│   ├── sign_params(params: dict) -> str
+│   ├── fetch_roll_list(category: str, limit: int, last_time: int | None = None) -> list[dict]
+│   ├── search_telegraph(keyword: str, category: str = "", limit: int = 10) -> list[dict]
+│   └── normalize_telegraph_item(item: dict, category: str | None = None) -> dict | None
+
+backend/services/market_sources/
+├── cls_telegraph.py             # ClsTelegraphAdapter
+
+backend/tools/market_tools.py    # 新增 search_cls_telegraph tool
+
+backend/config/settings.py        # 新增 CLS 配置项
+```
+
+> 注意：`cls_client.py` 命名过于宽泛，使用 `cls_telegraph_client.py` 更明确。`ClsTelegraphAdapter` 与 `PolicyPageAdapter`、`FredSeriesAdapter` 等命名风格一致。
 
 接入点：
 
-- `build_default_adapters(..., brief_type="post_market")` 在配置启用时追加 `ClsTelegraphAdapter`。
+- `build_default_adapters(..., brief_type="post_market")` 在 `CLS_ENABLED=true` 时追加 `ClsTelegraphAdapter`。
 - `pre_market` 不默认接入财联社，避免盘前噪音过多。
 - 现有 `post_market_evidence` cron 复用，不新增 cron。
 
@@ -110,7 +118,7 @@ APScheduler post_market_evidence
 ```text
 LangGraph QA
   -> search_cls_telegraph tool
-  -> cls_client.search_telegraph
+  -> cls_telegraph_client.search_telegraph
   -> normalized items
   -> QA answer with source_url
 ```
@@ -188,7 +196,7 @@ LangGraph QA
 - `source_url`: `https://www.cls.cn/detail/{id}`
 - `title`: 优先 `title`，为空时从 `brief` 或 `content` 截取前 80 字。
 - `summary`: 清洗 HTML 后的 `brief` 或 `content`，截断为短摘要。
-- `published_at`: `ctime` 转 `YYYY-MM-DD HH:mm:ss`。
+- `published_at`: `ctime` 转 `YYYY-MM-DD HH:mm:ss`。**注意**：财联社接口返回的 `ctime` 可能是 Unix 时间戳（秒或毫秒），客户端需要在 `normalize_telegraph_item` 中做时间戳检测与转换；若是 ISO 8601 字符串则直接解析。转换失败时 fallback 为当前采集时间。
 - `reliability`: `wire`
 - `category`: `news`
 
@@ -218,6 +226,8 @@ LangGraph QA
 - 搜索返回里的 `<em>` 高亮标签要清洗。
 - 回答中必须带 `source_url`。
 
+> 依赖：`backend/requirements.txt` 中已有 `selectolax>=0.3.21`（用于 HTML 解析）。客户端在清洗 `brief`/`content` 中的 HTML 标签时使用 `selectolax` 的 HTML parser；具体 API 以当前安装版本为准。若财联社返回纯 JSON 则无需 HTML 解析。
+
 ## 10. 配置
 
 新增配置项：
@@ -237,6 +247,8 @@ LangGraph QA
 - 每类最多 10 条。
 - 单次请求 5 秒超时。
 - 配置关闭时，不注册 adapter，不暴露实时搜索结果。
+
+> `.env.example` 同步更新：参考上述配置项添加对应的环境变量模板（`CLS_ENABLED`、`CLS_SEARCH_ENABLED`、`CLS_TIMEOUT_SECONDS`、`CLS_CATEGORIES`、`CLS_PER_CATEGORY_LIMIT`、`CLS_MAX_SEARCH_LIMIT`）。
 
 ## 11. 错误处理与降级
 
@@ -259,6 +271,21 @@ Adapter：
 - 搜索失败时返回 `items=[]` 和可读错误。
 - QA 可以向用户说明“财联社实时搜索暂不可用”，而不是整轮失败。
 
+## 11a. 日志规范
+
+客户端日志（使用标准库 `logging`）：
+
+- 记录：接口路径、HTTP 方法、category、HTTP 状态码、错误类型。
+- **禁止打印**：`title`、`summary`、全文内容、签名结果、stock_list 详情。
+- 日志级别：`INFO` 记录正常请求；`WARNING` 记录 WAF 触发；`ERROR` 记录网络/解析异常。
+- 参考格式：`"[cls] GET /v1/roll/get_roll_list category=watch status=200 elapsed=2.4s"`。
+
+Adapter 日志：
+
+- 遵循 `market_sources` 现有风格，由 `ingest_market_evidence` 返回 `fetched`、`inserted`、`categories` 和 `errors` 统计；不新增统一 adapter 日志职责。
+- 采集失败时记录 adapter 名称、category 和异常类型，不打印 traceback。
+
+
 ## 12. 性能与限频
 
 实测单次请求：
@@ -278,12 +305,16 @@ Adapter：
 
 如果后续增加盘中提醒，应新增独立 cron，并设置更严格的总量和间隔。
 
+
+> 首次启动行为：`post_market` cron 首次运行时，客户端会采集当天（trade_date = 今天）的所有分类列表。若财联社接口历史数据不全，`published_at` 时间戳在当前交易日之前的记录仍会写入（由 ingestion 层的 `trade_date` 字段覆盖），但不会做大规模回补。盘中重复采集由 upsert 幂等保证不重复。
+
+
 ## 13. QA 行为
 
 现有 `search_market_evidence`：
 
 - 支持 `category="news"`。
-- Prompt 更新为：涉及“新闻、快讯、财联社、市场消息、基金资讯”时优先查 `news` 证据。
+- 在 `backend/graph/prompts.py` 的 `SYSTEM_PROMPT` 中补充：涉及"新闻、快讯、财联社、市场消息、基金资讯"时，优先在 `search_market_evidence` 中查 `category="news"` 证据。
 
 新增 `search_cls_telegraph`：
 
@@ -293,9 +324,12 @@ Adapter：
 
 使用规则：
 
-- 用户问“今天有什么重要市场消息”时，优先查本地 `market_evidence`。
-- 用户明确要求“最新/实时/财联社”时，调用 `search_cls_telegraph`。
+- 用户问"今天有什么重要市场消息"时，优先查本地 `market_evidence(category="news")`。
+- 用户明确要求"最新/实时/财联社"时，调用 `search_cls_telegraph`。
 - 回答不直接复述长文，只总结要点并附来源链接。
+- 避免引用过多快讯导致"交易建议"倾向——prompt 应控制"事实整理"而非"结论推断"。
+
+> Prompt 更新位置：`backend/graph/prompts.py` → `SYSTEM_PROMPT` 第 8 条（工具使用约定）区域。
 
 ## 14. 测试策略
 
