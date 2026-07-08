@@ -69,3 +69,32 @@ def test_ingest_market_evidence_continues_on_adapter_failure(session):
 
     assert result["inserted"] == 0
     assert result["errors"][0]["error"] == "boom"
+
+
+def test_ingest_market_evidence_accepts_cls_news_category(session):
+    from backend.services import market_evidence_ingestion as ing
+
+    row = {
+        "trade_date": "2026-07-08",
+        "brief_type": "post_market",
+        "category": "news",
+        "title": "基金快讯",
+        "summary": "财联社摘要",
+        "symbols": ["基金"],
+        "metrics": {"cls_id": 1, "cls_category": "fund"},
+        "source": "财联社",
+        "source_url": "https://www.cls.cn/detail/1",
+        "published_at": "2026-07-08 11:31:46",
+        "reliability": "wire",
+    }
+
+    result = ing.ingest_market_evidence(
+        trade_date="2026-07-08",
+        brief_type="post_market",
+        adapters=[_Adapter([row]), _Adapter([row])],
+        session=session,
+    )
+
+    assert result["inserted"] == 1
+    assert result["fetched"] == 2
+    assert result["categories"] == {"news": 1}
