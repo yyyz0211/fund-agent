@@ -7,8 +7,12 @@ Wave 1: 新增三个 evidence / briefing 相关工具
 """
 from datetime import datetime
 
+import httpx
+
 from langchain_core.tools import tool
 
+from backend.config.settings import get_settings
+from backend.services import cls_telegraph_client
 from backend.services import market_service as msvc
 from backend.services import market_intel_service
 from backend.services import market_evidence_service
@@ -59,7 +63,7 @@ def search_market_evidence(
 
     Args:
         query: 关键词,匹配 title/summary。空=不限
-        category: policy / announcement / overseas_disclosure / macro / sector。空=不限
+        category: policy / announcement / overseas_disclosure / macro / sector / news。空=不限
         trade_date: YYYY-MM-DD,空=今天
         limit: 最多返回条数,默认 20
 
@@ -88,6 +92,45 @@ def search_market_evidence(
 
 
 @tool
+def search_cls_telegraph(
+    keyword: str = "",
+    category: str = "",
+    limit: int = 10,
+) -> dict:
+    """实时搜索财联社电报。
+
+    Args:
+        keyword: 搜索关键词。空字符串直接返回空结果。
+        category: 财联社分类: fund / watch / announcement / hk_us / red / remind。空=不限
+        limit: 最多返回条数,受 CLS_MAX_SEARCH_LIMIT 限制。
+
+    Returns:
+        {count, items, error}。每条 item 含 title / summary / published_at /
+        source / source_url / symbols / metrics。回答时必须附 source_url。
+    """
+    settings = get_settings()
+    if not settings.cls_search_enabled:
+        return {"count": 0, "items": [], "error": "CLS search disabled"}
+    kw = (keyword or "").strip()
+    if not kw:
+        return {"count": 0, "items": [], "error": ""}
+    effective_limit = max(1, min(int(limit or settings.cls_max_search_limit), settings.cls_max_search_limit))
+    try:
+        with httpx.Client(follow_redirects=True, timeout=settings.cls_timeout_seconds) as client:
+            rows = cls_telegraph_client.search_telegraph(
+                client=client,
+                keyword=kw,
+                category=(category or "").strip(),
+                limit=effective_limit,
+                timeout_seconds=settings.cls_timeout_seconds,
+                app_version=settings.cls_app_version,
+            )
+        return {"count": len(rows), "items": rows, "error": ""}
+    except Exception as exc:  # noqa: BLE001
+        return {"count": 0, "items": [], "error": str(exc)}
+
+
+@tool
 def get_market_briefing(brief_date: str = "") -> dict:
     """读取最新(或指定日期) Briefing markdown + 数据质量。
 
@@ -112,5 +155,6 @@ MARKET_TOOLS = [
     refresh_market,
     get_market_snapshot_auto,
     search_market_evidence,
+    search_cls_telegraph,
     get_market_briefing,
 ]
