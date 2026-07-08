@@ -74,3 +74,102 @@ def test_normalize_telegraph_item_maps_symbols_and_metrics():
     assert row["metrics"]["cls_category"] == "watch"
     assert row["metrics"]["level"] == "B"
     assert row["metrics"]["images"] == ["https://image.cls.cn/a.jpg"]
+
+
+# ---------------------------------------------------------------------------
+# HTTP client tests
+# ---------------------------------------------------------------------------
+
+
+class _Response:
+    def __init__(self, payload, status_code=200):
+        self._payload = payload
+        self.status_code = status_code
+
+    def json(self):
+        return self._payload
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+
+class _Client:
+    def __init__(self, response):
+        self.response = response
+        self.calls = []
+
+    def get(self, url, **kwargs):
+        self.calls.append(("GET", url, kwargs))
+        return self.response
+
+    def post(self, url, **kwargs):
+        self.calls.append(("POST", url, kwargs))
+        return self.response
+
+
+def test_fetch_roll_list_signs_and_normalizes_rows():
+    from backend.services.cls_telegraph_client import fetch_roll_list
+
+    client = _Client(_Response({
+        "errno": 0,
+        "data": {
+            "roll_data": [{
+                "id": 1,
+                "title": "基金快讯",
+                "brief": "内容",
+                "ctime": 1783481506,
+                "subjects": [],
+                "stock_list": [],
+            }]
+        },
+    }))
+
+    rows = fetch_roll_list(client=client, category="fund", limit=5, last_time=1783482113)
+
+    assert len(rows) == 1
+    assert rows[0]["title"] == "基金快讯"
+    method, url, kwargs = client.calls[0]
+    assert method == "GET"
+    assert url == "https://www.cls.cn/v1/roll/get_roll_list"
+    params = kwargs["params"]
+    assert params["app"] == "CailianpressWeb"
+    assert params["os"] == "web"
+    assert params["sv"] == "8.7.9"
+    assert params["category"] == "fund"
+    assert params["rn"] == 5
+    assert params["last_time"] == 1783482113
+    assert "sign" in params
+    assert kwargs["headers"]["Referer"] == "https://www.cls.cn/telegraph"
+
+
+def test_fetch_roll_list_returns_empty_on_bad_response():
+    from backend.services.cls_telegraph_client import fetch_roll_list
+
+    client = _Client(_Response({"errno": "10012", "msg": "签名错误"}))
+
+    assert fetch_roll_list(client=client, category="fund", limit=5) == []
+
+
+def test_search_telegraph_posts_body_and_normalizes_rows():
+    from backend.services.cls_telegraph_client import search_telegraph
+
+    client = _Client(_Response({
+        "list": [{
+            "id": 2,
+            "title": "南方基金 ETF",
+            "content": "基金内容",
+            "ctime": 1783481989,
+        }],
+        "total": 1,
+    }))
+
+    rows = search_telegraph(client=client, keyword="基金", category="fund", limit=10)
+
+    assert rows[0]["title"] == "南方基金 ETF"
+    method, url, kwargs = client.calls[0]
+    assert method == "POST"
+    assert url == "https://www.cls.cn/api/csw"
+    assert kwargs["json"]["keyword"] == "基金"
+    assert kwargs["json"]["category"] == "fund"
+    assert kwargs["params"]["sign"]

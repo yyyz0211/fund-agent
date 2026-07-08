@@ -11,7 +11,7 @@ import html
 import logging
 import re
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Mapping
 
 
 logger = logging.getLogger(__name__)
@@ -158,3 +158,115 @@ def normalize_telegraph_item(
         },
         "raw": dict(item),
     }
+
+
+# ---------------------------------------------------------------------------
+# HTTP client
+# ---------------------------------------------------------------------------
+
+
+def _base_params(*, app_version: str = DEFAULT_APP_VERSION) -> dict[str, Any]:
+    return {"app": DEFAULT_APP, "os": DEFAULT_OS, "sv": app_version}
+
+
+def _signed_params(params: Mapping[str, Any], *, app_version: str) -> dict[str, Any]:
+    out = {**params, **_base_params(app_version=app_version)}
+    out["sign"] = sign_params(out)
+    return out
+
+
+def _elapsed(start: datetime) -> float:
+    return (datetime.now(timezone.utc) - start).total_seconds()
+
+
+def fetch_roll_list(
+    *,
+    client: Any,
+    category: str = "",
+    limit: int = 10,
+    last_time: int | None = None,
+    timeout_seconds: float = 5.0,
+    app_version: str = DEFAULT_APP_VERSION,
+) -> list[dict]:
+    """Fetch one signed CLS roll-list page and return normalized rows."""
+    started = datetime.now(timezone.utc)
+    params: dict[str, Any] = {
+        "refresh_type": 1,
+        "rn": max(1, int(limit)),
+        "last_time": last_time or int(started.timestamp()),
+    }
+    if category:
+        params["category"] = category
+    signed = _signed_params(params, app_version=app_version)
+    try:
+        response = client.get(
+            f"{BASE_URL}/v1/roll/get_roll_list",
+            params=signed,
+            headers=DEFAULT_HEADERS,
+            timeout=timeout_seconds,
+        )
+        status = getattr(response, "status_code", 0)
+        response.raise_for_status()
+        payload = response.json()
+        if payload.get("errno") not in (0, "0", None):
+            logger.warning(
+                "[cls] GET /v1/roll/get_roll_list category=%s status=%s errno=%s elapsed=%.2fs",
+                category, status, payload.get("errno"), _elapsed(started),
+            )
+            return []
+        rows = ((payload.get("data") or {}).get("roll_data")) or []
+        out = [normalize_telegraph_item(row, category=category, now=started) for row in rows]
+        return [row for row in out if row is not None]
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "[cls] GET /v1/roll/get_roll_list category=%s error=%s elapsed=%.2fs",
+            category, type(exc).__name__, _elapsed(started),
+        )
+        return []
+
+
+def search_telegraph(
+    *,
+    client: Any,
+    keyword: str,
+    category: str = "",
+    limit: int = 10,
+    timeout_seconds: float = 5.0,
+    app_version: str = DEFAULT_APP_VERSION,
+) -> list[dict]:
+    """Search CLS telegraph with signed query params and JSON body."""
+    started = datetime.now(timezone.utc)
+    kw = clean_html_text(keyword)
+    if not kw:
+        return []
+    signed = _signed_params({}, app_version=app_version)
+    body = {
+        "lastTime": int(started.timestamp()),
+        "keyword": kw,
+        "category": category or "",
+        **_base_params(app_version=app_version),
+    }
+    try:
+        response = client.post(
+            f"{BASE_URL}/api/csw",
+            params=signed,
+            json=body,
+            headers={**DEFAULT_HEADERS, "Content-Type": "application/json"},
+            timeout=timeout_seconds,
+        )
+        status = getattr(response, "status_code", 0)
+        response.raise_for_status()
+        payload = response.json()
+        rows = payload.get("list") or []
+        out = [normalize_telegraph_item(row, category=category, now=started) for row in rows[:limit]]
+        logger.info(
+            "[cls] POST /api/csw category=%s status=%s count=%s elapsed=%.2fs",
+            category, status, len([row for row in out if row is not None]), _elapsed(started),
+        )
+        return [row for row in out if row is not None]
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "[cls] POST /api/csw category=%s error=%s elapsed=%.2fs",
+            category, type(exc).__name__, _elapsed(started),
+        )
+        return []
