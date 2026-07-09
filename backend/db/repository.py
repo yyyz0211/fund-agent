@@ -11,10 +11,12 @@ service 既可以传入测试用的内存 Session,也可以传通过
 - 写路径默认在内部自己 `session.commit()`,调用方不要重复提交;少数需要
   原子组合的 service 会显式传 `commit=False` 并自行控制事务。
 """
-from sqlalchemy import and_, delete, func, select, update
+from sqlalchemy import Integer, and_, cast, delete, func, or_, select, update
 
 from backend.db.models import (
     Briefing,
+    ClsTelegraphItem,
+    ClsTelegraphSyncState,
     Fund,
     FundInvestmentPlan,
     FundNav,
@@ -784,9 +786,14 @@ def upsert_market_evidence(s, row: dict) -> bool:
     }
     existing = s.scalar(
         select(MarketEvidence).where(
-            MarketEvidence.trade_date == payload["trade_date"],
-            MarketEvidence.brief_type == payload["brief_type"],
-            MarketEvidence.source_url == payload["source_url"],
+            or_(
+                and_(
+                    MarketEvidence.trade_date == payload["trade_date"],
+                    MarketEvidence.brief_type == payload["brief_type"],
+                    MarketEvidence.source_url == payload["source_url"],
+                ),
+                MarketEvidence.raw_hash == payload["raw_hash"],
+            )
         )
     )
     if existing is not None:
@@ -821,3 +828,159 @@ def search_market_evidence(
     stmt = stmt.order_by(MarketEvidence.id.desc()).limit(max(1, int(limit)))
     rows = s.scalars(stmt).all()
     return [_evidence_to_dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# ClsTelegraphItem / ClsTelegraphSyncState
+# ---------------------------------------------------------------------------
+
+def _json_loads(value, fallback):
+    import json as _json
+    if not value:
+        return fallback
+    try:
+        parsed = _json.loads(value)
+    except (TypeError, ValueError):
+        return fallback
+    return parsed
+
+
+def _cls_telegraph_to_dict(row: ClsTelegraphItem) -> dict:
+    """ClsTelegraphItem 的可序列化投影。"""
+    subjects = _json_loads(row.subjects_json, [])
+    symbols = _json_loads(row.symbols_json, [])
+    raw_json = _json_loads(row.raw_json, {})
+    return {
+        "id": row.id,
+        "cls_id": row.cls_id,
+        "title": row.title,
+        "brief": row.brief,
+        "content": row.content,
+        "category": row.category,
+        "subjects": subjects if isinstance(subjects, list) else [],
+        "symbols": symbols if isinstance(symbols, list) else [],
+        "source_url": row.source_url,
+        "ctime": row.ctime,
+        "published_at": row.published_at,
+        "fetched_at": row.fetched_at.isoformat() if row.fetched_at else None,
+        "raw_json": raw_json if isinstance(raw_json, dict) else {},
+    }
+
+
+def upsert_cls_telegraph_item(s, row: dict) -> bool:
+    """按 `cls_id` upsert 财联社电报。
+
+    返回 True 表示新建,False 表示更新已有行。
+    """
+    import json as _json
+    from datetime import datetime
+
+    cls_id = str(row["cls_id"])
+    subjects = row.get("subjects") or []
+    symbols = row.get("symbols") or []
+    raw_json = row.get("raw_json") or {}
+    now = datetime.utcnow()
+    payload = {
+        "cls_id": cls_id,
+        "title": row["title"],
+        "brief": row.get("brief"),
+        "content": row.get("content"),
+        "category": row.get("category") or None,
+        "subjects_json": _json.dumps(subjects, ensure_ascii=False) if subjects else None,
+        "symbols_json": _json.dumps(symbols, ensure_ascii=False) if symbols else None,
+        "source_url": row["source_url"],
+        "ctime": int(row["ctime"]) if row.get("ctime") is not None else None,
+        "published_at": row.get("published_at"),
+        "raw_json": _json.dumps(raw_json, ensure_ascii=False) if raw_json else None,
+        "fetched_at": now,
+        "updated_at": now,
+    }
+    existing = s.scalar(select(ClsTelegraphItem).where(ClsTelegraphItem.cls_id == cls_id))
+    if existing is None:
+        s.add(ClsTelegraphItem(**payload, created_at=now))
+        s.flush()
+        return True
+    for key, value in payload.items():
+        setattr(existing, key, value)
+    s.flush()
+    return False
+
+
+def search_cls_telegraph_items(
+    s,
+    *,
+    limit: int = 50,
+    category: str | None = None,
+    since_id: str | None = None,
+    keyword: str | None = None,
+) -> list[dict]:
+    """查询财联社电报,默认按 `ctime/id` 新到旧排序。"""
+    stmt = select(ClsTelegraphItem)
+    if category:
+        stmt = stmt.where(ClsTelegraphItem.category == category)
+    if since_id:
+        try:
+            stmt = stmt.where(cast(ClsTelegraphItem.cls_id, Integer) > int(since_id))
+        except (TypeError, ValueError):
+            stmt = stmt.where(ClsTelegraphItem.cls_id > str(since_id))
+    if keyword:
+        like = f"%{keyword}%"
+        stmt = stmt.where(
+            or_(
+                ClsTelegraphItem.title.like(like),
+                ClsTelegraphItem.brief.like(like),
+                ClsTelegraphItem.content.like(like),
+            )
+        )
+    stmt = stmt.order_by(
+        ClsTelegraphItem.ctime.desc().nullslast(),
+        ClsTelegraphItem.id.desc(),
+    ).limit(max(1, min(200, int(limit))))
+    rows = s.scalars(stmt).all()
+    return [_cls_telegraph_to_dict(row) for row in rows]
+
+
+def _cls_state_to_dict(row: ClsTelegraphSyncState | None) -> dict:
+    if row is None:
+        return {
+            "last_seen_ctime": None,
+            "last_seen_cls_id": None,
+            "last_success_at": None,
+            "last_error": None,
+        }
+    return {
+        "last_seen_ctime": row.last_seen_ctime,
+        "last_seen_cls_id": row.last_seen_cls_id,
+        "last_success_at": row.last_success_at,
+        "last_error": row.last_error,
+    }
+
+
+def get_cls_telegraph_sync_state(s) -> dict:
+    """读取财联社电报同步状态。无状态行时返回空状态。"""
+    row = s.get(ClsTelegraphSyncState, "default")
+    return _cls_state_to_dict(row)
+
+
+def update_cls_telegraph_sync_state(
+    s,
+    *,
+    last_seen_ctime: int | None = None,
+    last_seen_cls_id: str | None = None,
+    last_success_at: str | None = None,
+    last_error: str | None = None,
+) -> dict:
+    """更新同步状态；传 None 的断点字段会保留原值。"""
+    row = s.get(ClsTelegraphSyncState, "default")
+    if row is None:
+        row = ClsTelegraphSyncState(id="default")
+        s.add(row)
+    if last_seen_ctime is not None:
+        row.last_seen_ctime = int(last_seen_ctime)
+    if last_seen_cls_id is not None:
+        row.last_seen_cls_id = str(last_seen_cls_id)
+    if last_success_at is not None:
+        row.last_success_at = last_success_at
+    row.last_error = last_error
+    s.flush()
+    return _cls_state_to_dict(row)

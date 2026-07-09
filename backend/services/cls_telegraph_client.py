@@ -6,10 +6,13 @@ from __future__ import annotations
 
 import hashlib
 import html
+import json
 import logging
 import re
+import subprocess
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
+from urllib.parse import urlencode
 
 
 logger = logging.getLogger(__name__)
@@ -177,6 +180,45 @@ def _elapsed(start: datetime) -> float:
     return (datetime.now(timezone.utc) - start).total_seconds()
 
 
+def _append_diagnostic(diagnostics: list[dict] | None, *, category: str, error: str) -> None:
+    if diagnostics is not None:
+        diagnostics.append({"category": category, "error": error})
+
+
+def _curl_get_json(
+    *,
+    url: str,
+    params: Mapping[str, Any],
+    headers: Mapping[str, str],
+    timeout_seconds: float,
+) -> dict:
+    """用 curl 作为本地开发环境下 httpx 连接失败时的兜底。
+
+    不走 shell,URL 和 header 均作为 argv 传入,避免命令拼接风险。
+    """
+    full_url = f"{url}?{urlencode(params)}"
+    cmd = [
+        "curl",
+        "-sS",
+        "--fail",
+        "--max-time",
+        str(max(1, int(timeout_seconds))),
+        full_url,
+    ]
+    for key, value in headers.items():
+        cmd.extend(["-H", f"{key}: {value}"])
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=max(2, int(timeout_seconds) + 2),
+    )
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        raise RuntimeError(f"curl exit {result.returncode}: {stderr}")
+    return json.loads(result.stdout)
+
+
 def fetch_roll_list(
     *,
     client: Any,
@@ -185,6 +227,7 @@ def fetch_roll_list(
     last_time: int | None = None,
     timeout_seconds: float = 5.0,
     app_version: str = DEFAULT_APP_VERSION,
+    diagnostics: list[dict] | None = None,
 ) -> list[dict]:
     """Fetch one signed CLS roll-list page and return normalized rows."""
     started = datetime.now(timezone.utc)
@@ -196,6 +239,7 @@ def fetch_roll_list(
     if category:
         params["category"] = category
     signed = _signed_params(params, app_version=app_version)
+    payload: dict | None = None
     try:
         response = client.get(
             f"{BASE_URL}/v1/roll/get_roll_list",
@@ -206,21 +250,41 @@ def fetch_roll_list(
         status = getattr(response, "status_code", 0)
         response.raise_for_status()
         payload = response.json()
-        if payload.get("errno") not in (0, "0", None):
-            logger.warning(
-                "[cls] GET /v1/roll/get_roll_list category=%s status=%s errno=%s elapsed=%.2fs",
-                category, status, payload.get("errno"), _elapsed(started),
+    except Exception as exc:  # noqa: BLE001
+        _append_diagnostic(diagnostics, category=category, error=f"{type(exc).__name__}: {exc}")
+        try:
+            payload = _curl_get_json(
+                url=f"{BASE_URL}/v1/roll/get_roll_list",
+                params=signed,
+                headers=DEFAULT_HEADERS,
+                timeout_seconds=timeout_seconds,
+            )
+        except Exception as curl_exc:  # noqa: BLE001
+            _append_diagnostic(
+                diagnostics,
+                category=category,
+                error=f"curl {type(curl_exc).__name__}: {curl_exc}",
+            )
+            logger.error(
+                "[cls] GET /v1/roll/get_roll_list category=%s error=%s curl_error=%s elapsed=%.2fs",
+                category, type(exc).__name__, type(curl_exc).__name__, _elapsed(started),
             )
             return []
-        rows = ((payload.get("data") or {}).get("roll_data")) or []
-        out = [normalize_telegraph_item(row, category=category, now=started) for row in rows]
-        return [row for row in out if row is not None]
-    except Exception as exc:  # noqa: BLE001
-        logger.error(
-            "[cls] GET /v1/roll/get_roll_list category=%s error=%s elapsed=%.2fs",
-            category, type(exc).__name__, _elapsed(started),
+
+    if payload.get("errno") not in (0, "0", None):
+        _append_diagnostic(
+            diagnostics,
+            category=category,
+            error=f"errno={payload.get('errno')}: {payload.get('msg') or ''}".strip(),
+        )
+        logger.warning(
+            "[cls] GET /v1/roll/get_roll_list category=%s status=%s errno=%s elapsed=%.2fs",
+            category, locals().get("status", 0), payload.get("errno"), _elapsed(started),
         )
         return []
+    rows = ((payload.get("data") or {}).get("roll_data")) or []
+    out = [normalize_telegraph_item(row, category=category, now=started) for row in rows]
+    return [row for row in out if row is not None]
 
 
 def search_telegraph(

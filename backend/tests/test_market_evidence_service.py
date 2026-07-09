@@ -128,3 +128,33 @@ def test_refresh_market_evidence_async_is_single_flight():
         if not [t for t in ex._threads if t.is_alive()]:
             break
         time.sleep(0.05)
+
+
+def test_refresh_market_evidence_status_records_adapter_errors():
+    from backend.services import market_evidence_service as mes
+    from unittest.mock import patch, MagicMock
+
+    fake_dc = MagicMock()
+    fake_dc.fetch_sector_snapshot = MagicMock(return_value=[])
+    brief_type = "post_market_status_test"
+    result = {
+        "inserted": 0,
+        "fetched": 0,
+        "errors": [{"adapter": "财联社", "error": "ConnectError: connect failed"}],
+        "categories": {},
+    }
+
+    with patch.object(mes, "collect_and_run_for_brief_type", return_value=result), \
+         patch.dict("sys.modules", {"backend.services.data_collector": fake_dc}):
+        started = mes.refresh_market_evidence_async(brief_type=brief_type, trigger="manual")
+        assert started["status"] == "started"
+        for _ in range(50):
+            status = mes.get_last_refresh_status(brief_type)
+            if status["status"] != "running":
+                break
+            time.sleep(0.05)
+
+    status = mes.get_last_refresh_status(brief_type)
+    assert status["status"] == "failed"
+    assert status["result"]["errors"][0]["adapter"] == "财联社"
+    assert "connect failed" in status["result"]["errors"][0]["error"]

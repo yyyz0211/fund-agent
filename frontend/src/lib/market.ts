@@ -1,5 +1,10 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import type { EvidenceCategory, MarketEvidenceItem, MarketEvidenceResponse } from "@/types/api";
+import type {
+  EvidenceCategory,
+  MarketEvidenceItem,
+  MarketEvidenceRefreshStatus,
+  MarketEvidenceResponse,
+} from "@/types/api";
 
 export interface MarketBreadth {
   up: number;
@@ -128,6 +133,20 @@ export function useMarketEvidence(date: string, category?: EvidenceCategory, lim
   });
 }
 
+export function useEvidenceRefreshStatus(briefType: string = "post_market") {
+  return useQuery<MarketEvidenceRefreshStatus>({
+    queryKey: ["market", "evidence", "refresh-status", briefType],
+    queryFn: () =>
+      fetch(`/api/market/evidence/refresh/status?brief_type=${encodeURIComponent(briefType)}`).then((r) => {
+        if (!r.ok) throw new Error("failed");
+        return r.json();
+      }),
+    staleTime: 5 * 1000,
+    refetchInterval: 5 * 1000,
+    retry: 1,
+  });
+}
+
 export function useRefreshMarket(date?: string) {
   const qc = useQueryClient();
   return useMutation({
@@ -164,6 +183,48 @@ export function useRefreshMarket(date?: string) {
         }
       }
       qc.invalidateQueries({ queryKey: ["market"] });
+    },
+  });
+}
+
+export function useRefreshEvidence(date: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      fetch(
+        `/api/market/evidence/refresh?brief_type=post_market`,
+        {
+          method: "POST",
+          headers: { "X-Local-Trigger": "1" },
+        },
+      ).then((r) => {
+        if (!r.ok) throw new Error("failed");
+        return r.json();
+      }),
+    // evidence 是后台异步任务 — 后端单飞 + DB 去重保证安全。
+    // 轮询当前 UI 选中的 date 的 evidence 查询, 直到 id 上限变化 / 列表条数
+    // 增加 / 列表内容有变化为止(任一即停), 最多 60s, 间隔 3s。
+    onSuccess: async () => {
+      const startTime = Date.now();
+      const TIMEOUT_MS = 60_000;
+      const POLL_MS = 3_000;
+      const baseKey = ["market", "evidence", date, "", 20] as const;
+      const before = qc.getQueryData<MarketEvidenceResponse>(baseKey);
+      const baseline = JSON.stringify(before?.items ?? before?.groups ?? null);
+      while (Date.now() - startTime < TIMEOUT_MS) {
+        await new Promise((r) => window.setTimeout(r, POLL_MS));
+        try {
+          await qc.refetchQueries({ queryKey: baseKey });
+          await qc.refetchQueries({ queryKey: ["market", "evidence", "refresh-status", "post_market"] });
+          const latest = qc.getQueryData<MarketEvidenceResponse>(baseKey);
+          const cur = JSON.stringify(latest?.items ?? latest?.groups ?? null);
+          if (cur !== baseline) break;
+        } catch {
+          // 单次失败忽略,继续轮询
+        }
+      }
+      qc.invalidateQueries({ queryKey: ["market", "evidence"] });
+      qc.invalidateQueries({ queryKey: ["market", "evidence", "refresh-status"] });
     },
   });
 }

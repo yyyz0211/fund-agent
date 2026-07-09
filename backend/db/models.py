@@ -282,3 +282,45 @@ class MarketEvidence(Base):
     fetched_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class ClsTelegraphItem(Base):
+    """财联社电报全量同步表。
+
+    `market_evidence` 只保存适合面板展示的精选证据；本表保存 roll-list
+    拉到的完整电报记录,以 `cls_id` 做幂等同步键。
+    """
+    __tablename__ = "cls_telegraph_items"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    cls_id: Mapped[str] = mapped_column(String, unique=True, index=True)
+    title: Mapped[str] = mapped_column(String)
+    brief: Mapped[str | None] = mapped_column(String)
+    content: Mapped[str | None] = mapped_column(String)
+    category: Mapped[str | None] = mapped_column(String(64), index=True)
+    subjects_json: Mapped[str | None] = mapped_column(String)
+    symbols_json: Mapped[str | None] = mapped_column(String)
+    source_url: Mapped[str] = mapped_column(String)
+    ctime: Mapped[int | None] = mapped_column(Integer, index=True)
+    published_at: Mapped[str | None] = mapped_column(String, index=True)
+    raw_json: Mapped[str | None] = mapped_column(String)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class ClsTelegraphSyncState(Base):
+    """财联社电报同步状态。
+
+    单行表,默认 `id="default"`。同步失败时只更新 `last_error`,不清空
+    已成功的断点字段。
+    """
+    __tablename__ = "cls_telegraph_sync_state"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default="default")
+    last_seen_ctime: Mapped[int | None] = mapped_column(Integer)
+    last_seen_cls_id: Mapped[str | None] = mapped_column(String)
+    last_success_at: Mapped[str | None] = mapped_column(String)
+    last_error: Mapped[str | None] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())

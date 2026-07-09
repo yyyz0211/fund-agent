@@ -30,6 +30,16 @@ test("market evidence component preserves source links and empty state", async (
   assert.match(component, /暂无可验证证据/);
 });
 
+test("market evidence empty state can show remote refresh failures", async () => {
+  const component = await read("../src/components/market/MarketEvidencePanel.tsx");
+  const marketLib = await read("../src/lib/market.ts");
+
+  assert.match(component, /useEvidenceRefreshStatus/);
+  assert.match(component, /远程证据获取失败/);
+  assert.match(component, /最近一次拉取未写入数据/);
+  assert.match(marketLib, /evidence\/refresh\/status/);
+});
+
 test("market evidence component is a single compact scrollable card", async () => {
   const component = await read("../src/components/market/MarketEvidencePanel.tsx");
 
@@ -89,6 +99,17 @@ test("market evidence rows prioritize visible evidence titles", async () => {
   assert.match(component, /mt-1 flex flex-wrap items-center gap-x-2/);
   assert.doesNotMatch(component, /lg:grid-cols-\[minmax\(0,1fr\)_auto\]/);
   assert.doesNotMatch(component, /truncate text-sm font-medium/);
+});
+
+test("market evidence labels reflect actual source and reliability", async () => {
+  const component = await read("../src/components/market/MarketEvidencePanel.tsx");
+
+  assert.match(component, /function evidenceCategoryLabel/);
+  assert.match(component, /function evidenceSummaryCategoryLabel/);
+  assert.match(component, /财联社电报/);
+  assert.match(component, /媒体源/);
+  assert.doesNotMatch(component, /财联社快讯/);
+  assert.doesNotMatch(component, /聚合/);
 });
 
 test("sector table hides trend column when history is unavailable and uses compact rows", async () => {

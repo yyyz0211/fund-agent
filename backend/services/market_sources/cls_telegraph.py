@@ -35,6 +35,7 @@ class ClsTelegraphAdapter:
         self.per_category_limit = max(1, int(per_category_limit))
         self.timeout_seconds = float(timeout_seconds)
         self.app_version = app_version
+        self.last_errors: list[dict] = []
 
     def _to_evidence(self, row: dict, *, trade_date: str, brief_type: str) -> dict | None:
         if not (row.get("source_url") and row.get("title")):
@@ -64,6 +65,7 @@ class ClsTelegraphAdapter:
         if active_client is None:
             active_client = httpx.Client(follow_redirects=True, timeout=self.timeout_seconds)
         out: list[dict] = []
+        self.last_errors = []
         try:
             for category in self.categories:
                 try:
@@ -73,8 +75,13 @@ class ClsTelegraphAdapter:
                         limit=self.per_category_limit,
                         timeout_seconds=self.timeout_seconds,
                         app_version=self.app_version,
+                        diagnostics=self.last_errors,
                     )
-                except Exception:
+                except Exception as exc:  # noqa: BLE001
+                    self.last_errors.append({
+                        "category": category,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    })
                     continue
                 for row in rows:
                     evidence = self._to_evidence(row, trade_date=trade_date, brief_type=brief_type)

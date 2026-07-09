@@ -48,6 +48,22 @@ export interface MarketEvidenceResponse {
   items?: MarketEvidenceItem[];
 }
 
+export interface MarketEvidenceRefreshStatus {
+  status: "idle" | "running" | "completed" | "partial" | "failed";
+  brief_type: string;
+  job_id?: string;
+  trigger?: string;
+  started_at?: string;
+  finished_at?: string;
+  error?: string;
+  result?: {
+    inserted: number;
+    fetched: number;
+    errors: Array<{ adapter?: string; error: string; details?: Record<string, unknown> }>;
+    categories: Record<string, number>;
+  };
+}
+
 export type InvestmentPlanFrequency = "daily" | "weekly" | "monthly";
 export type InvestmentPlanStatus = "active" | "paused";
 export type PendingBuyStatus = "pending" | "confirmed" | "cancelled";

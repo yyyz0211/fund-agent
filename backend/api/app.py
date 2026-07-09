@@ -14,6 +14,7 @@ from backend.api.routes import announcements as announcements_routes
 from backend.api.routes import portfolio as portfolio_routes
 from backend.api.routes import admin as admin_routes
 from backend.api.routes import briefing as briefing_routes
+from backend.api.routes import cls as cls_routes
 
 app = FastAPI(title="Fund Agent API", version="0.1.0")
 
@@ -72,6 +73,7 @@ def add_routers(app: FastAPI) -> None:
     app.include_router(portfolio_routes.router)
     app.include_router(admin_routes.router)
     app.include_router(briefing_routes.router)
+    app.include_router(cls_routes.router)
 
 
 add_routers(app)

@@ -77,6 +77,10 @@ def test_cls_settings_defaults(monkeypatch):
         "CLS_PER_CATEGORY_LIMIT",
         "CLS_MAX_SEARCH_LIMIT",
         "CLS_APP_VERSION",
+        "CLS_TELEGRAPH_SYNC_ENABLED",
+        "CLS_TELEGRAPH_SYNC_INTERVAL_SECONDS",
+        "CLS_TELEGRAPH_SYNC_PAGE_SIZE",
+        "CLS_TELEGRAPH_SYNC_MAX_PAGES",
     ]:
         monkeypatch.delenv(key, raising=False)
     get_settings.cache_clear()
@@ -88,6 +92,10 @@ def test_cls_settings_defaults(monkeypatch):
     assert s.cls_per_category_limit == 10
     assert s.cls_max_search_limit == 10
     assert s.cls_app_version == "8.7.9"
+    assert s.cls_telegraph_sync_enabled is True
+    assert s.cls_telegraph_sync_interval_seconds == 360
+    assert s.cls_telegraph_sync_page_size == 50
+    assert s.cls_telegraph_sync_max_pages == 3
 
 
 def test_cls_settings_read_env(monkeypatch):
@@ -98,6 +106,10 @@ def test_cls_settings_read_env(monkeypatch):
     monkeypatch.setenv("CLS_PER_CATEGORY_LIMIT", "2")
     monkeypatch.setenv("CLS_MAX_SEARCH_LIMIT", "4")
     monkeypatch.setenv("CLS_APP_VERSION", "9.0.0")
+    monkeypatch.setenv("CLS_TELEGRAPH_SYNC_ENABLED", "false")
+    monkeypatch.setenv("CLS_TELEGRAPH_SYNC_INTERVAL_SECONDS", "30")
+    monkeypatch.setenv("CLS_TELEGRAPH_SYNC_PAGE_SIZE", "25")
+    monkeypatch.setenv("CLS_TELEGRAPH_SYNC_MAX_PAGES", "2")
     get_settings.cache_clear()
     s = get_settings()
     assert s.cls_enabled is False
@@ -107,3 +119,7 @@ def test_cls_settings_read_env(monkeypatch):
     assert s.cls_per_category_limit == 2
     assert s.cls_max_search_limit == 4
     assert s.cls_app_version == "9.0.0"
+    assert s.cls_telegraph_sync_enabled is False
+    assert s.cls_telegraph_sync_interval_seconds == 30
+    assert s.cls_telegraph_sync_page_size == 25
+    assert s.cls_telegraph_sync_max_pages == 2

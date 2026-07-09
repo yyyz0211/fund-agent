@@ -174,6 +174,51 @@ def test_fetch_roll_list_returns_empty_on_bad_response():
     assert fetch_roll_list(client=client, category="fund", limit=5) == []
 
 
+def test_fetch_roll_list_falls_back_to_curl_and_records_diagnostics(monkeypatch):
+    from backend.services import cls_telegraph_client as client_mod
+    from backend.services.cls_telegraph_client import fetch_roll_list
+
+    class _FailingClient:
+        def get(self, *args, **kwargs):
+            raise RuntimeError("connect failed")
+
+    class _CurlResult:
+        returncode = 0
+        stdout = (
+            '{"errno":0,"data":{"roll_data":[{'
+            '"id":2421217,'
+            '"title":"今日基金快讯",'
+            '"brief":"财联社7月9日电，基金快讯。",'
+            '"ctime":1783564494,'
+            '"subjects":[],'
+            '"stock_list":[]'
+            '}]}}'
+        )
+        stderr = ""
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return _CurlResult()
+
+    monkeypatch.setattr(client_mod.subprocess, "run", fake_run)
+    diagnostics = []
+
+    rows = fetch_roll_list(
+        client=_FailingClient(),
+        category="fund",
+        limit=5,
+        last_time=1783565229,
+        diagnostics=diagnostics,
+    )
+
+    assert rows[0]["title"] == "今日基金快讯"
+    assert calls and calls[0][0][0] == "curl"
+    assert diagnostics[0]["category"] == "fund"
+    assert "connect failed" in diagnostics[0]["error"]
+
+
 def test_search_telegraph_posts_body_and_normalizes_rows():
     from backend.services.cls_telegraph_client import search_telegraph
 

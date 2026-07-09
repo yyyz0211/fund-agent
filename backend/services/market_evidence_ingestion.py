@@ -64,6 +64,12 @@ def ingest_market_evidence(
             except Exception as exc:  # noqa: BLE001
                 errors.append({"adapter": name, "error": str(exc)})
                 continue
+            for item in getattr(adapter, "last_errors", []) or []:
+                if isinstance(item, dict):
+                    err = item.get("error") or str(item)
+                    errors.append({"adapter": name, "error": err, "details": item})
+                else:
+                    errors.append({"adapter": name, "error": str(item)})
             if not rows:
                 continue
             for row in rows:

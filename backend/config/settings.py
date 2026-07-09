@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     # 仍可用);`build_agent()` 是真正的关卡,缺 key 时拒绝构造 LLM。
     deepseek_api_key: str | None = None
     deepseek_base_url: str = "https://api.deepseek.com"
-    deepseek_model: str = "deepseek-chat"
+    deepseek_model: str = "deepseek-v4-flash"
 
     # 默认指向 backend/data/ 下的本地 SQLite 文件。目录由
     # `db.init_db` / smoke 脚本按需创建。
@@ -51,6 +51,14 @@ class Settings(BaseSettings):
     scheduler_briefing_cron_hour: int = 17
     scheduler_briefing_cron_minute: int = 0
 
+    # market evidence 每小时增量采集。Wave 1:16:00 / 08:30 cron 仍然保留,
+    # hourly 用来"发现盘中财联社电报"(CLS adapter 只在 post_market 启用,故
+    # hourly 也只跑 post_market brief_type)。同 brief_type 单飞锁由
+    # market_evidence_service._lock 保证, 不会和 16:00 cron 撞车。
+    # 调高间隔或设 enabled=false 可关闭。
+    scheduler_evidence_hourly_enabled: bool = True
+    scheduler_evidence_hourly_minutes: int = 60
+
     # 简报采集限额 + LLM 选择
     briefing_max_watchlist_funds: int = 30
     briefing_llm_model: str = "deepseek-chat"
@@ -63,6 +71,10 @@ class Settings(BaseSettings):
     cls_per_category_limit: int = 10
     cls_max_search_limit: int = 10
     cls_app_version: str = "8.7.9"
+    cls_telegraph_sync_enabled: bool = True
+    cls_telegraph_sync_interval_seconds: int = 360
+    cls_telegraph_sync_page_size: int = 50
+    cls_telegraph_sync_max_pages: int = 3
 
 
 @lru_cache

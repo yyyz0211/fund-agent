@@ -24,11 +24,44 @@ logger = logging.getLogger(__name__)
 # ---- 单飞异步执行器 (与 market_intel_service 一致模式) ------------------------
 _lock = Lock()
 _active_job_ids: dict[str, str] = {}
+_last_refresh_status: dict[str, dict] = {}
 _async_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="market-evidence")
 
 
 def _today() -> str:
     return datetime.now().strftime("%Y-%m-%d")
+
+
+def _now_iso() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def _result_status(result: dict | None) -> str:
+    if not isinstance(result, dict):
+        return "failed"
+    errors = result.get("errors") or []
+    fetched = int(result.get("fetched") or 0)
+    inserted = int(result.get("inserted") or 0)
+    if errors and fetched == 0 and inserted == 0:
+        return "failed"
+    if errors:
+        return "partial"
+    return "completed"
+
+
+def get_last_refresh_status(brief_type: str = "post_market") -> dict:
+    """返回最近一次 evidence refresh 状态,用于前端解释空态。"""
+    with _lock:
+        if brief_type in _active_job_ids:
+            return dict(_last_refresh_status.get(brief_type) or {
+                "status": "running",
+                "brief_type": brief_type,
+                "job_id": _active_job_ids[brief_type],
+            })
+        return dict(_last_refresh_status.get(brief_type) or {
+            "status": "idle",
+            "brief_type": brief_type,
+        })
 
 
 def search_evidence(
@@ -106,6 +139,13 @@ def refresh_market_evidence_async(
                     "job_id": _active_job_ids[brief_type]}
         job_id = uuid.uuid4().hex[:8]
         _active_job_ids[brief_type] = job_id
+        _last_refresh_status[brief_type] = {
+            "status": "running",
+            "trigger": trigger,
+            "brief_type": brief_type,
+            "job_id": job_id,
+            "started_at": _now_iso(),
+        }
 
     def _task():
         global _active_job_ids
@@ -123,6 +163,16 @@ def refresh_market_evidence_async(
                     )
                     sector_snapshot = None
             result = collect_and_run_for_brief_type(brief_type, sector_snapshot=sector_snapshot)
+            with _lock:
+                prev = _last_refresh_status.get(brief_type, {})
+                _last_refresh_status[brief_type] = {
+                    **prev,
+                    "status": _result_status(result),
+                    "brief_type": brief_type,
+                    "job_id": job_id,
+                    "finished_at": _now_iso(),
+                    "result": result,
+                }
             logger.info(
                 "market_evidence: brief_type=%s job_id=%s result=%s",
                 brief_type, job_id, result,
@@ -133,6 +183,16 @@ def refresh_market_evidence_async(
                 "market_evidence: brief_type=%s job_id=%s 异步采集失败: %s",
                 brief_type, job_id, exc,
             )
+            with _lock:
+                prev = _last_refresh_status.get(brief_type, {})
+                _last_refresh_status[brief_type] = {
+                    **prev,
+                    "status": "failed",
+                    "brief_type": brief_type,
+                    "job_id": job_id,
+                    "finished_at": _now_iso(),
+                    "error": str(exc),
+                }
         finally:
             with _lock:
                 _active_job_ids.pop(brief_type, None)

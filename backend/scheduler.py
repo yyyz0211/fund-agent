@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 from backend.config.settings import get_settings
 from backend.services import briefing_service
@@ -24,6 +25,16 @@ def _build_scheduler() -> BackgroundScheduler:
 
 def _cron_trigger(hour: int, minute: int, tz: str) -> CronTrigger:
     return CronTrigger(hour=hour, minute=minute, timezone=tz)
+
+
+def _interval_trigger(minutes: int, tz: str) -> IntervalTrigger:
+    """每 N 分钟触发一次。minutes<=0 视为关闭。"""
+    return IntervalTrigger(minutes=max(1, int(minutes)), timezone=tz)
+
+
+def _seconds_interval_trigger(seconds: int, tz: str) -> IntervalTrigger:
+    """每 N 秒触发一次。seconds<=0 视为 60 秒。"""
+    return IntervalTrigger(seconds=max(1, int(seconds)), timezone=tz)
 
 
 def start_scheduler(*, enabled: bool | None = None,
@@ -117,6 +128,44 @@ def start_scheduler(*, enabled: bool | None = None,
             coalesce=True,
             misfire_grace_time=3600,
         )
+
+    # market evidence hourly 增量(post_market only — pre_market 没必要按小时拉)。
+    # 与 16:00 cron 共享同 service + 同一 brief_type 走 _lock 单飞:
+    #   cron 撞上 hourly 时, 第二次 submit 会拿到现有 job_id 并返回 "running",
+    #   不会叠加触发;DB 唯一键 (trade_date, brief_type, source_url) 保证即使真
+    #   并发跑两次也不会写重复行(upsert 是 select-then-insert, 第二次是 no-op)。
+    # 用户可调 scheduler_evidence_hourly_minutes (默认 60) 或关闭
+    # scheduler_evidence_hourly_enabled 来调整节奏。
+    if bool(getattr(settings, "scheduler_evidence_hourly_enabled", True)):
+        hourly_minutes = int(getattr(settings, "scheduler_evidence_hourly_minutes", 60))
+        if hourly_minutes > 0:
+            scheduler.add_job(
+                lambda: market_evidence_service.refresh_market_evidence_async(
+                    brief_type="post_market", trigger="scheduled_hourly",
+                ),
+                trigger=_interval_trigger(hourly_minutes, timezone),
+                id="post_market_evidence_hourly",
+                max_instances=1,
+                coalesce=True,
+                # 短 misfire grace — 5 分钟内补跑可接受, 超过直接丢
+                # (下一轮会拉同样数据, 重复拉浪费但无害)
+                misfire_grace_time=300,
+                jitter=60,
+            )
+
+    if bool(getattr(settings, "cls_telegraph_sync_enabled", True)):
+        from backend.services import cls_telegraph_sync_service
+        interval_seconds = int(getattr(settings, "cls_telegraph_sync_interval_seconds", 60))
+        if interval_seconds > 0:
+            scheduler.add_job(
+                lambda: cls_telegraph_sync_service.run_scheduled_cls_telegraph_sync(),
+                trigger=_seconds_interval_trigger(interval_seconds, timezone),
+                id="cls_telegraph_sync",
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=120,
+                jitter=min(10, max(0, interval_seconds // 5)),
+            )
 
     scheduler.start()
     _scheduler = scheduler

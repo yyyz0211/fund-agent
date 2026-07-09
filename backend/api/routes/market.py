@@ -137,3 +137,12 @@ def refresh_market_evidence(
     return market_evidence_service.refresh_market_evidence_async(
         brief_type=brief_type, trigger="manual",
     )
+
+
+@router.get("/evidence/refresh/status")
+def get_market_evidence_refresh_status(
+    brief_type: str = Query(default="post_market"),
+):
+    """查询最近一次 evidence 采集状态,用于前端解释空态/失败原因。"""
+    from backend.services import market_evidence_service
+    return market_evidence_service.get_last_refresh_status(brief_type=brief_type)
