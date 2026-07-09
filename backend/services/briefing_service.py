@@ -325,38 +325,111 @@ def _safe_get(d: Any, key: str, default=None) -> Any:
 # 简报合成
 # ---------------------------------------------------------------------------
 
-def compose_briefing(snapshot: dict, evidence: list[dict] | None = None) -> dict:
+def compose_briefing(
+    snapshot: dict,
+    evidence: list[dict] | None = None,
+    *,
+    profile: BriefTypeProfile | None = None,
+) -> dict:
     """调用 DeepSeek 把 snapshot + evidence 合成 markdown + sections。
+
+    V2 行为：通过 module builders 生成结构化 sections，再交给 LLM 仅做语言
+    组织。返回 dict 含 keys: markdown, sections, warnings, llm_model, prompt_used_chars。
 
     Args:
         snapshot: 市场快照数据
         evidence: 当日证据列表，将被拼入 prompt 供 LLM 引用
-
-    Returns:
-        dict，含 keys: markdown, sections, warnings, llm_model, prompt_used_chars
+        profile: V2 profile；None 时默认走 post_market（向后兼容）
     """
-    from backend.graph.prompts import BRIEFING_PROMPT_TEMPLATE
+    from string import Template
+    from backend.services import module_briefing as mb
 
-    warnings: list[str] = []
     snapshot_json = json.dumps(snapshot, ensure_ascii=False, indent=2)
     evidence_json = json.dumps(evidence or [], ensure_ascii=False, indent=2)
-    # 用 SafeFormatter 防止 JSON 中的 {key} 被二次解析为占位符
-    from string import Template
-    safe_prompt = Template(BRIEFING_PROMPT_TEMPLATE).substitute(
-        snapshot_json=snapshot_json, evidence_json=evidence_json
-    )
-    prompt = safe_prompt  # noqa: F841
 
-    # 内部 lazy import 避免循环: backend.services.briefing_service ← market_tools ← fund_tools
-    #   ← qa_graph → model → tools → market_tools → briefing_service ← model
-    # 把 model 导入延后到首次实际 LLM 调用时, 此时 backend.graph.model 已完成加载。
-    # 测试通过 `patch("backend.graph.model.build_model", ...)` mock 真实来源。
+    # 决定 profile：默认 post_market
+    if profile is None:
+        profile, _profile_warnings = mb.get_brief_type_profile("post_market")
+
+    # V2: 跑 module builders
+    modules, module_order, _module_warnings = mb.run_module_builders(
+        profile=profile, snapshot=snapshot, evidence=evidence or [], context={},
+    )
+    # data quality
+    quality = compute_data_quality(snapshot, evidence or [])
+    quick_summary_mod = mb.run_quick_summary_module(
+        profile=profile,
+        modules=modules,
+        data_quality=quality["data_quality"],
+        confidence=quality["confidence"],
+    )
+    as_of = _today()
+    try:
+        idx_list = snapshot.get("market_snapshot", []) if isinstance(snapshot, dict) else []
+        if idx_list:
+            md = idx_list[0].get("market_date")
+            if md:
+                as_of = md
+    except Exception:
+        pass
+    data_statement_mod = mb.run_data_statement_module(
+        modules=modules,
+        as_of=as_of,
+        briefing_date=_today(),
+        data_quality=quality["data_quality"],
+        confidence=quality["confidence"],
+        missing_data=quality["missing_data"],
+        failed_modules=quality.get("failed_modules", []),
+        data_sources_last_updated=quality.get("data_sources_last_updated", {}),
+        evidence_count=len(evidence or []),
+    )
+
+    # 模块顺序：quick_summary 前置，data_statement 末尾
+    all_modules: dict[str, dict] = {
+        mk: (m.to_dict() if hasattr(m, "to_dict") else dict(m) if isinstance(m, dict) else {"key": mk})
+        for mk, m in modules.items()
+    }
+    all_modules["quick_summary"] = (
+        quick_summary_mod.to_dict() if hasattr(quick_summary_mod, "to_dict") else dict(quick_summary_mod)
+    )
+    all_modules["data_statement"] = (
+        data_statement_mod.to_dict() if hasattr(data_statement_mod, "to_dict") else dict(data_statement_mod)
+    )
+    module_order_final = ["quick_summary", *module_order, "data_statement"]
+
+    sections_structured = {
+        "brief_type": profile.brief_type,
+        "profile_version": "daily_briefing_v2_2026_07_09",
+        "module_order": module_order_final,
+        "modules": all_modules,
+        "warnings": [],
+    }
+
+    module_json = json.dumps(sections_structured, ensure_ascii=False, indent=2)
+    from backend.graph.prompts import BRIEFING_PROMPT_TEMPLATE_V2
+    prompt = BRIEFING_PROMPT_TEMPLATE_V2.substitute(
+        brief_type=profile.brief_type,
+        max_markdown_words=profile.max_markdown_words,
+        profile_json=json.dumps({
+            "brief_type": profile.brief_type,
+            "title": profile.title,
+            "required_modules": profile.required_modules,
+            "optional_modules": profile.optional_modules,
+            "max_markdown_words": profile.max_markdown_words,
+        }, ensure_ascii=False),
+        snapshot_json=snapshot_json,
+        evidence_json=evidence_json,
+        module_sections_json=module_json,
+    )
+
+    # 内部 lazy import 避免循环
     from backend.graph import model as _model_module
     model = _model_module.build_model()
     response = model.invoke(prompt)
     raw_content = response.content if hasattr(response, "content") else str(response)
 
-    # 尝试解析 JSON
+    warnings: list[str] = []
+
     def _parse(candidate: str) -> tuple[dict | None, str | None]:
         """返回 (parsed_dict_or_None, error_or_None)。"""
         try:
@@ -367,12 +440,8 @@ def compose_briefing(snapshot: dict, evidence: list[dict] | None = None) -> dict
     parsed, _err = _parse(raw_content)
     if parsed is not None:
         markdown = parsed.get("markdown", raw_content)
-        sections = parsed.get("sections", {})
+        md_warnings = parsed.get("markdown_warnings", [])
     else:
-        # Fallback: LLM 有时返回 outer doubled braces `{{...}}` (Prompt
-        # 模板里意外写成 `{{...}}` 而 string.Template 不解析 `{`, LLM
-        # 老老实实复刻 prompt 模板就会这样输出)。逐层剥外层 `{}`, 每剥
-        # 一层重试一次, 直到能解析或剥无可剥。
         candidate = raw_content.strip()
         attempts = 0
         while attempts < 4 and (
@@ -385,19 +454,18 @@ def compose_briefing(snapshot: dict, evidence: list[dict] | None = None) -> dict
                 break
         if parsed is not None:
             markdown = parsed.get("markdown", raw_content)
-            sections = parsed.get("sections", {})
-            warnings.append(
-                "llm_returned_wrapped_json，剥除外层 braces 后解析"
-            )
+            md_warnings = parsed.get("markdown_warnings", [])
+            warnings.append("llm_returned_wrapped_json，已剥除外层 braces")
         else:
             warnings.append("llm_returned_non_json，使用原始文本作为 markdown")
             markdown = raw_content
-            sections = {}
+            md_warnings = []
 
+    # sections: 把 V2 结构也带回去，前端继续可读
     return {
         "markdown": markdown,
-        "sections": sections,
-        "warnings": warnings,
+        "sections": sections_structured,
+        "warnings": warnings + md_warnings,
         "llm_model": getattr(settings, "briefing_llm_model", "deepseek-chat"),
         "prompt_used_chars": len(prompt),
     }
@@ -407,17 +475,28 @@ def compose_briefing(snapshot: dict, evidence: list[dict] | None = None) -> dict
 # 主流程
 # ---------------------------------------------------------------------------
 
-def run_daily_briefing(*, trigger: str = "scheduled", session=None) -> dict:
+def run_daily_briefing(
+    *,
+    trigger: str = "scheduled",
+    session=None,
+    brief_type: str = "post_market",
+) -> dict:
     """编排: collect → compose → upsert Briefing → 写内存快照。
 
     绝不抛异常。单步失败记入 failures，整批继续。
+
+    brief_type: post_market / pre_market / intraday。默认 post_market 以保持
+    旧调用（未传参）行为一致。
     """
     from backend.db.repository import upsert_briefing
+    from backend.services import module_briefing as mb
 
     # 提前创建 session 让 ingest 和 search 共用同一事务上下文
     evidence_owns = session is None
     evidence_session = session or get_session()
     today = _today()
+    profile, profile_warnings = mb.get_brief_type_profile(brief_type)
+    effective_brief_type = profile.brief_type
 
     snapshot: dict = {}
     compose_result: dict = {}
@@ -428,7 +507,7 @@ def run_daily_briefing(*, trigger: str = "scheduled", session=None) -> dict:
     # ingest evidence (collect from all sources including CLS) before reading
     try:
         market_evidence_service.collect_and_run_for_brief_type(
-            brief_type="post_market", trade_date=today, sector_snapshot=None,
+            brief_type=effective_brief_type, trade_date=today, sector_snapshot=None,
             session=evidence_session,
         )
     except Exception:  # noqa: BLE001
@@ -478,85 +557,20 @@ def run_daily_briefing(*, trigger: str = "scheduled", session=None) -> dict:
     except Exception:
         pass
 
-    # compose — 优先使用 V2 module system
-    from backend.services import module_briefing as mb
-
+    # compose — 使用 compose_briefing（内部走 V2 module system）
     try:
-        profile, profile_warnings = mb.get_brief_type_profile("post_market")
-        modules, module_order, module_warnings = mb.run_module_builders(
-            profile=profile,
-            snapshot=snapshot,
-            evidence=evidence_rows,
-            context={},
-        )
-        runner_warnings = profile_warnings + module_warnings
-
-        # quick_summary 在所有内容模块之后
-        quick_summary_mod = mb.run_quick_summary_module(
-            profile=profile,
-            modules=modules,
-            data_quality=quality["data_quality"],
-            confidence=quality["confidence"],
-        )
-        # data_statement 在最后，汇总所有模块状态
-        data_statement_mod = mb.run_data_statement_module(
-            modules=modules,
-            as_of=as_of,
-            briefing_date=today,
-            data_quality=quality["data_quality"],
-            confidence=quality["confidence"],
-            missing_data=quality["missing_data"],
-            failed_modules=quality.get("failed_modules", []),
-            data_sources_last_updated=quality.get("data_sources_last_updated", {}),
-            evidence_count=len(evidence_rows),
-        )
-
-        # V2 final composer
-        compose_result = mb.compose_briefing_v2(
-            profile=profile,
-            modules=modules,
-            quick_summary_mod=quick_summary_mod,
-            data_statement_mod=data_statement_mod,
-            snapshot=snapshot,
-            evidence=evidence_rows,
-        )
-        compose_warnings = compose_result.get("warnings", [])
-
-        # 构建 V2 sections_json 结构
-        all_modules_dict: dict[str, dict] = {}
-        for mk, m in modules.items():
-            if hasattr(m, "to_dict"):
-                all_modules_dict[mk] = m.to_dict()
-            else:
-                all_modules_dict[mk] = dict(m) if isinstance(m, dict) else {"key": mk}
-        all_modules_dict["quick_summary"] = (
-            quick_summary_mod.to_dict() if hasattr(quick_summary_mod, "to_dict")
-            else dict(quick_summary_mod)
-        )
-        all_modules_dict["data_statement"] = (
-            data_statement_mod.to_dict() if hasattr(data_statement_mod, "to_dict")
-            else dict(data_statement_mod)
-        )
-
-        sections = {
-            "brief_type": "post_market",
-            "profile_version": "daily_briefing_v2_2026_07_09",
-            "module_order": module_order + ["quick_summary", "data_statement"],
-            "modules": all_modules_dict,
-            "warnings": runner_warnings + compose_warnings,
-        }
+        compose_result = compose_briefing(snapshot, evidence=evidence_rows, profile=profile)
+        if profile_warnings:
+            compose_result["warnings"] = profile_warnings + list(compose_result.get("warnings", []))
         succeeded = 1
     except Exception as exc:  # noqa: BLE001
         compose_result = {
             "markdown": "（系统错误，简报生成失败。）",
             "sections": {},
-            "warnings": [f"V2 流程失败，降级：{exc}"],
+            "warnings": [f"compose 失败：{exc}"],
         }
-        sections = {}
-        failures.append({"stage": "v2_compose", "message": str(exc)})
+        failures.append({"stage": "compose", "message": str(exc)})
         failed += 1
-        runner_warnings = []
-        module_order = []
 
     if not snapshot.get("watchlist_changes") and not snapshot.get("market_snapshot"):
         compose_result = {
@@ -564,8 +578,10 @@ def run_daily_briefing(*, trigger: str = "scheduled", session=None) -> dict:
             "sections": {},
             "warnings": compose_result.get("warnings", []),
         }
-        sections = {}
-        runner_warnings = []
+        # 自选池为空时不算成功（无可用数据生成正稿）
+        succeeded = 0
+
+    sections = compose_result.get("sections", {})
 
     sections_json = json.dumps(sections, ensure_ascii=False)
 
@@ -585,10 +601,17 @@ def run_daily_briefing(*, trigger: str = "scheduled", session=None) -> dict:
         owns = session is None
         s = session or get_session()
         try:
-            # briefing_date 用 today 做幂等键 — 同日多次触发覆盖同一行。
+            # briefing_date + brief_type 做幂等键 — 同一交易日不同 brief_type
+            # (post_market / pre_market / intraday) 可各自保存一行。
             # as_of(数据交易日)与 today(本次生成日)可能不同(如周末/假期),
             # 已在 markdown 末尾 "数据声明" 段真实展示。
-            upsert_briefing(s, briefing_date=today, payload=payload)
+            payload_with_type = {**payload, "brief_type": effective_brief_type}
+            upsert_briefing(
+                s,
+                briefing_date=today,
+                payload=payload_with_type,
+                brief_type=effective_brief_type,
+            )
             s.commit()
         finally:
             if owns:
@@ -621,17 +644,23 @@ def get_last_run() -> dict:
         return dict(_last_run)
 
 
-def read_briefing(brief_date: str | None = None) -> dict | None:
+def read_briefing(brief_date: str | None = None, brief_type: str = "post_market") -> dict | None:
     """从 DB 读取 briefing（None=最近），返回 dict（含新 data_quality 字段）。
 
-    供 market_tools.get_market_briefing 调用。
+    brief_type: 按 type 过滤；None 表示不限定。
     """
     s = get_session()
     try:
         if brief_date:
-            row = s.scalar(select(Briefing).where(Briefing.briefing_date == brief_date))
+            stmt = select(Briefing).where(Briefing.briefing_date == brief_date)
+            if brief_type:
+                stmt = stmt.where(Briefing.brief_type == brief_type)
+            row = s.scalar(stmt)
         else:
-            row = s.scalar(select(Briefing).order_by(Briefing.briefing_date.desc()))
+            stmt = select(Briefing)
+            if brief_type:
+                stmt = stmt.where(Briefing.brief_type == brief_type)
+            row = s.scalar(stmt.order_by(Briefing.briefing_date.desc()))
         if row is None:
             return None
         sections = {}
@@ -650,13 +679,17 @@ def read_briefing(brief_date: str | None = None) -> dict | None:
             except Exception:
                 pass
         # 从 sections_json 中提取 failed_modules 和 data_sources_last_updated
-        if sections.get("data_statement"):
-            ds = sections["data_statement"]
-            failed_modules = ds.get("failed_modules", [])
-            data_sources_last_updated = ds.get("data_sources_last_updated", {})
+        # V2: 在 sections.modules.data_statement 中；legacy: 在 sections.data_statement 中
+        v2_ds = (sections.get("modules") or {}).get("data_statement") or {}
+        legacy_ds = sections.get("data_statement") or {}
+        ds = v2_ds.get("content", v2_ds) or legacy_ds
+        if ds:
+            failed_modules = ds.get("failed_modules", []) or []
+            data_sources_last_updated = ds.get("data_sources_last_updated", {}) or {}
         return {
             "id": row.id,
             "briefing_date": row.briefing_date,
+            "brief_type": getattr(row, "brief_type", "post_market"),
             "title": row.title,
             "markdown": row.markdown,
             "sections": sections,
@@ -691,15 +724,15 @@ _active_job_id: str | None = None
 _async_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="briefing-run")
 
 
-def start_run_async(*, trigger: str = "manual") -> dict:
-    """后台线程触发一次简报生成,立即返回 {status, trigger}。
+def start_run_async(*, trigger: str = "manual", brief_type: str = "post_market") -> dict:
+    """后台线程触发一次简报生成,立即返回 {status, trigger, brief_type}。
 
     单飞:已有任务在跑时直接返回 running 状态。
     """
     global _active_job_id
     with _active_lock:
         if _active_job_id is not None:
-            return {"status": "running", "job_id": _active_job_id}
+            return {"status": "running", "job_id": _active_job_id, "brief_type": brief_type}
         import uuid as _uuid
         job_id = _uuid.uuid4().hex[:8]
         _active_job_id = job_id
@@ -707,10 +740,10 @@ def start_run_async(*, trigger: str = "manual") -> dict:
     def _task() -> None:
         global _active_job_id
         try:
-            run_daily_briefing(trigger=trigger)
+            run_daily_briefing(trigger=trigger, brief_type=brief_type)
         finally:
             with _active_lock:
                 _active_job_id = None
 
     _async_executor.submit(_task)
-    return {"status": "started", "trigger": trigger, "job_id": job_id}
+    return {"status": "started", "trigger": trigger, "brief_type": brief_type, "job_id": job_id}

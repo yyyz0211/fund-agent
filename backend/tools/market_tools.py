@@ -147,7 +147,7 @@ def search_cls_telegraph(
 
 
 @tool
-def get_market_briefing(brief_date: str = "") -> dict:
+def get_market_briefing(brief_date: str = "", brief_type: str = "post_market") -> dict:
     """读取最新(或指定日期) Briefing markdown + 数据质量。
 
     Returns:
@@ -158,7 +158,10 @@ def get_market_briefing(brief_date: str = "") -> dict:
         或 partial 时简短告知"部分数据缺失",不要把"缺失"陈述为事实。
     """
     try:
-        snap = briefing_service.read_briefing(brief_date or None)
+        snap = briefing_service.read_briefing(
+            brief_date or None,
+            brief_type=brief_type or "post_market",
+        )
     except Exception as exc:  # noqa: BLE001
         return {"error": str(exc)}
     if snap is None:

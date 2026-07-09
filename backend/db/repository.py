@@ -653,14 +653,27 @@ def update_pending_buy(session, fund_code: str, pending_id: int,
 # Briefing
 # ---------------------------------------------------------------------------
 
-def upsert_briefing(session, briefing_date: str, payload: dict) -> Briefing:
-    """按 briefing_date upsert 简报;payload 的字段写入 Briefing 各列。"""
-    row = session.scalar(select(Briefing).where(Briefing.briefing_date == briefing_date))
+def upsert_briefing(
+    session,
+    briefing_date: str,
+    payload: dict,
+    brief_type: str = "post_market",
+) -> Briefing:
+    """按 (briefing_date, brief_type) 联合唯一键 upsert 简报;payload 的字段写入 Briefing 各列。"""
+    row = session.scalar(
+        select(Briefing).where(
+            Briefing.briefing_date == briefing_date,
+            Briefing.brief_type == brief_type,
+        )
+    )
+    # payload 显式携带 brief_type 时覆盖入参；否则用入参
+    payload_eff = {**payload}
+    payload_eff.setdefault("brief_type", brief_type)
     if row is None:
-        row = Briefing(briefing_date=briefing_date, **payload)
+        row = Briefing(briefing_date=briefing_date, **payload_eff)
         session.add(row)
     else:
-        for key, value in payload.items():
+        for key, value in payload_eff.items():
             if hasattr(row, key):
                 setattr(row, key, value)
     session.flush()

@@ -111,7 +111,8 @@ def test_briefing_prompt_does_not_use_doubled_braces_for_json():
     """
     # substitute 后才能还原 fed-to-LLM 的字符串
     rendered = Template(BRIEFING_PROMPT_TEMPLATE).substitute(
-        snapshot_json='{"market_snapshot": []}'
+        snapshot_json='{"market_snapshot": []}',
+        evidence_json='[]',
     )
     # 不应在末段出现 `{{` (literal double braces)
     assert "{{" not in rendered, (

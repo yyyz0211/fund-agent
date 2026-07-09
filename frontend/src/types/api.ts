@@ -328,6 +328,7 @@ export interface BriefingModule {
 export interface Briefing {
   id: number;
   briefing_date: string;
+  brief_type?: string;
   title: string;
   markdown: string;
   sections: BriefingSection | Record<string, unknown>;
@@ -356,6 +357,7 @@ export type EvidenceWeight = "high" | "medium" | "low";
 export interface BriefingSummary {
   id: number;
   briefing_date: string;
+  brief_type?: string;
   title: string;
   as_of: string | null;
   data_quality?: DataQuality | null;
@@ -375,6 +377,7 @@ export interface BriefingRunResponse {
   status: string;
   trigger: string;
   job_id?: string;
+  brief_type?: string;
 }
 
 export interface BriefingFeedbackPayload {

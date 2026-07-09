@@ -16,7 +16,7 @@ def test_settings_defaults(monkeypatch):
     get_settings.cache_clear()
     s = get_settings()
     assert s.deepseek_base_url == "https://api.deepseek.com"
-    assert s.deepseek_model == "deepseek-chat"
+    assert s.deepseek_model == "deepseek-v4-flash"
     assert s.database_url == "sqlite:///backend/data/fund_agent.db"
 
 

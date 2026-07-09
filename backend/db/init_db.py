@@ -37,6 +37,7 @@ def init_db(engine: Engine | None = None) -> None:
     eng = engine or default_engine
     Base.metadata.create_all(eng)
     _apply_missing_columns(eng)
+    _migrate_briefings_unique_constraint(eng)
     _drop_obsolete_columns(eng)
     # create_all 不冲突,再跑一次只是补 sanity(新表的索引等)。
     Base.metadata.create_all(eng)
@@ -103,6 +104,100 @@ def _drop_obsolete_columns(eng: Engine) -> None:
             # 旧 SQLite 版本不支持 DROP COLUMN 时,至少运行时代码已经
             # 不再读写该列;不让启动因为历史冗余列失败。
             pass
+
+
+def _migrate_briefings_unique_constraint(eng: Engine) -> None:
+    """把旧版 `UNIQUE(briefing_date)` 迁移为 `(briefing_date, brief_type)`。
+
+    SQLite 不能直接删除唯一约束；旧本地库需要重建 briefings 表。
+    新表或已迁移表只做 brief_type 空值回填。
+    """
+    insp = inspect(eng)
+    if eng.dialect.name != "sqlite" or not insp.has_table("briefings"):
+        return
+
+    def _unique_index_columns(conn) -> list[list[str]]:
+        indexes = conn.exec_driver_sql("PRAGMA index_list(briefings)").all()
+        unique_columns: list[list[str]] = []
+        for idx in indexes:
+            # PRAGMA index_list: seq, name, unique, origin, partial
+            if not bool(idx[2]):
+                continue
+            index_name = idx[1]
+            cols = [
+                col[2]
+                for col in conn.exec_driver_sql(f"PRAGMA index_info({index_name})").all()
+            ]
+            unique_columns.append(cols)
+        return unique_columns
+
+    with eng.begin() as conn:
+        existing_cols = {c["name"] for c in insp.get_columns("briefings")}
+        if "brief_type" not in existing_cols:
+            return
+
+        conn.execute(text(
+            "UPDATE briefings SET brief_type = 'post_market' "
+            "WHERE brief_type IS NULL OR brief_type = ''"
+        ))
+
+        unique_columns = _unique_index_columns(conn)
+        has_old_unique = ["briefing_date"] in unique_columns
+        if not has_old_unique:
+            return
+
+        conn.execute(text("ALTER TABLE briefings RENAME TO briefings_old"))
+        conn.execute(text("""
+            CREATE TABLE briefings (
+                id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                briefing_date VARCHAR NOT NULL,
+                brief_type VARCHAR(32),
+                title VARCHAR NOT NULL,
+                markdown VARCHAR NOT NULL,
+                sections_json VARCHAR NOT NULL,
+                source VARCHAR,
+                as_of VARCHAR,
+                data_quality VARCHAR,
+                confidence VARCHAR,
+                missing_data_json VARCHAR,
+                evidence_count INTEGER,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT uq_briefing_date_type UNIQUE (briefing_date, brief_type)
+            )
+        """))
+        conn.execute(text("""
+            INSERT INTO briefings (
+                id, briefing_date, brief_type, title, markdown, sections_json,
+                source, as_of, data_quality, confidence, missing_data_json,
+                evidence_count, created_at, updated_at
+            )
+            SELECT
+                id,
+                briefing_date,
+                COALESCE(NULLIF(brief_type, ''), 'post_market'),
+                title,
+                markdown,
+                sections_json,
+                source,
+                as_of,
+                data_quality,
+                confidence,
+                missing_data_json,
+                evidence_count,
+                created_at,
+                updated_at
+            FROM briefings_old
+        """))
+        conn.execute(text("DROP TABLE briefings_old"))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_briefings_briefing_date "
+            "ON briefings (briefing_date)"
+        ))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_briefings_brief_type "
+            "ON briefings (brief_type)"
+        ))
 
 
 if __name__ == "__main__":

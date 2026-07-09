@@ -62,21 +62,26 @@ class TestBriefingModel:
         assert found.source == "akshare + deepseek"
         assert found.as_of == today
 
-    def test_briefing_unique_on_briefing_date(self, in_memory_session):
-        """同日再插入应抛 IntegrityError(uq_briefing_date)。"""
+    def test_briefing_unique_on_date_and_brief_type(self, in_memory_session):
+        """同日不同 brief_type 可共存；同日同 type 仍保持唯一。"""
         from backend.db.models import Briefing
 
         today = "2026-07-07"
         in_memory_session.add(Briefing(
-            briefing_date=today, title="第一篇",
+            briefing_date=today, brief_type="post_market", title="盘后",
             markdown="x", sections_json="{}", source=None, as_of=None,
         ))
         in_memory_session.commit()
 
-        # 第二次插入同一 briefing_date
         in_memory_session.add(Briefing(
-            briefing_date=today, title="第二篇",
+            briefing_date=today, brief_type="pre_market", title="盘前",
             markdown="y", sections_json="{}", source=None, as_of=None,
+        ))
+        in_memory_session.commit()
+
+        in_memory_session.add(Briefing(
+            briefing_date=today, brief_type="post_market", title="第二篇盘后",
+            markdown="z", sections_json="{}", source=None, as_of=None,
         ))
         with pytest.raises(IntegrityError):
             in_memory_session.commit()
@@ -431,7 +436,7 @@ class TestComposeBriefing:
         assert result["warnings"] == []
 
     def test_compose_handles_invalid_llm_json(self):
-        """LLM 返回非 JSON 纯文本时:markdown=原文本,sections={},warnings 追加。"""
+        """LLM 返回非 JSON 纯文本时:markdown=原文本,warnings 追加 non_json。"""
         from backend.services import briefing_service
         from langchain_core.messages import AIMessage
 
@@ -444,8 +449,10 @@ class TestComposeBriefing:
         with patch("backend.graph.model.build_model", return_value=FakeModel()):
             result = briefing_service.compose_briefing({})
 
+        # V2: 即使 LLM 返回非 JSON, V2 模块结构仍由后端构建
         assert result["markdown"] == raw_text
-        assert result["sections"] == {}
+        assert "sections" in result
+        # warnings 应包含 non_json 提示
         assert any("non_json" in w or "invalid" in w for w in result["warnings"])
 
     def test_compose_prompt_excludes_policy_blocks(self):
@@ -511,10 +518,9 @@ class TestComposeBriefing:
         assert '"sections"' not in result["markdown"], (
             "markdown 字段不应残留 outer JSON 的 `\"sections\":` 字面量"
         )
-        assert result["sections"] == {
-            "market_snapshot": [],
-            "watchlist_changes": [],
-        }
+        # V2: sections 仍是后端构建的 V2 模块结构,与 LLM 输出的 markdown 无关
+        assert "sections" in result
+        assert "modules" in result["sections"] or "module_order" in result["sections"]
         assert any(
             "wrapped_json" in w or "wrapped" in w for w in result["warnings"]
         ), f"warnings 应记录 wrapped_json fallback, 实际: {result['warnings']}"
@@ -571,6 +577,37 @@ class TestComposeBriefing:
 
 
 # ---------------------------------------------------------------------------
+# V2 module runner
+# ---------------------------------------------------------------------------
+
+class TestBriefingV2Modules:
+    def test_pre_market_overnight_module_uses_evidence(self):
+        """pre_market 的 overnight 模块应消费 evidence,不能把 snapshot 当 evidence 传入。"""
+        from backend.services import module_briefing
+
+        profile, warnings = module_briefing.get_brief_type_profile("pre_market")
+        assert warnings == []
+
+        modules, order, module_warnings = module_briefing.run_module_builders(
+            profile=profile,
+            snapshot={"market_snapshot": [{"symbol": "000300"}]},
+            evidence=[{
+                "id": 1,
+                "category": "news",
+                "title": "隔夜美股科技股走强",
+                "source": "财联社",
+                "published_at": "2026-07-09T07:00:00+08:00",
+            }],
+            context={},
+        )
+
+        assert "overnight" in order
+        assert modules["overnight"].status == "ready"
+        assert modules["overnight"].content["events"][0]["name"] == "隔夜美股科技股走强"
+        assert module_warnings == []
+
+
+# ---------------------------------------------------------------------------
 # Task 4: run_daily_briefing
 # ---------------------------------------------------------------------------
 
@@ -602,7 +639,7 @@ class TestRunDailyBriefing:
         def mock_collect(**_kwargs):
             return snapshot
 
-        def mock_compose(snap, evidence=None):
+        def mock_compose(snap, evidence=None, *, profile=None):
             assert snap == snapshot
             return compose_result
 
@@ -642,7 +679,7 @@ class TestRunDailyBriefing:
         def mock_collect(**_kwargs):
             return snap_v1
 
-        def mock_compose(snap, evidence=None):
+        def mock_compose(snap, evidence=None, *, profile=None):
             return comp_v1
 
         briefing_service.reset_for_tests()
@@ -653,7 +690,7 @@ class TestRunDailyBriefing:
 
         time.sleep(0.01)  # 确保 updated_at 能区分
 
-        def mock_compose_v2(snap, evidence=None):
+        def mock_compose_v2(snap, evidence=None, *, profile=None):
             return comp_v2
 
         with patch.object(briefing_service, "collect_watchlist_snapshot", mock_collect), \
@@ -663,6 +700,43 @@ class TestRunDailyBriefing:
         rows = in_memory_session.query(Briefing).all()
         assert len(rows) == 1
         assert "v2" in rows[0].markdown  # 最新版本
+
+    def test_run_passes_brief_type_profile_to_composer(self, in_memory_session):
+        """pre_market 生成时,落库 type 与 sections.brief_type 必须一致。"""
+        from backend.db.models import Briefing
+        from backend.services import briefing_service
+
+        snapshot = {
+            "market_snapshot": [{"symbol": "000300", "market_date": "2026-07-07"}],
+            "watchlist_changes": [{"fund_code": "110011"}],
+            "errors": [],
+            "collect_meta": {},
+        }
+
+        def mock_compose(snap, evidence=None, *, profile=None):
+            assert snap == snapshot
+            assert profile is not None
+            assert profile.brief_type == "pre_market"
+            return {
+                "markdown": "pre-market markdown",
+                "sections": {"brief_type": profile.brief_type, "module_order": [], "modules": {}},
+                "warnings": [],
+                "llm_model": "test",
+            }
+
+        with patch.object(briefing_service, "collect_watchlist_snapshot", lambda **_: snapshot), \
+             patch.object(briefing_service.market_evidence_service, "collect_and_run_for_brief_type", return_value={"inserted": 0}), \
+             patch.object(briefing_service.market_evidence_service, "search_evidence", return_value=[]), \
+             patch.object(briefing_service, "compose_briefing", mock_compose):
+            briefing_service.run_daily_briefing(
+                trigger="manual",
+                session=in_memory_session,
+                brief_type="pre_market",
+            )
+
+        row = in_memory_session.query(Briefing).one()
+        assert row.brief_type == "pre_market"
+        assert '"brief_type": "pre_market"' in row.sections_json
 
     def test_run_records_last_run_snapshot(self, in_memory_session):
         """跑完后 get_last_run() 返回正确快照。"""
@@ -676,7 +750,7 @@ class TestRunDailyBriefing:
                 "collect_meta": {},
             }
 
-        def mock_compose(snap, evidence=None):
+        def mock_compose(snap, evidence=None, *, profile=None):
             return {"markdown": "x", "sections": {}, "warnings": [], "llm_model": "test"}
 
         with patch.object(briefing_service, "collect_watchlist_snapshot", mock_collect), \
@@ -705,7 +779,7 @@ class TestRunDailyBriefing:
                 "collect_meta": {},
             }
 
-        def mock_compose(snap, evidence=None):
+        def mock_compose(snap, evidence=None, *, profile=None):
             return {"markdown": "ok", "sections": {}, "warnings": [], "llm_model": "test"}
 
         briefing_service.reset_for_tests()
@@ -778,7 +852,12 @@ class TestRunDailyBriefing:
             }
         ), patch.object(
             briefing_service, "compose_briefing",
-            lambda snap: {"markdown": "# 测试简报", "sections": {}, "warnings": [], "llm_model": "test"},
+            lambda snap, evidence=None, *, profile=None: {
+                "markdown": "# 测试简报",
+                "sections": {},
+                "warnings": [],
+                "llm_model": "test",
+            },
         ):
             result = briefing_service.run_daily_briefing(trigger="manual", session=in_memory_session)
 

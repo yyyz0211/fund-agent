@@ -19,3 +19,12 @@ test("briefing markdown is rendered inside a readable document surface", async (
   assert.match(source, /rounded-2xl/);
   assert.match(source, /ReactMarkdown/);
 });
+
+test("briefing api helpers forward brief type", async () => {
+  const source = await fs.readFile(new URL("../src/lib/api.ts", import.meta.url), "utf8");
+
+  assert.match(source, /briefingLatest:\s*\(type = "post_market"\)/);
+  assert.match(source, /get<BriefingLatestResponse>\("\/api\/briefing\/latest", \{ type \}\)/);
+  assert.match(source, /briefingList:\s*\(limit = 30, type = "post_market"\)/);
+  assert.match(source, /JSON\.stringify\(\{ brief_type: briefType \}\)/);
+});

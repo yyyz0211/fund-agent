@@ -207,6 +207,27 @@ def test_search_cls_telegraph_tool_respects_disable(monkeypatch):
     assert out["error"] == "CLS search disabled"
 
 
+def test_get_market_briefing_passes_brief_type(monkeypatch):
+    from backend.services import briefing_service
+
+    captured = {}
+
+    def fake_read_briefing(brief_date=None, brief_type="post_market"):
+        captured["brief_date"] = brief_date
+        captured["brief_type"] = brief_type
+        return {"briefing_date": brief_date, "brief_type": brief_type}
+
+    monkeypatch.setattr(briefing_service, "read_briefing", fake_read_briefing)
+
+    out = mt.get_market_briefing.invoke({
+        "brief_date": "2026-07-09",
+        "brief_type": "pre_market",
+    })
+
+    assert captured == {"brief_date": "2026-07-09", "brief_type": "pre_market"}
+    assert out["briefing"]["brief_type"] == "pre_market"
+
+
 def test_all_tools_aggregate_has_unique_set():
     # 8 fund + 4 watchlist + 6 market (Wave 1: +snapshot_auto, +evidence, +briefing +cls_search) + 1 pnl + 1 what_if = 20
     names = [t.name for t in fund_tools.ALL_TOOLS]

@@ -197,7 +197,7 @@ class MarketData(Base):
 class Briefing(Base):
     """每日基金简报。
 
-    `briefing_date` 唯一 —— 同日重复生成时 upsert 覆盖。
+    `(briefing_date, brief_type)` 唯一 —— 同日同类型重复生成时 upsert 覆盖。
     `markdown` 供前端 ReactMarkdown 渲染；`sections_json` 存结构化数据
     (market_snapshot / watchlist_changes / errors / disclaimer)，用于程序消费。
     简报内容完全由本地数据(指数 + 自选池)驱动，不经过 policy 合规检查。
@@ -207,11 +207,19 @@ class Briefing(Base):
     - `confidence`: high / medium / low
     - `missing_data_json`: JSON list，列出本次缺失的数据维度
     - `evidence_count`: 当日 market_evidence 条数
+
+    简报类型（Phase 4）:
+    - `brief_type`: post_market / pre_market / intraday
+    - 唯一键从 `briefing_date` 改为 `(briefing_date, brief_type)`
+    - 老数据迁移：旧行默认回填 `post_market`
     """
     __tablename__ = "briefings"
-    __table_args__ = (UniqueConstraint("briefing_date", name="uq_briefing_date"),)
+    __table_args__ = (
+        UniqueConstraint("briefing_date", "brief_type", name="uq_briefing_date_type"),
+    )
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     briefing_date: Mapped[str] = mapped_column(String, index=True)
+    brief_type: Mapped[str] = mapped_column(String(32), default="post_market", index=True)
     title: Mapped[str] = mapped_column(String)
     markdown: Mapped[str] = mapped_column(String)
     sections_json: Mapped[str] = mapped_column(String)

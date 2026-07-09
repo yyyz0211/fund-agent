@@ -179,12 +179,15 @@ export const api = {
       category: category ?? "",
       limit,
     }),
-  briefingLatest: () => get<BriefingLatestResponse>("/api/briefing/latest"),
-  briefingList: (limit = 30) => get<BriefingListResponse>("/api/briefing/list", { limit }),
-  briefingRun: () =>
+  briefingLatest: (type = "post_market") =>
+    get<BriefingLatestResponse>("/api/briefing/latest", { type }),
+  briefingList: (limit = 30, type = "post_market") =>
+    get<BriefingListResponse>("/api/briefing/list", { limit, type }),
+  briefingRun: (briefType = "post_market") =>
     fetch(BASE + "/api/briefing/run", {
       method: "POST",
-      headers: { "X-Local-Trigger": "1" },
+      headers: { "X-Local-Trigger": "1", "Content-Type": "application/json" },
+      body: JSON.stringify({ brief_type: briefType }),
       cache: "no-store",
     }).then(async (r) => {
       if (!r.ok) throw new Error(`/api/briefing/run -> ${r.status}`);

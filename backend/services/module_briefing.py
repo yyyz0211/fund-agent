@@ -777,6 +777,85 @@ def build_quick_summary_module(
 # Module Runner
 # ---------------------------------------------------------------------------
 
+def build_overnight_module(evidence: list[dict], snapshot: dict | None = None) -> ModuleSection:
+    """盘前模块：依赖隔夜海外/盘前 evidence。无可用数据时返回 missing。"""
+    overnight_evidence = [
+        e for e in evidence
+        if e.get("category") in ("macro", "news")
+        and e.get("title")
+    ]
+    if not overnight_evidence and not (snapshot or {}).get("overnight_overseas"):
+        return ModuleSection(
+            key="overnight",
+            title="隔夜外围",
+            status="missing",
+            summary="暂无隔夜外围数据，盘前简报无法生成该模块。",
+            content={"events": []},
+            missing_data=["overnight_overseas", "pre_market_news"],
+            confidence="low",
+        )
+    events = [
+        {
+            "type": e.get("category"),
+            "name": e.get("title"),
+            "source": e.get("source"),
+            "published_at": e.get("published_at"),
+            "impact": "medium" if e.get("category") == "policy" else "low",
+        }
+        for e in overnight_evidence[:10]
+    ]
+    return ModuleSection(
+        key="overnight",
+        title="隔夜外围",
+        status="ready",
+        summary=f"采集到 {len(events)} 条隔夜/盘前事件。",
+        content={"events": events, "items": events},
+        confidence="medium",
+    )
+
+
+def build_intraday_anomaly_module(snapshot: dict) -> ModuleSection:
+    """盘中模块：基于盘中行情和宽度判断异动。"""
+    breadth = (snapshot or {}).get("market_breadth") or {}
+    sectors = (snapshot or {}).get("industry_sectors") or []
+    up = breadth.get("up", 0)
+    down = breadth.get("down", 0)
+    total = breadth.get("total", 1) or 1
+
+    anomalies: list[dict] = []
+    if total > 0 and abs(up - down) / total < 0.05:
+        anomalies.append({
+            "type": "breadth_convergence",
+            "level": "medium",
+            "detail": f"涨跌家数收敛（{up}/{down}），市场处于风格切换点",
+        })
+    if sectors:
+        top = sectors[0] if sectors else {}
+        if abs(top.get("change_pct", 0) or 0) > 3:
+            anomalies.append({
+                "type": "sector_spike",
+                "level": "high",
+                "detail": f"领涨板块 {top.get('name', '?')} 单日异动 {top.get('change_pct', 0):.2f}%",
+            })
+    if not anomalies:
+        return ModuleSection(
+            key="intraday_anomaly",
+            title="盘中异动",
+            status="partial",
+            summary="盘中暂无显著异动信号。",
+            content={"anomalies": []},
+            confidence="low",
+        )
+    return ModuleSection(
+        key="intraday_anomaly",
+        title="盘中异动",
+        status="ready",
+        summary=f"检测到 {len(anomalies)} 项盘中异动。",
+        content={"anomalies": anomalies},
+        confidence="medium",
+    )
+
+
 def _builder_for_module(module_key: str):
     """返回 module_key 对应的 builder 函数。"""
     registry: dict[str, Any] = {
@@ -787,6 +866,8 @@ def _builder_for_module(module_key: str):
         "key_evidence": build_key_evidence_module,
         "data_statement": build_data_statement_module,
         "quick_summary": build_quick_summary_module,
+        "overnight": build_overnight_module,
+        "intraday_anomaly": build_intraday_anomaly_module,
     }
     return registry.get(module_key)
 
@@ -853,6 +934,8 @@ def run_module_builders(
         try:
             if mk == "watchlist_impact":
                 mod = builder(snapshot, theme_context_raw)
+            elif mk == "overnight":
+                mod = builder(evidence, snapshot)
             elif mk in ("risk_radar",):
                 # 从已生成的模块收集 missing_data
                 all_missing = set()
@@ -889,6 +972,8 @@ def run_module_builders(
         try:
             if mk == "key_evidence":
                 mod = builder(evidence)
+            elif mk == "overnight":
+                mod = builder(evidence, snapshot)
             else:
                 mod = builder(snapshot)
             modules[mk] = mod

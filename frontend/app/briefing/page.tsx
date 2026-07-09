@@ -405,7 +405,13 @@ function DataQualityCard({
   evidenceCount,
   missingData,
 }: {
-  briefing: { data_quality?: string | null; confidence?: string | null; evidence_count?: number | null } | null;
+  briefing: {
+    data_quality?: string | null;
+    confidence?: string | null;
+    evidence_count?: number | null;
+    failed_modules?: Array<{ module: string; fund_code?: string; reason: string }>;
+    data_sources_last_updated?: Record<string, string>;
+  } | null;
   evidenceCount: number;
   missingData: string[];
 }) {
@@ -481,11 +487,11 @@ function DataQualityCard({
           </div>
         )}
         {/* V2: Failed modules */}
-        {isV2Briefing({}) && (briefing as Briefing)?.failed_modules && (briefing as Briefing).failed_modules!.length > 0 && (
+        {briefing?.failed_modules && briefing.failed_modules.length > 0 && (
           <div className="rounded-xl border border-red-100 bg-red-50/50 px-3 py-2 text-xs text-red-700">
             <div className="mb-1 font-medium">失败模块：</div>
             <div className="flex flex-col gap-1">
-              {(briefing as Briefing).failed_modules!.map((f, i) => (
+              {briefing.failed_modules.map((f, i) => (
                 <span key={i}>
                   {f.module}{f.fund_code ? ` (${f.fund_code})` : ""}：{f.reason}
                 </span>
@@ -494,10 +500,10 @@ function DataQualityCard({
           </div>
         )}
         {/* V2: Data sources freshness */}
-        {isV2Briefing({}) && (briefing as Briefing)?.data_sources_last_updated && Object.keys((briefing as Briefing).data_sources_last_updated ?? {}).length > 0 && (
+        {briefing?.data_sources_last_updated && Object.keys(briefing.data_sources_last_updated ?? {}).length > 0 && (
           <div className="rounded-xl border border-gray-100 bg-gray-50 px-3 py-2 text-xs text-gray-500">
             <div className="mb-1 font-medium text-gray-700">数据源最后更新：</div>
-            {Object.entries((briefing as Briefing).data_sources_last_updated ?? {}).map(([source, time]) => (
+            {Object.entries(briefing.data_sources_last_updated ?? {}).map(([source, time]) => (
               <div key={source} className="flex justify-between gap-2">
                 <span>{source}</span>
                 <span className="text-gray-400">{time ? formatDateTime(time) : "—"}</span>
