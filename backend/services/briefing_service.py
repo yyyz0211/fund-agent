@@ -60,11 +60,14 @@ def compute_data_quality(snapshot: dict, evidence: list[dict]) -> dict:
     overseas_keys_present = bool(breadth)
     errors = snapshot.get("errors") or []
     evidence_count = len(evidence or [])
+    collect_meta = snapshot.get("collect_meta") or {}
+    data_sources = collect_meta.get("data_sources_last_updated") or {}
 
     has_indices = bool(market_snapshot)
     has_sectors = bool(sectors)
     has_overseas = isinstance(snapshot.get("industry_sectors"), list)  # placeholder
     missing: list[str] = []
+    failed_modules: list[dict] = []
 
     if not has_indices:
         missing.append("indices")
@@ -85,9 +88,22 @@ def compute_data_quality(snapshot: dict, evidence: list[dict]) -> dict:
     if by_cat.get("macro", 0) == 0:
         missing.append("macro_evidence")
 
+    # 单项采集错误记入 failed_modules
+    for err in errors:
+        failed_modules.append({
+            "module": "watchlist_metrics",
+            "fund_code": err.get("fund_code"),
+            "reason": err.get("message", "未知错误"),
+        })
+
     if not market_snapshot and not sectors and not evidence_count and errors:
-        return {"data_quality": "failed", "confidence": "low",
-                "missing_data": list(_DATA_DIMENSIONS)}
+        return {
+            "data_quality": "failed",
+            "confidence": "low",
+            "missing_data": list(_DATA_DIMENSIONS),
+            "failed_modules": failed_modules,
+            "data_sources_last_updated": data_sources,
+        }
 
     if has_indices and has_sectors and evidence_count > 0 and not errors:
         quality = "complete"
@@ -106,6 +122,8 @@ def compute_data_quality(snapshot: dict, evidence: list[dict]) -> dict:
         "data_quality": quality,
         "confidence": confidence,
         "missing_data": missing,
+        "failed_modules": failed_modules,
+        "data_sources_last_updated": data_sources,
     }
 
 
@@ -253,6 +271,9 @@ def collect_watchlist_snapshot(*, fund_codes: list[str] | None = None,
     except Exception:  # noqa: BLE001
         concept_flows = []
 
+    # 9) 各数据源最后更新时间（统一用当前时间）
+    now_iso = datetime.now().isoformat(timespec="seconds")
+
     return {
         "market_snapshot": market_result.get("indices", []),
         "market_breadth": breadth,
@@ -267,6 +288,12 @@ def collect_watchlist_snapshot(*, fund_codes: list[str] | None = None,
             "total_watchlist": total_watchlist,
             "max_funds_applied": max_funds if total_watchlist > max_funds else None,
             "warnings": warnings,
+            "data_sources_last_updated": {
+                "market_snapshot": now_iso,
+                "market_breadth": now_iso,
+                "industry_sectors": now_iso,
+                "concept_sectors": now_iso,
+            },
         },
     }
 
@@ -437,29 +464,10 @@ def run_daily_briefing(*, trigger: str = "scheduled", session=None) -> dict:
         })
         failed += 1
 
-    # compute data quality
+    # compute data quality (now includes failed_modules and data_sources_last_updated)
     quality = compute_data_quality(snapshot, evidence_rows)
 
-    # compose
-    if snapshot.get("watchlist_changes") or snapshot.get("market_snapshot"):
-        try:
-            compose_result = compose_briefing(snapshot, evidence=evidence_rows)
-            succeeded = 1
-        except Exception as exc:  # noqa: BLE001
-            failures.append({"stage": "llm", "message": str(exc)})
-            failed += 1
-    else:
-        compose_result = {
-            "markdown": "（今日自选池为空，无涨跌数据。）",
-            "sections": {},
-            "warnings": [],
-            "llm_model": getattr(settings, "briefing_llm_model", "deepseek-chat"),
-        }
-
-    today = _today()
-    # as_of 用真实数据交易日(从 indices 第一行的 market_date 取),
-    # 而不是"今天"。周末/节假日/尚未 refresh 时 _today() 跟真实数据日期错位,
-    # 用户看到 "数据日期: 2026-07-08" 但实际是 2026-06-30 的旧数据 —— 误导。
+    # as_of：真实数据交易日（从 indices 第一行的 market_date 取）
     as_of = today
     try:
         indices_list = snapshot.get("market_snapshot", []) if isinstance(snapshot, dict) else []
@@ -469,7 +477,97 @@ def run_daily_briefing(*, trigger: str = "scheduled", session=None) -> dict:
                 as_of = first_md
     except Exception:
         pass
-    sections_json = json.dumps(compose_result.get("sections", {}), ensure_ascii=False)
+
+    # compose — 优先使用 V2 module system
+    from backend.services import module_briefing as mb
+
+    try:
+        profile, profile_warnings = mb.get_brief_type_profile("post_market")
+        modules, module_order, module_warnings = mb.run_module_builders(
+            profile=profile,
+            snapshot=snapshot,
+            evidence=evidence_rows,
+            context={},
+        )
+        runner_warnings = profile_warnings + module_warnings
+
+        # quick_summary 在所有内容模块之后
+        quick_summary_mod = mb.run_quick_summary_module(
+            profile=profile,
+            modules=modules,
+            data_quality=quality["data_quality"],
+            confidence=quality["confidence"],
+        )
+        # data_statement 在最后，汇总所有模块状态
+        data_statement_mod = mb.run_data_statement_module(
+            modules=modules,
+            as_of=as_of,
+            briefing_date=today,
+            data_quality=quality["data_quality"],
+            confidence=quality["confidence"],
+            missing_data=quality["missing_data"],
+            failed_modules=quality.get("failed_modules", []),
+            data_sources_last_updated=quality.get("data_sources_last_updated", {}),
+            evidence_count=len(evidence_rows),
+        )
+
+        # V2 final composer
+        compose_result = mb.compose_briefing_v2(
+            profile=profile,
+            modules=modules,
+            quick_summary_mod=quick_summary_mod,
+            data_statement_mod=data_statement_mod,
+            snapshot=snapshot,
+            evidence=evidence_rows,
+        )
+        compose_warnings = compose_result.get("warnings", [])
+
+        # 构建 V2 sections_json 结构
+        all_modules_dict: dict[str, dict] = {}
+        for mk, m in modules.items():
+            if hasattr(m, "to_dict"):
+                all_modules_dict[mk] = m.to_dict()
+            else:
+                all_modules_dict[mk] = dict(m) if isinstance(m, dict) else {"key": mk}
+        all_modules_dict["quick_summary"] = (
+            quick_summary_mod.to_dict() if hasattr(quick_summary_mod, "to_dict")
+            else dict(quick_summary_mod)
+        )
+        all_modules_dict["data_statement"] = (
+            data_statement_mod.to_dict() if hasattr(data_statement_mod, "to_dict")
+            else dict(data_statement_mod)
+        )
+
+        sections = {
+            "brief_type": "post_market",
+            "profile_version": "daily_briefing_v2_2026_07_09",
+            "module_order": module_order + ["quick_summary", "data_statement"],
+            "modules": all_modules_dict,
+            "warnings": runner_warnings + compose_warnings,
+        }
+        succeeded = 1
+    except Exception as exc:  # noqa: BLE001
+        compose_result = {
+            "markdown": "（系统错误，简报生成失败。）",
+            "sections": {},
+            "warnings": [f"V2 流程失败，降级：{exc}"],
+        }
+        sections = {}
+        failures.append({"stage": "v2_compose", "message": str(exc)})
+        failed += 1
+        runner_warnings = []
+        module_order = []
+
+    if not snapshot.get("watchlist_changes") and not snapshot.get("market_snapshot"):
+        compose_result = {
+            "markdown": "（今日自选池为空，无涨跌数据。）",
+            "sections": {},
+            "warnings": compose_result.get("warnings", []),
+        }
+        sections = {}
+        runner_warnings = []
+
+    sections_json = json.dumps(sections, ensure_ascii=False)
 
     payload = {
         "title": f"每日基金简报 {as_of}",
@@ -542,6 +640,8 @@ def read_briefing(brief_date: str | None = None) -> dict | None:
         except Exception:
             pass
         missing_data: list[str] = []
+        failed_modules: list[dict] = []
+        data_sources_last_updated: dict = {}
         if row.missing_data_json:
             try:
                 parsed = json.loads(row.missing_data_json)
@@ -549,6 +649,11 @@ def read_briefing(brief_date: str | None = None) -> dict | None:
                     missing_data = [str(x) for x in parsed]
             except Exception:
                 pass
+        # 从 sections_json 中提取 failed_modules 和 data_sources_last_updated
+        if sections.get("data_statement"):
+            ds = sections["data_statement"]
+            failed_modules = ds.get("failed_modules", [])
+            data_sources_last_updated = ds.get("data_sources_last_updated", {})
         return {
             "id": row.id,
             "briefing_date": row.briefing_date,
@@ -561,6 +666,8 @@ def read_briefing(brief_date: str | None = None) -> dict | None:
             "confidence": row.confidence,
             "missing_data": missing_data,
             "evidence_count": row.evidence_count,
+            "failed_modules": failed_modules,
+            "data_sources_last_updated": data_sources_last_updated,
             "created_at": row.created_at.isoformat() if row.created_at else None,
             "updated_at": row.updated_at.isoformat() if row.updated_at else None,
         }

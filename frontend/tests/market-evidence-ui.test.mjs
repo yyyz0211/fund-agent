@@ -104,12 +104,18 @@ test("market evidence rows prioritize visible evidence titles", async () => {
 test("market evidence labels reflect actual source and reliability", async () => {
   const component = await read("../src/components/market/MarketEvidencePanel.tsx");
 
+  assert.match(component, /function isClsTelegraphEvidence/);
   assert.match(component, /function evidenceCategoryLabel/);
   assert.match(component, /function evidenceSummaryCategoryLabel/);
+  assert.match(component, /item\.metrics\?\.cls_id/);
+  assert.match(component, /source_url\.includes\("https:\/\/www\.cls\.cn\/detail\/"\)/);
   assert.match(component, /财联社电报/);
   assert.match(component, /媒体源/);
+  assert.match(component, /市场资讯 \/ 公告 \/ 宏观等/);
+  assert.match(component, /政策 \/ 公告 \/ 宏观 \/ 行业 \/ 市场资讯/);
   assert.doesNotMatch(component, /财联社快讯/);
   assert.doesNotMatch(component, /聚合/);
+  assert.doesNotMatch(component, /normalized === "财联社"\) return "财联社电报"/);
 });
 
 test("sector table hides trend column when history is unavailable and uses compact rows", async () => {

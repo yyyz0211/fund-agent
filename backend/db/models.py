@@ -225,6 +225,29 @@ class Briefing(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
+class BriefingFeedback(Base):
+    """简报用户反馈：用于评估简报质量以优化 LLM prompt 和 module builder。
+
+    存储用户对单篇简报的多维度评分和文字评论。
+    """
+    __tablename__ = "briefing_feedback"
+    __table_args__ = (UniqueConstraint("briefing_id", "user_id", name="uq_briefing_feedback"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    briefing_id: Mapped[int] = mapped_column(Integer, index=True)
+    user_id: Mapped[str] = mapped_column(String(64), default="default")
+    # 评分字段（1-5，可选）
+    risk_accuracy: Mapped[int | None] = mapped_column(Integer)
+    theme_accuracy: Mapped[int | None] = mapped_column(Integer)
+    evidence_quality: Mapped[int | None] = mapped_column(Integer)
+    overall_satisfaction: Mapped[int | None] = mapped_column(Integer)
+    # 评论（可选）
+    comment: Mapped[str | None] = mapped_column(String(2000))
+    # 元数据
+    feedback_meta_json: Mapped[str | None] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 class MarketSnapshot(Base):
     """市场快照：按交易日 + 类型（morning/post_market）存储当日市场全量快照。"""
     __tablename__ = "market_snapshots"

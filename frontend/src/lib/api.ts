@@ -9,6 +9,7 @@ import type {
   WatchlistRow, WatchlistUpsertPayload,
   PortfolioPnlSeries,
   Briefing, BriefingLatestResponse, BriefingListResponse, BriefingRunResponse,
+  BriefingFeedbackPayload, BriefingFeedbackResponse,
   MarketEvidenceResponse, EvidenceCategory,
 } from "@/types/api";
 
@@ -52,6 +53,8 @@ async function send<T>(
   if (r.status === 204) return undefined as T;
   return r.json() as Promise<T>;
 }
+
+const post = <T>(path: string, body?: unknown) => send<T>("POST", path, body);
 
 export const api = {
   fund: (code: string) => get<Fund>(`/api/funds/${code}`),
@@ -187,6 +190,8 @@ export const api = {
       if (!r.ok) throw new Error(`/api/briefing/run -> ${r.status}`);
       return (await r.json()) as BriefingRunResponse;
     }),
+  briefingFeedback: (payload: BriefingFeedbackPayload) =>
+    post<BriefingFeedbackResponse>("/api/briefing/feedback", payload),
   announcements: (fundCode = "", limit = 20) =>
     get<AnnouncementList>("/api/announcements", { fund_code: fundCode, limit }),
   portfolioPnl: (codes: string[] = []) =>

@@ -60,22 +60,28 @@ interface MarketEvidencePanelProps {
   date: string;
 }
 
-function sourceNewsLabel(source?: string | null): string {
-  const normalized = (source || "").trim();
-  if (normalized === "财联社") return "财联社电报";
+function isClsTelegraphEvidence(item: MarketEvidenceItem): boolean {
+  if ((item.source || "").trim() !== "财联社") return false;
+  if (item.metrics?.cls_id) return true;
+  return item.source_url.includes("https://www.cls.cn/detail/");
+}
+
+function sourceNewsLabel(item: MarketEvidenceItem): string {
+  const normalized = (item.source || "").trim();
+  if (isClsTelegraphEvidence(item)) return "财联社电报";
   if (normalized) return `${normalized}资讯`;
   return "市场资讯";
 }
 
 function evidenceCategoryLabel(item: MarketEvidenceItem): string {
   if (item.category !== "news") return CATEGORY_META[item.category].label;
-  return sourceNewsLabel(item.source);
+  return sourceNewsLabel(item);
 }
 
 function evidenceSummaryCategoryLabel(category: EvidenceCategory, rows: MarketEvidenceItem[]): string {
   if (category !== "news") return CATEGORY_META[category].label;
-  const sources = Array.from(new Set(rows.map((row) => (row.source || "").trim()).filter(Boolean)));
-  if (sources.length === 1) return sourceNewsLabel(sources[0]);
+  const labels = Array.from(new Set(rows.map((row) => evidenceCategoryLabel(row))));
+  if (labels.length === 1) return labels[0];
   return CATEGORY_META.news.label;
 }
 
@@ -97,7 +103,7 @@ export function MarketEvidencePanel({ date }: MarketEvidencePanelProps) {
     refreshErrors.length > 0;
   const manualDisabled = refresh.isPending || !isToday;
   const manualTitle = isToday
-    ? "立即触发一次 evidence 采集(财联社电报 / 公告 / 宏观等)"
+    ? "立即触发一次 evidence 采集(市场资讯 / 公告 / 宏观等)"
     : "历史日不支持手动刷新:akshare / 财联社接口只取最新,刷新会写错日期";
 
   const presentCategories = useMemo(
@@ -147,7 +153,7 @@ export function MarketEvidencePanel({ date }: MarketEvidencePanelProps) {
             ) : null}
           </div>
         ) : (
-          "暂无可验证证据（政策 / 公告 / 宏观 / 行业 / 财联社电报）。本地未采集到当日证据，证据面板留空并不代表市场没有事件。"
+          "暂无可验证证据（政策 / 公告 / 宏观 / 行业 / 市场资讯）。本地未采集到当日证据，证据面板留空并不代表市场没有事件。"
         )}
       </StateBlock>
     );
@@ -198,7 +204,7 @@ export function MarketEvidencePanel({ date }: MarketEvidencePanelProps) {
       </ul>
 
       <p className="border-t border-gray-100 bg-gray-50/70 px-3 py-2 text-[11px] text-gray-400">
-        来源：market_evidence 本地表 · 公开政策页 / 宏观数据 / 公告 / 财联社电报 · 仅供研究参考。
+        来源：market_evidence 本地表 · 公开政策页 / 宏观数据 / 公告 / 公开资讯源 · 仅供研究参考。
       </p>
     </div>
   );
