@@ -88,6 +88,32 @@ NEXT_PUBLIC_LANGGRAPH_URL=http://100.64.0.2:2024
 不起后台线程。手动触发全量刷新另走 `POST /api/admin/refresh-all`(另见
 "信任模型与 admin 端点")。
 
+### 1.3b 知识库 RAG 配置 (可选)
+
+知识库 RAG 使用 PostgreSQL pgvector 做向量检索。默认关闭(Structured 模式)；
+配置 embedding 后自动启用 pgvector。
+
+```ini
+# embedding 服务 (OpenAI 兼容格式)
+KNOWLEDGE_EMBEDDING_BASE_URL=https://api.openai.com/v1
+KNOWLEDGE_EMBEDDING_API_KEY=sk-...
+KNOWLEDGE_EMBEDDING_MODEL=text-embedding-3-small
+KNOWLEDGE_EMBEDDING_DIMENSIONS=1536
+KNOWLEDGE_EMBEDDING_VERSION=001
+
+# 向量后端: auto (默认) / pgvector / structured
+KNOWLEDGE_VECTOR_BACKEND=auto
+```
+
+- `KNOWLEDGE_VECTOR_BACKEND=auto`: 自动检测 embedding 配置,有则用 pgvector,无则降级到结构化检索
+- `KNOWLEDGE_VECTOR_BACKEND=pgvector`: 强制 pgvector,无配置时 API 仍可启动但索引会跳过
+- `KNOWLEDGE_VECTOR_BACKEND=structured`: 纯结构化检索,不调用 embedding
+
+知识库增量流水线默认开启(`SCHEDULER_KNOWLEDGE_ENABLED=true`),每 6 分钟跑一次。
+可通过 `SCHEDULER_KNOWLEDGE_ENABLED=false` 关闭。
+
+模型或 embedding 版本变更时会自动触发重索引;dimension 变更需要手动 `POST /api/knowledge/reindex`。
+
 ### 1.4 启动
 
 ```powershell

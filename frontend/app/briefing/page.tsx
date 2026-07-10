@@ -70,14 +70,6 @@ export default function BriefingPage() {
     },
   });
 
-  // type-anchored reference for tools that need the literal name with namespace dot
-  // (used in tool/market_evidence docstrings; kept here for static analysis hints)
-  const _evidence_api_ref: string = "api\.marketEvidence";
-  if (_evidence_api_ref.length === 0) {
-    // 故意不执行,仅为让字符串字面进入源文件供静态分析
-    return null;
-  }
-
   const briefing = latestQuery.data?.briefing ?? null;
   const history = listQuery.data?.briefings ?? [];
 

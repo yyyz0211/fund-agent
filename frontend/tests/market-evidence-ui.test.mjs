@@ -17,9 +17,10 @@ test("market page renders a market evidence panel", async () => {
 test("briefing page renders evidence quality beside latest brief", async () => {
   const page = await read("../app/briefing/page.tsx");
 
-  assert.match(page, /api\\.marketEvidence/);
-  assert.match(page, /证据来源/);
+  assert.match(page, /api\.marketEvidence/);
+  assert.match(page, /证据条数/);
   assert.match(page, /数据质量/);
+  assert.doesNotMatch(page, /_evidence_api_ref/);
 });
 
 test("market evidence component preserves source links and empty state", async () => {
