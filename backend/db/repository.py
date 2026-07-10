@@ -1042,6 +1042,11 @@ def _knowledge_document_to_dict(row: KnowledgeDocument) -> dict:
         "index_status": row.index_status,
         "embedding_model": row.embedding_model,
         "embedding_version": row.embedding_version,
+        "index_attempts": row.index_attempts,
+        "last_index_error": row.last_index_error,
+        "next_index_retry_at": (
+            row.next_index_retry_at.isoformat() if row.next_index_retry_at else None
+        ),
         "content_hash": row.content_hash,
         "canonical_content_hash": row.canonical_content_hash,
         "raw_reason": row.raw_reason,

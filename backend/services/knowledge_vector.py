@@ -4,9 +4,10 @@ import hashlib
 import json
 import math
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Protocol
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 
 from backend.db.models import KnowledgeDocument
 
@@ -148,11 +149,25 @@ def index_pending_documents(
     embedding_provider: EmbeddingProvider,
     vector_store: VectorStoreAdapter,
     limit: int,
+    now: datetime | None = None,
+    max_attempts: int = 3,
+    retry_seconds: int = 300,
 ) -> dict:
-    """把 pending knowledge document 写入向量索引并更新状态。"""
+    """索引 pending 或已到重试时间的 failed 文档。"""
+    attempted_at = now or datetime.utcnow()
     docs = session.scalars(
         select(KnowledgeDocument)
-        .where(KnowledgeDocument.index_status == "pending")
+        .where(or_(
+            KnowledgeDocument.index_status == "pending",
+            and_(
+                KnowledgeDocument.index_status == "failed",
+                KnowledgeDocument.index_attempts < max(1, int(max_attempts)),
+                or_(
+                    KnowledgeDocument.next_index_retry_at.is_(None),
+                    KnowledgeDocument.next_index_retry_at <= attempted_at,
+                ),
+            ),
+        ))
         .order_by(KnowledgeDocument.id)
         .limit(max(1, int(limit)))
     ).all()
@@ -172,9 +187,14 @@ def index_pending_documents(
             for idx, doc in enumerate(docs)
         ]
         vector_store.upsert(items)
-    except Exception:
+    except Exception as exc:
         for doc in docs:
             doc.index_status = "failed"
+            doc.index_attempts = int(doc.index_attempts or 0) + 1
+            doc.last_index_error = f"{type(exc).__name__}: {exc}"[:2000]
+            doc.next_index_retry_at = attempted_at + timedelta(
+                seconds=max(1, int(retry_seconds))
+            )
         session.flush()
         result["failed"] = len(docs)
         return result
@@ -183,6 +203,9 @@ def index_pending_documents(
         doc.index_status = "indexed"
         doc.embedding_model = embedding_provider.model
         doc.embedding_version = embedding_provider.version
+        doc.index_attempts = 0
+        doc.last_index_error = None
+        doc.next_index_retry_at = None
     session.flush()
     result["indexed"] = len(docs)
     return result

@@ -242,17 +242,36 @@ def sync_cls_telegraph_once(
             "latest_cls_id": newest_cls_id,
         }
     except Exception as exc:  # noqa: BLE001
-        s.rollback()
+        try:
+            s.rollback()
+        except Exception as rollback_exc:  # noqa: BLE001
+            logger.warning("[cls-sync] rollback failed: %s", rollback_exc)
         error = f"{type(exc).__name__}: {exc}"
-        repo.update_cls_telegraph_sync_state(
-            s,
-            last_seen_ctime=previous_state.get("last_seen_ctime"),
-            last_seen_cls_id=previous_state.get("last_seen_cls_id"),
-            last_success_at=previous_state.get("last_success_at"),
-            last_error=error,
-        )
-        s.commit()
-        logger.warning("[cls-sync] sync failed: %s", error)
+        # `previous_state` 可能为 None（首跑 / 行被外部删）；用 .get 兼容。
+        prev = previous_state or {}
+        try:
+            repo.update_cls_telegraph_sync_state(
+                s,
+                last_seen_ctime=prev.get("last_seen_ctime"),
+                last_seen_cls_id=prev.get("last_seen_cls_id"),
+                last_success_at=prev.get("last_success_at"),
+                last_error=error,
+            )
+            s.commit()
+        except Exception as state_exc:  # noqa: BLE001
+            # 写 `last_error` 又失败（典型场景：SQLite database is locked）。
+            # 不能让"记错误"这一步把整个 scheduler 触发器搞崩；
+            # 降级为 logger.warning，下一轮 tick 再试。
+            try:
+                s.rollback()
+            except Exception:
+                pass
+            logger.warning(
+                "[cls-sync] sync failed (%s) AND state update failed (%s)",
+                error, state_exc,
+            )
+        else:
+            logger.warning("[cls-sync] sync failed: %s", error)
         return {
             "status": "failed",
             "fetched": fetched,

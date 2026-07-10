@@ -105,6 +105,8 @@ class Settings(BaseSettings):
     knowledge_classification_max_attempts: int = 3
     knowledge_classification_retry_seconds: int = 300
     knowledge_index_batch_size: int = 20
+    knowledge_index_max_attempts: int = 3
+    knowledge_index_retry_seconds: int = 300
     knowledge_default_ttl_days: int = 14
     knowledge_include_pending_fallback: bool = True
     knowledge_max_search_limit: int = 50

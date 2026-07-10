@@ -151,6 +151,37 @@ def test_scheduler_registers_cls_telegraph_sync_when_enabled(monkeypatch):
     assert (360, "Asia/Shanghai") in interval_calls
 
 
+def test_scheduler_registers_knowledge_pipeline_when_enabled(monkeypatch):
+    """默认开启时 scheduler 应每 6 分钟触发一次知识库增量流水线。"""
+    from backend import scheduler as sched
+    from backend.config.settings import get_settings
+
+    get_settings.cache_clear()
+
+    recorder = []
+    monkeypatch.setattr(sched, "_build_scheduler", lambda: _FakeScheduler(recorder))
+    monkeypatch.setattr(sched, "_cron_trigger", lambda hour, minute, tz: ("cron",))
+    interval_calls = []
+    monkeypatch.setattr(
+        sched, "_interval_trigger",
+        lambda minutes, tz: interval_calls.append((minutes, tz)) or ("interval", minutes, tz),
+    )
+    monkeypatch.setattr(
+        sched, "_seconds_interval_trigger",
+        lambda seconds, tz: ("interval_seconds", seconds, tz),
+    )
+
+    out = sched.start_scheduler(enabled=True, hour=20, minute=0, timezone="Asia/Shanghai")
+
+    assert out is not None
+    assert any(r.get("id") == "knowledge_ingest_index" for r in recorder)
+    job = next(r for r in recorder if r.get("id") == "knowledge_ingest_index")
+    assert job["max_instances"] == 1
+    assert job["coalesce"] is True
+    assert job["misfire_grace_time"] <= 300
+    assert (6, "Asia/Shanghai") in interval_calls
+
+
 def test_scheduler_evidence_hourly_can_be_disabled(monkeypatch):
     """SCHEDULER_EVIDENCE_HOURLY_ENABLED=false 时不注册 hourly job。"""
     from backend import scheduler as sched

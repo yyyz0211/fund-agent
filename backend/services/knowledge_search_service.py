@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from contextlib import nullcontext
 from datetime import datetime
@@ -17,6 +18,8 @@ from backend.services import (
     knowledge_match_service,
     knowledge_vector,
 )
+from backend.services.knowledge_embedding import build_embedding_provider
+from backend.services.knowledge_pgvector import build_vector_store
 
 
 STRUCTURED_FALLBACK_WARNING = (
@@ -24,8 +27,7 @@ STRUCTURED_FALLBACK_WARNING = (
     "基金标签关键词匹配，可能遗漏语义相近但词面不同的命中。"
 )
 
-_DEFAULT_EMBEDDING_PROVIDER = knowledge_vector.DeterministicEmbeddingProvider()
-_DEFAULT_VECTOR_STORE = knowledge_vector.InMemoryVectorStore()
+logger = logging.getLogger(__name__)
 
 
 def _json_list(value: str | None) -> list:
@@ -54,7 +56,7 @@ def _freshness_score(published_at: str | None) -> float:
 def _document_to_search_item(
     doc: KnowledgeDocument,
     *,
-    semantic_score: float = 0.5,
+    semantic_score: float | None = None,
     fund_match: KnowledgeFundMatch | None = None,
 ) -> dict:
     relevance = float(doc.relevance_score or 0)
@@ -62,7 +64,7 @@ def _document_to_search_item(
     fund_match_score = float(fund_match.match_score or 0) if fund_match else 0.0
     final_score = min(
         1.0,
-        semantic_score * 0.30
+        float(semantic_score or 0.0) * 0.30
         + freshness * 0.20
         + fund_match_score * 0.30
         + relevance * 0.20,
@@ -84,6 +86,29 @@ def _document_to_search_item(
     }
 
 
+def merge_hybrid_candidates(
+    structured_items: list[dict],
+    vector_items: list[dict],
+    *,
+    limit: int,
+) -> list[dict]:
+    """按 document_id 合并候选，保留较高得分后再应用最终 limit。"""
+    merged: dict[int, dict] = {}
+    for item in [*structured_items, *vector_items]:
+        document_id = int(item["document_id"])
+        previous = merged.get(document_id)
+        if previous is None or float(item.get("final_score") or 0) > float(
+            previous.get("final_score") or 0
+        ):
+            merged[document_id] = item
+    ranked = sorted(
+        merged.values(),
+        key=lambda item: float(item.get("final_score") or 0),
+        reverse=True,
+    )
+    return ranked[:max(1, int(limit))]
+
+
 def _apply_structured_filters(stmt, *, query, topic, source_type, date_from, date_to, include_pending):
     now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     stmt = stmt.where(or_(
@@ -98,9 +123,7 @@ def _apply_structured_filters(stmt, *, query, topic, source_type, date_from, dat
         stmt = stmt.where(KnowledgeDocument.published_at >= date_from)
     if date_to:
         stmt = stmt.where(KnowledgeDocument.published_at <= date_to)
-    if not include_pending:
-        stmt = stmt.where(KnowledgeDocument.index_status == "indexed")
-    else:
+    if include_pending:
         stmt = stmt.where(KnowledgeDocument.index_status.in_(["indexed", "pending", "failed"]))
     if query:
         like = f"%{query}%"
@@ -149,6 +172,14 @@ def search_knowledge(
     with ctx as s:
         mode = "structured_fallback"
         warning = STRUCTURED_FALLBACK_WARNING
+        try:
+            active_provider = embedding_provider or build_embedding_provider(get_settings())
+            active_store = vector_store or build_vector_store(s, get_settings())
+        except Exception as exc:  # noqa: BLE001 - 检索必须能结构化降级
+            logger.warning("knowledge vector runtime unavailable: %s", exc)
+            active_provider = None
+            active_store = None
+        vector_available = active_provider is not None and active_store is not None
         match_by_doc: dict[int, KnowledgeFundMatch] = {}
         if fund_code:
             matches = s.scalars(
@@ -173,6 +204,15 @@ def search_knowledge(
                     "items": [],
                 }
 
+        filters = {
+            "fund_code": fund_code,
+            "topic": topic,
+            "source_type": source_type,
+            "date_from": date_from,
+            "date_to": date_to,
+            "include_pending": include_pending,
+        }
+        candidate_limit = max(1, int(limit)) * 5
         stmt = select(KnowledgeDocument).where(
             KnowledgeDocument.classification_status == "accepted"
         )
@@ -191,21 +231,63 @@ def search_knowledge(
             stmt.order_by(
                 KnowledgeDocument.published_at.desc().nullslast(),
                 KnowledgeDocument.id.desc(),
-            ).limit(max(1, int(limit)))
+            ).limit(candidate_limit)
         ).all()
-        items = [
+        structured_items = [
             _document_to_search_item(doc, fund_match=match_by_doc.get(doc.id))
             for doc in docs
         ]
-        items.sort(key=lambda item: item["final_score"], reverse=True)
-        filters = {
-            "fund_code": fund_code,
-            "topic": topic,
-            "source_type": source_type,
-            "date_from": date_from,
-            "date_to": date_to,
-            "include_pending": include_pending,
-        }
+        vector_items: list[dict] = []
+        if vector_available and query.strip():
+            try:
+                query_vector = active_provider.embed([query])[0]
+                vector_filters = {
+                    key: value for key, value in {
+                        "topic": topic,
+                        "source_type": source_type,
+                        "date_from": date_from,
+                        "date_to": date_to,
+                    }.items() if value not in (None, "")
+                }
+                hits = active_store.search(query_vector, vector_filters, candidate_limit)
+                semantic_by_doc = {
+                    int(hit.document_id): float(hit.score) for hit in hits
+                    if not match_by_doc or int(hit.document_id) in match_by_doc
+                }
+                if semantic_by_doc:
+                    vector_stmt = select(KnowledgeDocument).where(
+                        KnowledgeDocument.id.in_(list(semantic_by_doc)),
+                        KnowledgeDocument.classification_status == "accepted",
+                    )
+                    vector_stmt = _apply_structured_filters(
+                        vector_stmt,
+                        query="",
+                        topic=topic,
+                        source_type=source_type,
+                        date_from=date_from,
+                        date_to=date_to,
+                        include_pending=True,
+                    )
+                    vector_docs = s.scalars(vector_stmt).all()
+                    vector_items = [
+                        _document_to_search_item(
+                            doc,
+                            semantic_score=semantic_by_doc.get(int(doc.id)),
+                            fund_match=match_by_doc.get(doc.id),
+                        )
+                        for doc in vector_docs
+                    ]
+                mode = "hybrid"
+                warning = None
+            except Exception as exc:  # noqa: BLE001 - 语义失败走结构化兜底
+                logger.warning("knowledge vector search failed; using fallback: %s", exc)
+        items = merge_hybrid_candidates(
+            structured_items,
+            vector_items,
+            limit=limit,
+        )
+        for item in items:
+            item["retrieval_mode"] = mode
         _write_retrieval_log(
             s,
             query=query,
@@ -277,12 +359,24 @@ def run_knowledge_pipeline_once(
                 session=s,
                 classifier=classifier,
             )
-            index_result = knowledge_vector.index_pending_documents(
-                session=s,
-                embedding_provider=embedding_provider or _DEFAULT_EMBEDDING_PROVIDER,
-                vector_store=vector_store or _DEFAULT_VECTOR_STORE,
-                limit=index_limit,
-            )
+            active_provider = embedding_provider or build_embedding_provider(settings)
+            active_store = vector_store or build_vector_store(s, settings)
+            if active_provider is not None and active_store is not None:
+                index_result = knowledge_vector.index_pending_documents(
+                    session=s,
+                    embedding_provider=active_provider,
+                    vector_store=active_store,
+                    limit=index_limit,
+                    max_attempts=int(getattr(settings, "knowledge_index_max_attempts", 3)),
+                    retry_seconds=int(getattr(settings, "knowledge_index_retry_seconds", 300)),
+                )
+            else:
+                index_result = {
+                    "processed": 0,
+                    "indexed": 0,
+                    "failed": 0,
+                    "skipped": "vector_unavailable",
+                }
             profiles = knowledge_fund_profile_service.refresh_fund_watchlist_profiles(session=s)
             matches = knowledge_match_service.refresh_knowledge_fund_matches(session=s)
             if owns_session:

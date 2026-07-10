@@ -153,13 +153,13 @@ def build_vector_store(session, settings: Any):
         return None
     if getattr(settings, "knowledge_vector_backend", "auto") == "structured":
         return None
-    bind = session.get_bind()
-    if bind.dialect.name != "postgresql":
-        return None
     model = getattr(settings, "knowledge_embedding_model", None)
     version = getattr(settings, "knowledge_embedding_version", None)
     dimensions = getattr(settings, "knowledge_embedding_dimensions", None)
     if not model or not version or not dimensions:
+        return None
+    bind = session.get_bind()
+    if bind.dialect.name != "postgresql":
         return None
     return PgVectorStore(
         session,

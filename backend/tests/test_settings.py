@@ -140,6 +140,8 @@ def test_knowledge_settings_defaults(monkeypatch):
         "KNOWLEDGE_CLASSIFICATION_MAX_ATTEMPTS",
         "KNOWLEDGE_CLASSIFICATION_RETRY_SECONDS",
         "KNOWLEDGE_INDEX_BATCH_SIZE",
+        "KNOWLEDGE_INDEX_MAX_ATTEMPTS",
+        "KNOWLEDGE_INDEX_RETRY_SECONDS",
         "KNOWLEDGE_DEFAULT_TTL_DAYS",
         "KNOWLEDGE_INCLUDE_PENDING_FALLBACK",
         "KNOWLEDGE_MAX_SEARCH_LIMIT",
@@ -163,6 +165,8 @@ def test_knowledge_settings_defaults(monkeypatch):
     assert s.knowledge_classification_max_attempts == 3
     assert s.knowledge_classification_retry_seconds == 300
     assert s.knowledge_index_batch_size == 20
+    assert s.knowledge_index_max_attempts == 3
+    assert s.knowledge_index_retry_seconds == 300
     assert s.knowledge_default_ttl_days == 14
     assert s.knowledge_include_pending_fallback is True
     assert s.knowledge_max_search_limit == 50
@@ -185,6 +189,8 @@ def test_knowledge_settings_read_env(monkeypatch):
     monkeypatch.setenv("KNOWLEDGE_CLASSIFICATION_MAX_ATTEMPTS", "5")
     monkeypatch.setenv("KNOWLEDGE_CLASSIFICATION_RETRY_SECONDS", "45")
     monkeypatch.setenv("KNOWLEDGE_INDEX_BATCH_SIZE", "4")
+    monkeypatch.setenv("KNOWLEDGE_INDEX_MAX_ATTEMPTS", "6")
+    monkeypatch.setenv("KNOWLEDGE_INDEX_RETRY_SECONDS", "90")
     monkeypatch.setenv("KNOWLEDGE_DEFAULT_TTL_DAYS", "21")
     monkeypatch.setenv("KNOWLEDGE_INCLUDE_PENDING_FALLBACK", "false")
     monkeypatch.setenv("KNOWLEDGE_MAX_SEARCH_LIMIT", "25")
@@ -206,6 +212,8 @@ def test_knowledge_settings_read_env(monkeypatch):
     assert s.knowledge_classification_max_attempts == 5
     assert s.knowledge_classification_retry_seconds == 45
     assert s.knowledge_index_batch_size == 4
+    assert s.knowledge_index_max_attempts == 6
+    assert s.knowledge_index_retry_seconds == 90
     assert s.knowledge_default_ttl_days == 21
     assert s.knowledge_include_pending_fallback is False
     assert s.knowledge_max_search_limit == 25

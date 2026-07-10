@@ -3,8 +3,15 @@
 进程内单例:`BackgroundScheduler` 随 FastAPI 进程启动而启动、随进程停止而停止。
 调度到点时调用 `scheduled_refresh.refresh_all_watchlist`,遍历自选池刷新 NAV + 画像。
 `max_instances=1` + `coalesce=True` 保证上一次没跑完时不会叠加触发。
+
+写入型 job（`cls_telegraph_sync`、`knowledge_ingest_index`）额外走
+`scheduler_lock` 进程级单飞锁，确保同进程内任意时刻只有一个写入型
+scheduler job 在跑。这避免了 SQLite 单文件场景下并发写锁 + QueuePool
+排干的双层放大故障（见 [`terminals/9.txt`](../../.cursor/projects/Users-leon-fund-agent/terminals/9.txt)）。
 """
 from __future__ import annotations
+
+import logging
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -13,9 +20,32 @@ from apscheduler.triggers.interval import IntervalTrigger
 from backend.config.settings import get_settings
 from backend.services import briefing_service
 from backend.services.scheduled_refresh import refresh_all_watchlist
+from backend.services.scheduler_lock import SchedulerLockBusy, scheduler_lock
+
+
+logger = logging.getLogger(__name__)
 
 
 _scheduler: BackgroundScheduler | None = None
+
+
+def _safe_job(label: str, fn, *args, **kwargs):
+    """把 scheduler job 主体包进 scheduler_lock。
+
+    - 锁空闲时正常执行；
+    - 锁被占（fast_fail=True）时打 warning 并直接放弃本次触发，由
+      APScheduler 在下一轮 interval 自然重试，不会叠加积压；
+    - 业务异常向上抛给 APScheduler 记录（保持现有行为）。
+    """
+    try:
+        with scheduler_lock(label):
+            return fn(*args, **kwargs)
+    except SchedulerLockBusy as exc:
+        logger.warning(
+            "[scheduler] job=%s skipped: %s",
+            label, exc,
+        )
+        return None
 
 
 def _build_scheduler() -> BackgroundScheduler:
@@ -158,13 +188,37 @@ def start_scheduler(*, enabled: bool | None = None,
         interval_seconds = int(getattr(settings, "cls_telegraph_sync_interval_seconds", 60))
         if interval_seconds > 0:
             scheduler.add_job(
-                lambda: cls_telegraph_sync_service.run_scheduled_cls_telegraph_sync(),
+                lambda: _safe_job(
+                    "cls_telegraph_sync",
+                    cls_telegraph_sync_service.run_scheduled_cls_telegraph_sync,
+                ),
                 trigger=_seconds_interval_trigger(interval_seconds, timezone),
                 id="cls_telegraph_sync",
                 max_instances=1,
                 coalesce=True,
                 misfire_grace_time=120,
                 jitter=min(10, max(0, interval_seconds // 5)),
+            )
+
+    # 知识库增量流水线:从已落库的信息源中做 LLM 准入、向量索引和基金匹配。
+    # 它依赖本地已有数据,不负责远程抓取;远程财联社电报同步由上面的
+    # cls_telegraph_sync job 独立完成。默认 6 分钟一次,避免 LLM/索引任务过密。
+    if bool(getattr(settings, "scheduler_knowledge_enabled", True)):
+        from backend.services import knowledge_search_service
+        knowledge_minutes = int(getattr(settings, "scheduler_knowledge_interval_minutes", 6))
+        if knowledge_minutes > 0:
+            scheduler.add_job(
+                lambda: _safe_job(
+                    "knowledge_ingest_index",
+                    knowledge_search_service.run_knowledge_pipeline_once,
+                    trigger="scheduled",
+                ),
+                trigger=_interval_trigger(knowledge_minutes, timezone),
+                id="knowledge_ingest_index",
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=300,
+                jitter=min(60, max(0, knowledge_minutes * 10)),
             )
 
     scheduler.start()
