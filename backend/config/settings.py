@@ -113,6 +113,8 @@ class Settings(BaseSettings):
     knowledge_max_queue_status_limit: int = 200
     scheduler_knowledge_enabled: bool = True
     scheduler_knowledge_interval_minutes: int = 6
+    # 中断任务恢复阈值(秒)。pending/running 超过此时间未更新则标记为 interrupted。
+    knowledge_job_stale_seconds: int = 3600
 
 
 @lru_cache

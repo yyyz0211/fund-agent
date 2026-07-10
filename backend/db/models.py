@@ -568,7 +568,7 @@ class KnowledgeReindexJob(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     trigger: Mapped[str] = mapped_column(String(32), index=True)  # manual / scheduled
     status: Mapped[str] = mapped_column(String(32), index=True, default="pending")
-    # pending / running / completed / failed / busy_skipped
+    # pending / running / completed / failed / busy_skipped / interrupted
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     latency_ms: Mapped[Optional[int]] = mapped_column(Integer)

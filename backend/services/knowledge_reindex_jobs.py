@@ -221,3 +221,35 @@ def _safe_load_json(value: Optional[str]) -> Optional[dict]:
         return json.loads(value)
     except (TypeError, ValueError):
         return None
+
+
+def recover_interrupted_jobs(older_than_seconds: int) -> int:
+    """把 stale pending/running 任务标记为 interrupted。
+
+    Args:
+        older_than_seconds: 只处理超过此秒数的任务。
+
+    Returns:
+        被标记为 interrupted 的任务数量。
+    """
+    from datetime import timedelta
+    from backend.config.settings import get_settings
+
+    cutoff = datetime.utcnow() - timedelta(seconds=older_than_seconds)
+    recovered = 0
+    with _new_session() as s:
+        stale = s.query(KnowledgeReindexJob).filter(
+            KnowledgeReindexJob.status.in_(["pending", "running"]),
+            KnowledgeReindexJob.created_at < cutoff,
+        ).all()
+        for job in stale:
+            job.status = "interrupted"
+            job.finished_at = datetime.utcnow()
+            job.error_message = (
+                f"Recovered after {older_than_seconds}s stale. "
+                f"Original created_at={job.created_at.isoformat()}"
+            )[:2000]
+            recovered += 1
+        if stale:
+            s.commit()
+    return recovered

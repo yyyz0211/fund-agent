@@ -45,11 +45,35 @@ def _ensure_schema() -> None:
 
     调度器随进程启动;`SCHEDULER_ENABLED=false`(测试/CI)时 `start_scheduler`
     直接返回 None,不起后台线程。
+
+    启动时先恢复中断的 jobs,避免上次进程 crash 遗留的 stale 任务
+    一直卡在 pending/running 状态。
     """
+    import logging
+
     from backend.db.init_db import init_db
     from backend import scheduler as app_scheduler
+    from backend.config.settings import get_settings
+    from backend.services import knowledge_reindex_jobs
+
+    logger = logging.getLogger(__name__)
 
     init_db()
+
+    # 恢复中断的 jobs
+    settings = get_settings()
+    try:
+        recovered = knowledge_reindex_jobs.recover_interrupted_jobs(
+            settings.knowledge_job_stale_seconds,
+        )
+        if recovered > 0:
+            logger.info(
+                "[startup] recovered %d interrupted knowledge reindex jobs",
+                recovered,
+            )
+    except Exception:
+        logger.exception("[startup] failed to recover interrupted jobs (non-fatal)")
+
     app_scheduler.start_scheduler()
 
 

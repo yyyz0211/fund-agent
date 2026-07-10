@@ -160,3 +160,116 @@ def test_run_job_in_background_marks_failed_on_exception(monkeypatch, _in_memory
     snapshot = knowledge_reindex_jobs.get_job(jid)
     assert snapshot["status"] == "failed"
     assert "pipeline kaboom" in snapshot["error_message"]
+
+
+def test_recover_interrupted_jobs_marks_stale_pending(_in_memory_db):
+    """超过 stale 阈值的 pending job 应被标记为 interrupted。"""
+    from datetime import datetime, timedelta
+    from backend.db import models as m
+    from backend.services import knowledge_reindex_jobs
+
+    # 落一条"旧" pending job (created_at 设为 2 小时前)
+    old = m.KnowledgeReindexJob(trigger="scheduled", status="pending")
+    with _in_memory_db.connect() as conn:
+        conn.execute(
+            m.KnowledgeReindexJob.__table__.insert().values(
+                trigger="scheduled",
+                status="pending",
+                created_at=datetime.utcnow() - timedelta(hours=2),
+            )
+        )
+        conn.commit()
+
+    # 只恢复超过 1 小时的
+    recovered = knowledge_reindex_jobs.recover_interrupted_jobs(older_than_seconds=3600)
+    assert recovered == 1
+
+    # 验证状态
+    with _in_memory_db.connect() as conn:
+        row = conn.execute(
+            m.KnowledgeReindexJob.__table__.select()
+        ).fetchone()
+        assert row.status == "interrupted"
+        assert row.finished_at is not None
+        assert "Recovered after" in row.error_message
+
+
+def test_recover_interrupted_jobs_ignores_recent_pending(_in_memory_db):
+    """未超过 stale 阈值的 pending job 不应被标记为 interrupted。"""
+    from backend.db import models as m
+    from backend.services import knowledge_reindex_jobs
+
+    # 落一条"新" pending job (刚创建)
+    with _in_memory_db.connect() as conn:
+        conn.execute(
+            m.KnowledgeReindexJob.__table__.insert().values(
+                trigger="scheduled",
+                status="pending",
+            )
+        )
+        conn.commit()
+
+    recovered = knowledge_reindex_jobs.recover_interrupted_jobs(older_than_seconds=3600)
+    assert recovered == 0
+
+    # 验证仍是 pending
+    with _in_memory_db.connect() as conn:
+        row = conn.execute(
+            m.KnowledgeReindexJob.__table__.select()
+        ).fetchone()
+        assert row.status == "pending"
+
+
+def test_recover_interrupted_jobs_ignores_completed(_in_memory_db):
+    """已完成的 job 不应被标记为 interrupted。"""
+    from backend.db import models as m
+    from backend.db.session import get_session
+    from backend.services import knowledge_reindex_jobs
+
+    with get_session() as s:
+        job = m.KnowledgeReindexJob(trigger="scheduled", status="completed")
+        s.add(job)
+        s.commit()
+        job_id = job.id
+
+    recovered = knowledge_reindex_jobs.recover_interrupted_jobs(older_than_seconds=3600)
+    assert recovered == 0
+
+    with get_session() as s:
+        job = s.get(m.KnowledgeReindexJob, job_id)
+        assert job.status == "completed"
+
+
+def test_recover_interrupted_jobs_multiple_stale(_in_memory_db):
+    """多个 stale pending/running 应全部被恢复。"""
+    from datetime import datetime, timedelta
+    from backend.db import models as m
+    from backend.services import knowledge_reindex_jobs
+
+    now = datetime.utcnow()
+    with _in_memory_db.connect() as conn:
+        conn.execute(m.KnowledgeReindexJob.__table__.insert().values(
+            trigger="scheduled", status="pending",
+            created_at=now - timedelta(hours=2),
+        ))
+        conn.execute(m.KnowledgeReindexJob.__table__.insert().values(
+            trigger="scheduled", status="running",
+            created_at=now - timedelta(hours=3),
+        ))
+        conn.execute(m.KnowledgeReindexJob.__table__.insert().values(
+            trigger="scheduled", status="pending",
+            created_at=now - timedelta(minutes=30),
+        ))
+        conn.commit()
+
+    recovered = knowledge_reindex_jobs.recover_interrupted_jobs(older_than_seconds=3600)
+    assert recovered == 2  # 2 小时和 3 小时的那两条
+
+    with _in_memory_db.connect() as conn:
+        rows = conn.execute(
+            m.KnowledgeReindexJob.__table__.select()
+            .order_by(m.KnowledgeReindexJob.id)
+        ).fetchall()
+        statuses = [r.status for r in rows]
+        assert statuses.count("interrupted") == 2
+        assert statuses.count("pending") == 1

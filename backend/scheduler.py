@@ -48,6 +48,44 @@ def _safe_job(label: str, fn, *args, **kwargs):
         return None
 
 
+def _run_knowledge_pipeline_scheduled():
+    """调度器专用的 knowledge pipeline wrapper。
+
+    创建一条 scheduled job 记录，拿到进程锁，执行 pipeline，最后写入
+    状态。相比手动触发(reindex route)，这里复用同一张表方便统一观察。
+    """
+    from backend.services import knowledge_search_service
+    from backend.services import knowledge_reindex_jobs
+
+    # 1. 创建 scheduled job 记录
+    try:
+        job = knowledge_reindex_jobs.create_job(trigger="scheduled")
+        job_id = int(job.id)
+        # 立即 commit，让前台能立即看到这条 pending job
+        from backend.db.session import get_session
+        session = get_session()
+        try:
+            session.commit()
+        finally:
+            session.close()
+    except Exception as exc:
+        logger.exception("[scheduler] knowledge pipeline failed to create job record")
+        return
+
+    # 2. 复用后台线程执行逻辑
+    try:
+        knowledge_reindex_jobs.run_job_in_background(
+            job_id,
+            pipeline_kwargs={"trigger": "scheduled"},
+        )
+    except Exception as exc:
+        logger.exception("[scheduler] knowledge pipeline failed to start background job")
+        knowledge_reindex_jobs.mark_failed(
+            job_id,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+
+
 def _build_scheduler() -> BackgroundScheduler:
     """构造调度器实例。抽成函数便于测试用假对象替换。"""
     return BackgroundScheduler(timezone="Asia/Shanghai")
@@ -208,11 +246,7 @@ def start_scheduler(*, enabled: bool | None = None,
         knowledge_minutes = int(getattr(settings, "scheduler_knowledge_interval_minutes", 6))
         if knowledge_minutes > 0:
             scheduler.add_job(
-                lambda: _safe_job(
-                    "knowledge_ingest_index",
-                    knowledge_search_service.run_knowledge_pipeline_once,
-                    trigger="scheduled",
-                ),
+                lambda: _run_knowledge_pipeline_scheduled(),
                 trigger=_interval_trigger(knowledge_minutes, timezone),
                 id="knowledge_ingest_index",
                 max_instances=1,
