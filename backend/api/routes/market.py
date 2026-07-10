@@ -10,7 +10,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from backend.db.session import get_session
+from backend.api.deps import get_db_session
 from backend.services import market_intel_service, market_service as ms
 
 
@@ -36,7 +36,7 @@ def latest():
 def get_snapshot(
     date: str | None = Query(default=None, description="交易日 YYYY-MM-DD，默认今天"),
     type: str = Query(default="post_market", description="'morning' 或 'post_market'"),
-    session: Session = Depends(get_session),
+    session: Session = Depends(get_db_session),
 ):
     """返回市场情报快照；不存在则触发采集。"""
     try:
@@ -74,7 +74,7 @@ def get_sectors(
 def refresh_market(
     _trigger: str | None = Header(default=None, alias="X-Local-Trigger"),
     date: str | None = Query(default=None, description="采集目标交易日 YYYY-MM-DD；缺省=今天"),
-    session: Session = Depends(get_session),
+    session: Session = Depends(get_db_session),
 ):
     """手动触发市场情报采集（异步）。
 
@@ -109,7 +109,7 @@ def get_market_evidence(
     date: str | None = Query(default=None, description="交易日 YYYY-MM-DD，默认今天"),
     category: str | None = Query(default=None, description="类别: policy/announcement/macro/sector 等"),
     limit: int = Query(default=20, ge=1, le=200),
-    session: Session = Depends(get_session),
+    session: Session = Depends(get_db_session),
 ):
     """按日期/类别查 market_evidence，按 category 分组返回。无证据返回 {count:0, groups:{}}。"""
     from backend.services import market_evidence_service

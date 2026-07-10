@@ -17,8 +17,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from backend.api.deps import get_db_session
 from backend.db.models import Briefing, BriefingFeedback
-from backend.db.session import get_session
 from backend.services import briefing_service
 
 
@@ -82,7 +82,7 @@ def _briefing_summary(row: Briefing) -> dict:
 @router.get("/latest")
 def get_latest_briefing(
     type: str | None = Query(default=None, alias="type", description="按 brief_type 过滤"),
-    session: Session = Depends(get_session),
+    session: Session = Depends(get_db_session),
 ) -> dict:
     """返回最近一篇简报;无则返回 {briefing: null}。
 
@@ -102,7 +102,7 @@ def get_latest_briefing(
 def list_briefings(
     limit: int = Query(default=30, ge=1, le=200),
     type: str | None = Query(default=None, alias="type", description="按 brief_type 过滤"),
-    session: Session = Depends(get_session),
+    session: Session = Depends(get_db_session),
 ) -> dict:
     """按 briefing_date 降序返回最近 N 篇概要。"""
     stmt = select(Briefing).order_by(Briefing.briefing_date.desc()).limit(limit)
@@ -157,7 +157,7 @@ class FeedbackPayload(BaseModel):
 
 
 @router.post("/feedback", status_code=201)
-def submit_feedback(payload: FeedbackPayload, session: Session = Depends(get_session)) -> dict:
+def submit_feedback(payload: FeedbackPayload, session: Session = Depends(get_db_session)) -> dict:
     """提交简报反馈。同一 (briefing_id, user_id) 重复提交时更新现有记录。"""
     briefing = session.get(Briefing, payload.briefing_id)
     if briefing is None:
@@ -194,7 +194,7 @@ def submit_feedback(payload: FeedbackPayload, session: Session = Depends(get_ses
 
 
 @router.get("/feedback/{briefing_id}")
-def list_feedback(briefing_id: int, session: Session = Depends(get_session)) -> dict:
+def list_feedback(briefing_id: int, session: Session = Depends(get_db_session)) -> dict:
     """查询指定简报的所有用户反馈。"""
     rows = session.scalars(
         select(BriefingFeedback).where(BriefingFeedback.briefing_id == briefing_id)

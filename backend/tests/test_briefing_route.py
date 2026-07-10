@@ -28,7 +28,8 @@ def client_with_session():
     from sqlalchemy.orm import sessionmaker
     from sqlalchemy.pool import StaticPool
 
-    from backend.db.session import Base, get_session, engine, SessionLocal
+    from backend.api.deps import get_db_session
+    from backend.db.session import Base, engine, SessionLocal
     from backend.api.app import app
 
     # 1) 引入模型,确保 Base.metadata 注册完整
@@ -69,7 +70,7 @@ def client_with_session():
         finally:
             s.close()
 
-    app.dependency_overrides[get_session] = _override
+    app.dependency_overrides[get_db_session] = _override
 
     with TestClient(app) as client:
         yield client, TestingSession

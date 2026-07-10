@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from backend.db.session import get_session
+from backend.api.deps import get_db_session
 from backend.services import cls_telegraph_sync_service
 
 
@@ -17,7 +17,7 @@ def get_cls_telegraph(
     category: str | None = Query(default=None),
     since_id: str | None = Query(default=None),
     keyword: str | None = Query(default=None),
-    session: Session = Depends(get_session),
+    session: Session = Depends(get_db_session),
 ):
     rows = cls_telegraph_sync_service.list_cls_telegraph_items(
         session=session,
@@ -30,5 +30,5 @@ def get_cls_telegraph(
 
 
 @router.get("/telegraph/sync/status")
-def get_cls_telegraph_sync_status(session: Session = Depends(get_session)):
+def get_cls_telegraph_sync_status(session: Session = Depends(get_db_session)):
     return cls_telegraph_sync_service.get_cls_telegraph_sync_status(session=session)
