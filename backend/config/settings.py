@@ -9,6 +9,7 @@
 """
 from functools import lru_cache
 from pathlib import Path
+from typing import Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -31,13 +32,22 @@ class Settings(BaseSettings):
     # DeepSeek 兼容 OpenAI 接口,所以复用 langchain_openai.ChatOpenAI。
     # 这里允许 None,是为了让应用在没有 key 时也能正常启动(只读路径
     # 仍可用);`build_agent()` 是真正的关卡,缺 key 时拒绝构造 LLM。
-    deepseek_api_key: str | None = None
+    deepseek_api_key: Optional[str] = None
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-v4-flash"
 
     # 默认指向 backend/data/ 下的本地 SQLite 文件。目录由
     # `db.init_db` / smoke 脚本按需创建。
     database_url: str = "sqlite:///backend/data/fund_agent.db"
+
+    # ---- 数据库连接池参数 (仅非 SQLite 方言生效) ----
+    # SQLite 使用 NullPool（每个 Session 用完即关），不受以下参数影响。
+    # 生产切到 Postgres 时可按需调大。
+    db_pool_size: int = 5
+    db_max_overflow: int = 10
+    # 单位：秒。连接等待超过此时长直接抛 TimeoutError，避免 30s 默认值
+    # 把 uvicorn 请求线程卡死。
+    db_pool_timeout_seconds: float = 10.0
 
     # 定时刷新调度(APScheduler,进程内)。测试 / CI 里把 SCHEDULER_ENABLED
     # 设为 false 可避免起后台线程。cron 时间按 scheduler_timezone 解释。
@@ -75,6 +85,25 @@ class Settings(BaseSettings):
     cls_telegraph_sync_interval_seconds: int = 360
     cls_telegraph_sync_page_size: int = 50
     cls_telegraph_sync_max_pages: int = 3
+
+    # 基金自选池驱动的市场知识库 / RAG 检索。默认开启本地管线,
+    # 具体 LLM / embedding 调用由 service 层按可用配置降级。
+    knowledge_rag_enabled: bool = True
+    knowledge_vector_backend: str = "qdrant"
+    knowledge_embedding_model: Optional[str] = None
+    knowledge_embedding_version: Optional[str] = None
+    knowledge_classification_model: Optional[str] = None
+    knowledge_classification_prompt_version: str = "v1"
+    knowledge_classification_batch_size: int = 10
+    knowledge_classification_max_attempts: int = 3
+    knowledge_classification_retry_seconds: int = 300
+    knowledge_index_batch_size: int = 20
+    knowledge_default_ttl_days: int = 14
+    knowledge_include_pending_fallback: bool = True
+    knowledge_max_search_limit: int = 50
+    knowledge_max_queue_status_limit: int = 200
+    scheduler_knowledge_enabled: bool = True
+    scheduler_knowledge_interval_minutes: int = 6
 
 
 @lru_cache

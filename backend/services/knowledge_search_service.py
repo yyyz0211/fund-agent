@@ -1,0 +1,302 @@
+from __future__ import annotations
+
+import json
+import time
+from contextlib import nullcontext
+from datetime import datetime
+
+from sqlalchemy import or_, select
+
+from backend.config.settings import get_settings
+from backend.db import repository as repo
+from backend.db.models import KnowledgeDocument, KnowledgeFundMatch, KnowledgeRetrievalLog
+from backend.db.session import get_session
+from backend.services import (
+    knowledge_fund_profile_service,
+    knowledge_ingestion_service,
+    knowledge_match_service,
+    knowledge_vector,
+)
+
+
+STRUCTURED_FALLBACK_WARNING = (
+    "语义索引暂不可用，已使用结构化检索兜底；本次结果仅基于标题/主题/"
+    "基金标签关键词匹配，可能遗漏语义相近但词面不同的命中。"
+)
+
+_DEFAULT_EMBEDDING_PROVIDER = knowledge_vector.DeterministicEmbeddingProvider()
+_DEFAULT_VECTOR_STORE = knowledge_vector.InMemoryVectorStore()
+
+
+def _json_list(value: str | None) -> list:
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def _freshness_score(published_at: str | None) -> float:
+    if not published_at:
+        return 0.5
+    try:
+        published = datetime.strptime(str(published_at)[:19], "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return 0.5
+    age_hours = max(0.0, (datetime.now() - published).total_seconds() / 3600)
+    # 与 spec 保持一致：72 小时指数衰减，约 50 小时半衰期。
+    import math
+    return max(0.0, min(1.0, math.exp(-age_hours / 72)))
+
+
+def _document_to_search_item(
+    doc: KnowledgeDocument,
+    *,
+    semantic_score: float = 0.5,
+    fund_match: KnowledgeFundMatch | None = None,
+) -> dict:
+    relevance = float(doc.relevance_score or 0)
+    freshness = _freshness_score(doc.published_at)
+    fund_match_score = float(fund_match.match_score or 0) if fund_match else 0.0
+    final_score = min(
+        1.0,
+        semantic_score * 0.30
+        + freshness * 0.20
+        + fund_match_score * 0.30
+        + relevance * 0.20,
+    )
+    return {
+        "document_id": doc.id,
+        "title": doc.title,
+        "topic_title": doc.topic_title,
+        "summary": doc.summary,
+        "source_url": doc.source_url,
+        "published_at": doc.published_at,
+        "final_score": round(final_score, 6),
+        "retrieval_mode": "structured_fallback",
+        "index_status": doc.index_status,
+        "match_reason": fund_match.match_reason if fund_match else "",
+        "matched_funds": [fund_match.fund_code] if fund_match else [],
+        "matched_topics": _json_list(fund_match.matched_topics_json) if fund_match else [],
+        "topics": _json_list(doc.topic_names_json),
+    }
+
+
+def _apply_structured_filters(stmt, *, query, topic, source_type, date_from, date_to, include_pending):
+    if source_type:
+        stmt = stmt.where(KnowledgeDocument.source_type == source_type)
+    if topic:
+        stmt = stmt.where(KnowledgeDocument.topic_names_json.like(f"%{topic}%"))
+    if date_from:
+        stmt = stmt.where(KnowledgeDocument.published_at >= date_from)
+    if date_to:
+        stmt = stmt.where(KnowledgeDocument.published_at <= date_to)
+    if not include_pending:
+        stmt = stmt.where(KnowledgeDocument.index_status == "indexed")
+    else:
+        stmt = stmt.where(KnowledgeDocument.index_status.in_(["indexed", "pending", "failed"]))
+    if query:
+        like = f"%{query}%"
+        stmt = stmt.where(or_(
+            KnowledgeDocument.title.like(like),
+            KnowledgeDocument.summary.like(like),
+            KnowledgeDocument.normalized_text.like(like),
+            KnowledgeDocument.topic_names_json.like(like),
+        ))
+    return stmt
+
+
+def _write_retrieval_log(session, *, query: str, filters: dict, mode: str, count: int, latency_ms: int) -> None:
+    session.add(KnowledgeRetrievalLog(
+        query=query or "",
+        filters_json=json.dumps(filters, ensure_ascii=False),
+        retrieval_mode=mode,
+        result_count=count,
+        latency_ms=latency_ms,
+    ))
+    session.flush()
+
+
+def search_knowledge(
+    query: str,
+    *,
+    fund_code: str | None = None,
+    topic: str | None = None,
+    source_type: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    limit: int = 10,
+    include_pending: bool = False,
+    session=None,
+    vector_store=None,
+    embedding_provider=None,
+    fund_matching_enabled: bool = False,
+) -> dict:
+    """混合检索入口。
+
+    Phase 1 尚未实现基金画像匹配，因此收到 `fund_code` 时必须明确拒绝，
+    避免调用方误以为已经按自选池过滤。
+    """
+    if fund_code and not fund_matching_enabled:
+        raise ValueError("fund_code filter requires knowledge fund matching")
+
+    started = time.monotonic()
+    owns_session = session is None
+    active_session = session or get_session()
+    ctx = active_session if owns_session else nullcontext(active_session)
+    with ctx as s:
+        mode = "structured_fallback"
+        warning = STRUCTURED_FALLBACK_WARNING
+        match_by_doc: dict[int, KnowledgeFundMatch] = {}
+        if fund_code and fund_matching_enabled:
+            matches = s.scalars(
+                select(KnowledgeFundMatch).where(KnowledgeFundMatch.fund_code == fund_code)
+            ).all()
+            match_by_doc = {match.document_id: match for match in matches}
+            if not match_by_doc:
+                _write_retrieval_log(
+                    s,
+                    query=query,
+                    filters={"fund_code": fund_code, "topic": topic, "source_type": source_type},
+                    mode="structured_fallback",
+                    count=0,
+                    latency_ms=int((time.monotonic() - started) * 1000),
+                )
+                if owns_session:
+                    s.commit()
+                return {
+                    "count": 0,
+                    "retrieval_mode": "structured_fallback",
+                    "coverage_warning": STRUCTURED_FALLBACK_WARNING,
+                    "items": [],
+                }
+
+        stmt = select(KnowledgeDocument).where(
+            KnowledgeDocument.classification_status == "accepted"
+        )
+        if match_by_doc:
+            stmt = stmt.where(KnowledgeDocument.id.in_(list(match_by_doc)))
+        stmt = _apply_structured_filters(
+            stmt,
+            query=query,
+            topic=topic,
+            source_type=source_type,
+            date_from=date_from,
+            date_to=date_to,
+            include_pending=include_pending,
+        )
+        docs = s.scalars(
+            stmt.order_by(
+                KnowledgeDocument.published_at.desc().nullslast(),
+                KnowledgeDocument.id.desc(),
+            ).limit(max(1, int(limit)))
+        ).all()
+        items = [
+            _document_to_search_item(doc, fund_match=match_by_doc.get(doc.id))
+            for doc in docs
+        ]
+        items.sort(key=lambda item: item["final_score"], reverse=True)
+        filters = {
+            "fund_code": fund_code,
+            "topic": topic,
+            "source_type": source_type,
+            "date_from": date_from,
+            "date_to": date_to,
+            "include_pending": include_pending,
+        }
+        _write_retrieval_log(
+            s,
+            query=query,
+            filters=filters,
+            mode=mode,
+            count=len(items),
+            latency_ms=int((time.monotonic() - started) * 1000),
+        )
+        if owns_session:
+            s.commit()
+        return {
+            "count": len(items),
+            "retrieval_mode": mode,
+            "coverage_warning": warning,
+            "items": items,
+        }
+
+
+def get_queue_status(
+    *,
+    source_type: str | None = None,
+    classification_status: str | None = None,
+    index_status: str | None = None,
+    since: str | None = None,
+    limit: int = 50,
+    session=None,
+) -> dict:
+    owns_session = session is None
+    active_session = session or get_session()
+    ctx = active_session if owns_session else nullcontext(active_session)
+    with ctx as s:
+        return repo.queue_status(
+            s,
+            source_type=source_type,
+            classification_status=classification_status,
+            index_status=index_status,
+            since=since,
+            limit=limit,
+        )
+
+
+def run_knowledge_pipeline_once(
+    *,
+    trigger: str = "manual",
+    limit: int | None = None,
+    session=None,
+    classifier=None,
+    embedding_provider=None,
+    vector_store=None,
+) -> dict:
+    """运行一次知识库增量流水线。
+
+    这是一条共享入口：API 手动重建和 scheduler 定时任务都走这里，避免
+    两边各自拼流程导致行为漂移。当前默认使用进程内 deterministic
+    embedding + 内存向量库，保证本地开发和测试无外部依赖；后续接 Qdrant
+    或真实 embedding provider 时，只需要在这里替换默认 provider/store。
+    """
+    settings = get_settings()
+    classification_limit = int(limit or settings.knowledge_classification_batch_size)
+    index_limit = int(limit or settings.knowledge_index_batch_size)
+    started = time.monotonic()
+    owns_session = session is None
+    active_session = session or get_session()
+    ctx = active_session if owns_session else nullcontext(active_session)
+    with ctx as s:
+        try:
+            ingestion = knowledge_ingestion_service.ingest_recent_knowledge(
+                limit=classification_limit,
+                session=s,
+                classifier=classifier,
+            )
+            index_result = knowledge_vector.index_pending_documents(
+                session=s,
+                embedding_provider=embedding_provider or _DEFAULT_EMBEDDING_PROVIDER,
+                vector_store=vector_store or _DEFAULT_VECTOR_STORE,
+                limit=index_limit,
+            )
+            profiles = knowledge_fund_profile_service.refresh_fund_watchlist_profiles(session=s)
+            matches = knowledge_match_service.refresh_knowledge_fund_matches(session=s)
+            if owns_session:
+                s.commit()
+            return {
+                "status": "completed",
+                "trigger": trigger,
+                "ingestion": ingestion,
+                "index": index_result,
+                "profiles": profiles,
+                "matches": matches,
+                "latency_ms": int((time.monotonic() - started) * 1000),
+            }
+        except Exception:
+            if owns_session:
+                s.rollback()
+            raise

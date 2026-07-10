@@ -53,7 +53,7 @@ def test_sqlite_engine_applies_concurrency_pragmas(tmp_path):
         foreign_keys = conn.execute(text("PRAGMA foreign_keys")).scalar()
 
     assert str(journal_mode).lower() == "wal"
-    assert busy_timeout == 5000
+    assert busy_timeout == 15000
     assert foreign_keys == 1
 
 
@@ -64,7 +64,7 @@ def test_sqlite_memory_engine_accepts_pragmas_without_wal_requirement():
         busy_timeout = conn.execute(text("PRAGMA busy_timeout")).scalar()
         foreign_keys = conn.execute(text("PRAGMA foreign_keys")).scalar()
 
-    assert busy_timeout == 5000
+    assert busy_timeout == 15000
     assert foreign_keys == 1
 
 
@@ -123,3 +123,80 @@ def test_cls_settings_read_env(monkeypatch):
     assert s.cls_telegraph_sync_interval_seconds == 30
     assert s.cls_telegraph_sync_page_size == 25
     assert s.cls_telegraph_sync_max_pages == 2
+
+
+def test_knowledge_settings_defaults(monkeypatch):
+    for key in [
+        "KNOWLEDGE_RAG_ENABLED",
+        "KNOWLEDGE_VECTOR_BACKEND",
+        "KNOWLEDGE_EMBEDDING_MODEL",
+        "KNOWLEDGE_EMBEDDING_VERSION",
+        "KNOWLEDGE_CLASSIFICATION_MODEL",
+        "KNOWLEDGE_CLASSIFICATION_PROMPT_VERSION",
+        "KNOWLEDGE_CLASSIFICATION_BATCH_SIZE",
+        "KNOWLEDGE_CLASSIFICATION_MAX_ATTEMPTS",
+        "KNOWLEDGE_CLASSIFICATION_RETRY_SECONDS",
+        "KNOWLEDGE_INDEX_BATCH_SIZE",
+        "KNOWLEDGE_DEFAULT_TTL_DAYS",
+        "KNOWLEDGE_INCLUDE_PENDING_FALLBACK",
+        "KNOWLEDGE_MAX_SEARCH_LIMIT",
+        "KNOWLEDGE_MAX_QUEUE_STATUS_LIMIT",
+        "SCHEDULER_KNOWLEDGE_ENABLED",
+        "SCHEDULER_KNOWLEDGE_INTERVAL_MINUTES",
+    ]:
+        monkeypatch.delenv(key, raising=False)
+    get_settings.cache_clear()
+    s = get_settings()
+    assert s.knowledge_rag_enabled is True
+    assert s.knowledge_vector_backend == "qdrant"
+    assert s.knowledge_embedding_model is None
+    assert s.knowledge_embedding_version is None
+    assert s.knowledge_classification_model is None
+    assert s.knowledge_classification_prompt_version == "v1"
+    assert s.knowledge_classification_batch_size == 10
+    assert s.knowledge_classification_max_attempts == 3
+    assert s.knowledge_classification_retry_seconds == 300
+    assert s.knowledge_index_batch_size == 20
+    assert s.knowledge_default_ttl_days == 14
+    assert s.knowledge_include_pending_fallback is True
+    assert s.knowledge_max_search_limit == 50
+    assert s.knowledge_max_queue_status_limit == 200
+    assert s.scheduler_knowledge_enabled is True
+    assert s.scheduler_knowledge_interval_minutes == 6
+
+
+def test_knowledge_settings_read_env(monkeypatch):
+    monkeypatch.setenv("KNOWLEDGE_RAG_ENABLED", "false")
+    monkeypatch.setenv("KNOWLEDGE_VECTOR_BACKEND", "memory")
+    monkeypatch.setenv("KNOWLEDGE_EMBEDDING_MODEL", "embed-test")
+    monkeypatch.setenv("KNOWLEDGE_EMBEDDING_VERSION", "v2")
+    monkeypatch.setenv("KNOWLEDGE_CLASSIFICATION_MODEL", "classify-test")
+    monkeypatch.setenv("KNOWLEDGE_CLASSIFICATION_PROMPT_VERSION", "v9")
+    monkeypatch.setenv("KNOWLEDGE_CLASSIFICATION_BATCH_SIZE", "3")
+    monkeypatch.setenv("KNOWLEDGE_CLASSIFICATION_MAX_ATTEMPTS", "5")
+    monkeypatch.setenv("KNOWLEDGE_CLASSIFICATION_RETRY_SECONDS", "45")
+    monkeypatch.setenv("KNOWLEDGE_INDEX_BATCH_SIZE", "4")
+    monkeypatch.setenv("KNOWLEDGE_DEFAULT_TTL_DAYS", "21")
+    monkeypatch.setenv("KNOWLEDGE_INCLUDE_PENDING_FALLBACK", "false")
+    monkeypatch.setenv("KNOWLEDGE_MAX_SEARCH_LIMIT", "25")
+    monkeypatch.setenv("KNOWLEDGE_MAX_QUEUE_STATUS_LIMIT", "75")
+    monkeypatch.setenv("SCHEDULER_KNOWLEDGE_ENABLED", "false")
+    monkeypatch.setenv("SCHEDULER_KNOWLEDGE_INTERVAL_MINUTES", "12")
+    get_settings.cache_clear()
+    s = get_settings()
+    assert s.knowledge_rag_enabled is False
+    assert s.knowledge_vector_backend == "memory"
+    assert s.knowledge_embedding_model == "embed-test"
+    assert s.knowledge_embedding_version == "v2"
+    assert s.knowledge_classification_model == "classify-test"
+    assert s.knowledge_classification_prompt_version == "v9"
+    assert s.knowledge_classification_batch_size == 3
+    assert s.knowledge_classification_max_attempts == 5
+    assert s.knowledge_classification_retry_seconds == 45
+    assert s.knowledge_index_batch_size == 4
+    assert s.knowledge_default_ttl_days == 21
+    assert s.knowledge_include_pending_fallback is False
+    assert s.knowledge_max_search_limit == 25
+    assert s.knowledge_max_queue_status_limit == 75
+    assert s.scheduler_knowledge_enabled is False
+    assert s.scheduler_knowledge_interval_minutes == 12
