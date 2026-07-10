@@ -129,8 +129,11 @@ def test_knowledge_settings_defaults(monkeypatch):
     for key in [
         "KNOWLEDGE_RAG_ENABLED",
         "KNOWLEDGE_VECTOR_BACKEND",
+        "KNOWLEDGE_EMBEDDING_BASE_URL",
+        "KNOWLEDGE_EMBEDDING_API_KEY",
         "KNOWLEDGE_EMBEDDING_MODEL",
         "KNOWLEDGE_EMBEDDING_VERSION",
+        "KNOWLEDGE_EMBEDDING_DIMENSIONS",
         "KNOWLEDGE_CLASSIFICATION_MODEL",
         "KNOWLEDGE_CLASSIFICATION_PROMPT_VERSION",
         "KNOWLEDGE_CLASSIFICATION_BATCH_SIZE",
@@ -148,9 +151,12 @@ def test_knowledge_settings_defaults(monkeypatch):
     get_settings.cache_clear()
     s = get_settings()
     assert s.knowledge_rag_enabled is True
-    assert s.knowledge_vector_backend == "qdrant"
+    assert s.knowledge_vector_backend == "auto"
+    assert s.knowledge_embedding_base_url is None
+    assert s.knowledge_embedding_api_key is None
     assert s.knowledge_embedding_model is None
     assert s.knowledge_embedding_version is None
+    assert s.knowledge_embedding_dimensions is None
     assert s.knowledge_classification_model is None
     assert s.knowledge_classification_prompt_version == "v1"
     assert s.knowledge_classification_batch_size == 10
@@ -167,9 +173,12 @@ def test_knowledge_settings_defaults(monkeypatch):
 
 def test_knowledge_settings_read_env(monkeypatch):
     monkeypatch.setenv("KNOWLEDGE_RAG_ENABLED", "false")
-    monkeypatch.setenv("KNOWLEDGE_VECTOR_BACKEND", "memory")
+    monkeypatch.setenv("KNOWLEDGE_VECTOR_BACKEND", "pgvector")
+    monkeypatch.setenv("KNOWLEDGE_EMBEDDING_BASE_URL", "https://embed.example/v1")
+    monkeypatch.setenv("KNOWLEDGE_EMBEDDING_API_KEY", "embed-key")
     monkeypatch.setenv("KNOWLEDGE_EMBEDDING_MODEL", "embed-test")
     monkeypatch.setenv("KNOWLEDGE_EMBEDDING_VERSION", "v2")
+    monkeypatch.setenv("KNOWLEDGE_EMBEDDING_DIMENSIONS", "1024")
     monkeypatch.setenv("KNOWLEDGE_CLASSIFICATION_MODEL", "classify-test")
     monkeypatch.setenv("KNOWLEDGE_CLASSIFICATION_PROMPT_VERSION", "v9")
     monkeypatch.setenv("KNOWLEDGE_CLASSIFICATION_BATCH_SIZE", "3")
@@ -185,9 +194,12 @@ def test_knowledge_settings_read_env(monkeypatch):
     get_settings.cache_clear()
     s = get_settings()
     assert s.knowledge_rag_enabled is False
-    assert s.knowledge_vector_backend == "memory"
+    assert s.knowledge_vector_backend == "pgvector"
+    assert s.knowledge_embedding_base_url == "https://embed.example/v1"
+    assert s.knowledge_embedding_api_key == "embed-key"
     assert s.knowledge_embedding_model == "embed-test"
     assert s.knowledge_embedding_version == "v2"
+    assert s.knowledge_embedding_dimensions == 1024
     assert s.knowledge_classification_model == "classify-test"
     assert s.knowledge_classification_prompt_version == "v9"
     assert s.knowledge_classification_batch_size == 3
@@ -200,3 +212,10 @@ def test_knowledge_settings_read_env(monkeypatch):
     assert s.knowledge_max_queue_status_limit == 75
     assert s.scheduler_knowledge_enabled is False
     assert s.scheduler_knowledge_interval_minutes == 12
+
+
+def test_optional_embedding_dimensions_ignore_empty_env(monkeypatch):
+    monkeypatch.setenv("KNOWLEDGE_EMBEDDING_DIMENSIONS", "")
+    get_settings.cache_clear()
+
+    assert get_settings().knowledge_embedding_dimensions is None

@@ -21,6 +21,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 import backend.db.models  # noqa: F401  (必须 import,模型才会注册到 Base.metadata)
+from backend.config.settings import get_settings
 from backend.db.repository import backfill_watchlist_fund_names
 from backend.db.session import Base, engine as default_engine, get_session
 
@@ -41,6 +42,9 @@ def init_db(engine: Engine | None = None) -> None:
     _drop_obsolete_columns(eng)
     # create_all 不冲突,再跑一次只是补 sanity(新表的索引等)。
     Base.metadata.create_all(eng)
+    settings = get_settings()
+    if settings.knowledge_vector_backend != "structured":
+        ensure_pgvector_schema(eng, settings.knowledge_embedding_dimensions)
     # Wave 2: Watchlist 加了 fund_name 列后, 老行是 NULL。
     # 启动时自动从 funds.fund_name 回填, 避免 briefing 一直显示空字符串。
     try:
@@ -57,6 +61,53 @@ def init_db(engine: Engine | None = None) -> None:
     except Exception:
         # 回填失败不能阻挡 DB 启动, 运行时仍以 _watchlist_to_dict 返回 None 让上游降级。
         pass
+
+
+def ensure_pgvector_schema(eng: Engine, dimensions: int | None) -> bool:
+    """在 PostgreSQL 上创建持久向量表；SQLite 和未配置维度时明确跳过。"""
+    if eng.dialect.name != "postgresql" or dimensions is None:
+        return False
+    dimension = int(dimensions)
+    if dimension <= 0:
+        raise ValueError("knowledge embedding dimensions must be positive")
+
+    with eng.begin() as conn:
+        conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        existing_type = conn.scalar(text("""
+            SELECT format_type(a.atttypid, a.atttypmod)
+            FROM pg_attribute AS a
+            JOIN pg_class AS c ON c.oid = a.attrelid
+            JOIN pg_namespace AS n ON n.oid = c.relnamespace
+            WHERE n.nspname = current_schema()
+              AND c.relname = 'knowledge_embeddings'
+              AND a.attname = 'embedding'
+              AND a.attnum > 0
+              AND NOT a.attisdropped
+        """))
+        expected_type = f"vector({dimension})"
+        if existing_type is not None and str(existing_type) != expected_type:
+            raise RuntimeError(
+                "knowledge embedding dimension mismatch: "
+                f"database={existing_type}, configured={expected_type}; "
+                "rebuild knowledge_embeddings before restarting"
+            )
+        conn.execute(text(f"""
+            CREATE TABLE IF NOT EXISTS knowledge_embeddings (
+                document_id BIGINT PRIMARY KEY
+                    REFERENCES knowledge_documents(id) ON DELETE CASCADE,
+                embedding vector({dimension}) NOT NULL,
+                embedding_model VARCHAR NOT NULL,
+                embedding_version VARCHAR NOT NULL,
+                content_hash VARCHAR(64) NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """))
+        conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS ix_knowledge_embeddings_cosine
+            ON knowledge_embeddings USING hnsw (embedding vector_cosine_ops)
+        """))
+    return True
 
 
 def _apply_missing_columns(eng: Engine) -> None:

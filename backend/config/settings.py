@@ -9,8 +9,9 @@
 """
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # `env_file` 用绝对路径,锚定到本模块所在目录的上一级(即 backend/),
@@ -26,7 +27,10 @@ class Settings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=str(_ENV_FILE), env_file_encoding="utf-8", extra="ignore",
+        env_file=str(_ENV_FILE),
+        env_file_encoding="utf-8",
+        env_ignore_empty=True,
+        extra="ignore",
     )
 
     # DeepSeek 兼容 OpenAI 接口,所以复用 langchain_openai.ChatOpenAI。
@@ -89,9 +93,12 @@ class Settings(BaseSettings):
     # 基金自选池驱动的市场知识库 / RAG 检索。默认开启本地管线,
     # 具体 LLM / embedding 调用由 service 层按可用配置降级。
     knowledge_rag_enabled: bool = True
-    knowledge_vector_backend: str = "qdrant"
+    knowledge_vector_backend: Literal["auto", "pgvector", "structured"] = "auto"
+    knowledge_embedding_base_url: Optional[str] = None
+    knowledge_embedding_api_key: Optional[str] = None
     knowledge_embedding_model: Optional[str] = None
     knowledge_embedding_version: Optional[str] = None
+    knowledge_embedding_dimensions: Optional[int] = Field(default=None, ge=1)
     knowledge_classification_model: Optional[str] = None
     knowledge_classification_prompt_version: str = "v1"
     knowledge_classification_batch_size: int = 10
