@@ -1,6 +1,8 @@
 """知识库 / RAG 检索路由。"""
 from __future__ import annotations
 
+from datetime import date
+
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session
 
@@ -17,20 +19,22 @@ def search_knowledge(
     fund_code: str | None = Query(default=None),
     topic: str | None = Query(default=None),
     source_type: str | None = Query(default=None),
-    date_from: str | None = Query(default=None),
-    date_to: str | None = Query(default=None),
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
     limit: int = Query(default=10, ge=1, le=50),
     include_pending: bool = Query(default=False),
     session: Session = Depends(get_db_session),
 ):
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(status_code=400, detail="date_from must not be later than date_to")
     try:
         result = knowledge_search_service.search_knowledge(
             query=query,
             fund_code=fund_code,
             topic=topic,
             source_type=source_type,
-            date_from=date_from,
-            date_to=date_to,
+            date_from=date_from.isoformat() if date_from else None,
+            date_to=date_to.isoformat() if date_to else None,
             limit=limit,
             include_pending=include_pending,
             session=session,

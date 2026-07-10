@@ -85,6 +85,11 @@ def _document_to_search_item(
 
 
 def _apply_structured_filters(stmt, *, query, topic, source_type, date_from, date_to, include_pending):
+    now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    stmt = stmt.where(or_(
+        KnowledgeDocument.effective_until.is_(None),
+        KnowledgeDocument.effective_until >= now_text,
+    ))
     if source_type:
         stmt = stmt.where(KnowledgeDocument.source_type == source_type)
     if topic:
@@ -132,16 +137,11 @@ def search_knowledge(
     session=None,
     vector_store=None,
     embedding_provider=None,
-    fund_matching_enabled: bool = False,
 ) -> dict:
     """混合检索入口。
 
-    Phase 1 尚未实现基金画像匹配，因此收到 `fund_code` 时必须明确拒绝，
-    避免调用方误以为已经按自选池过滤。
+    基金过滤使用预计算 KnowledgeFundMatch；没有匹配时返回空结果。
     """
-    if fund_code and not fund_matching_enabled:
-        raise ValueError("fund_code filter requires knowledge fund matching")
-
     started = time.monotonic()
     owns_session = session is None
     active_session = session or get_session()
@@ -150,7 +150,7 @@ def search_knowledge(
         mode = "structured_fallback"
         warning = STRUCTURED_FALLBACK_WARNING
         match_by_doc: dict[int, KnowledgeFundMatch] = {}
-        if fund_code and fund_matching_enabled:
+        if fund_code:
             matches = s.scalars(
                 select(KnowledgeFundMatch).where(KnowledgeFundMatch.fund_code == fund_code)
             ).all()

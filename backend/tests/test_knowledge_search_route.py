@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 from backend.api.app import app
 
 
-def test_knowledge_search_rejects_fund_code_before_fund_matching():
+def test_knowledge_search_accepts_fund_code_filter():
     client = TestClient(app)
 
     response = client.get("/api/knowledge/search", params={
@@ -13,8 +13,27 @@ def test_knowledge_search_rejects_fund_code_before_fund_matching():
         "fund_code": "000000",
     })
 
+    assert response.status_code == 200
+    assert response.json()["count"] == 0
+
+
+def test_knowledge_search_rejects_invalid_date():
+    response = TestClient(app).get(
+        "/api/knowledge/search",
+        params={"date_from": "not-a-date"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_knowledge_search_rejects_inverted_date_range():
+    response = TestClient(app).get(
+        "/api/knowledge/search",
+        params={"date_from": "2026-07-10", "date_to": "2026-07-01"},
+    )
+
     assert response.status_code == 400
-    assert response.json()["detail"] == "fund_code filter requires knowledge fund matching"
+    assert response.json()["detail"] == "date_from must not be later than date_to"
 
 
 def test_knowledge_queue_status_route_shape(monkeypatch):
