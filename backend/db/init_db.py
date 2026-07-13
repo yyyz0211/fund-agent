@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 import backend.db.models  # noqa: F401  (必须 import,模型才会注册到 Base.metadata)
@@ -26,8 +27,40 @@ from backend.db.repository import backfill_watchlist_fund_names
 from backend.db.session import Base, engine as default_engine, get_session
 
 
-class PgVectorDimensionMismatch(RuntimeError):
+_PGVECTOR_REQUIRED_COLUMNS = frozenset({
+    "document_id",
+    "embedding",
+    "embedding_model",
+    "embedding_version",
+    "content_hash",
+    "created_at",
+    "updated_at",
+})
+
+
+class PgVectorSchemaError(RuntimeError):
+    """Vector-only schema/setup failure that must not prevent API startup."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        missing_columns: set[str] | None = None,
+        table_missing: bool = False,
+        database_dimension: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.missing_columns = missing_columns or set()
+        self.table_missing = table_missing
+        self.database_dimension = database_dimension
+
+
+class PgVectorDimensionMismatch(PgVectorSchemaError):
     """Configured embedding dimensions differ from the existing vector column."""
+
+
+class PgVectorUnavailableError(PgVectorSchemaError):
+    """PostgreSQL could not initialize the pgvector extension/table/index."""
 
 
 def init_db(engine: Engine | None = None) -> None:
@@ -51,16 +84,13 @@ def init_db(engine: Engine | None = None) -> None:
     if settings.knowledge_vector_backend != "structured":
         try:
             ensure_pgvector_schema(eng, settings.knowledge_embedding_dimensions)
-        except PgVectorDimensionMismatch:
-            # A dimension change requires the explicit confirmed management route.
-            # Keep the old table intact and let health report the mismatch so the API
-            # remains reachable to perform that rebuild.
+        except PgVectorSchemaError as exc:
+            # Vector storage is a rebuildable optional component. Keep the primary
+            # ORM schema available and let health expose the precise local failure.
             import logging
 
             logging.getLogger(__name__).warning(
-                "Configured knowledge embedding dimension differs from the existing "
-                "vector table; leaving it untouched until explicit rebuild.",
-                exc_info=True,
+                "Knowledge vector schema unavailable during startup: %s", exc,
             )
     # Wave 2: Watchlist 加了 fund_name 列后, 老行是 NULL。
     # 启动时自动从 funds.fund_name 回填, 避免 briefing 一直显示空字符串。
@@ -88,32 +118,41 @@ def ensure_pgvector_schema(eng: Engine, dimensions: int | None) -> bool:
     if dimension <= 0:
         raise ValueError("knowledge embedding dimensions must be positive")
 
-    with eng.begin() as conn:
-        conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-        existing_dimension = get_pgvector_dimension(conn)
-        if existing_dimension is not None and existing_dimension != dimension:
-            raise PgVectorDimensionMismatch(
-                "knowledge embedding dimension mismatch: "
-                f"database=vector({existing_dimension}), configured=vector({dimension}); "
-                "rebuild knowledge_embeddings before restarting"
-            )
-        _create_pgvector_table(conn, dimension)
+    try:
+        with eng.begin() as conn:
+            conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+            _create_pgvector_table(conn, dimension)
+            validate_pgvector_schema(conn, dimension)
+    except PgVectorSchemaError:
+        raise
+    except SQLAlchemyError as exc:
+        raise PgVectorUnavailableError(
+            f"pgvector schema setup failed: {type(exc).__name__}: {exc}"
+        ) from exc
     return True
 
 
 def get_pgvector_dimension(conn) -> int | None:
     """Read the local PostgreSQL vector column dimension; return None if absent."""
-    existing_type = conn.scalar(text("""
-        SELECT format_type(a.atttypid, a.atttypmod)
+    return _parse_pgvector_dimension(_get_pgvector_columns(conn).get("embedding"))
+
+
+def _get_pgvector_columns(conn) -> dict[str, str]:
+    """Read local vector table columns/types from PostgreSQL catalogs."""
+    rows = conn.execute(text("""
+        SELECT a.attname, format_type(a.atttypid, a.atttypmod)
         FROM pg_attribute AS a
         JOIN pg_class AS c ON c.oid = a.attrelid
         JOIN pg_namespace AS n ON n.oid = c.relnamespace
         WHERE n.nspname = current_schema()
           AND c.relname = 'knowledge_embeddings'
-          AND a.attname = 'embedding'
           AND a.attnum > 0
           AND NOT a.attisdropped
-    """))
+    """)).all()
+    return {str(row[0]): str(row[1]) for row in rows}
+
+
+def _parse_pgvector_dimension(existing_type: str | None) -> int | None:
     if existing_type is None:
         return None
     value = str(existing_type)
@@ -123,6 +162,32 @@ def get_pgvector_dimension(conn) -> int | None:
         return int(value[len("vector("):-1])
     except ValueError as exc:
         raise RuntimeError(f"unexpected knowledge embedding type: {value}") from exc
+
+
+def validate_pgvector_schema(conn, configured_dimension: int) -> dict[str, object]:
+    """Strictly validate required columns and vector dimension from local catalogs."""
+    columns = _get_pgvector_columns(conn)
+    missing = set(_PGVECTOR_REQUIRED_COLUMNS).difference(columns)
+    if missing:
+        raise PgVectorSchemaError(
+            "knowledge_embeddings schema is incomplete; missing columns: "
+            + ", ".join(sorted(missing)),
+            missing_columns=missing,
+            table_missing=not columns,
+        )
+    try:
+        database_dimension = _parse_pgvector_dimension(columns.get("embedding"))
+    except RuntimeError as exc:
+        raise PgVectorSchemaError(str(exc)) from exc
+    if database_dimension != int(configured_dimension):
+        raise PgVectorDimensionMismatch(
+            "knowledge embedding dimension mismatch: "
+            f"database=vector({database_dimension}), "
+            f"configured=vector({int(configured_dimension)}); "
+            "rebuild knowledge_embeddings before restarting",
+            database_dimension=database_dimension,
+        )
+    return {"columns": sorted(columns), "dimensions": database_dimension}
 
 
 def _create_pgvector_table(conn, dimension: int) -> None:

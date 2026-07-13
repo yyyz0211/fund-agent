@@ -105,6 +105,50 @@ def test_knowledge_reindex_requires_local_trigger(monkeypatch):
     assert called["value"] is False
 
 
+def test_ordinary_reindex_never_rebuilds_vector_schema(monkeypatch, tmp_path):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from backend.api.deps import get_db_session
+    from backend.api.routes import knowledge as route
+    from backend.db.init_db import init_db
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'ordinary-reindex.db'}",
+        connect_args={"check_same_thread": False},
+    )
+    init_db(engine)
+    sessions = sessionmaker(bind=engine, expire_on_commit=False)
+
+    def dependency():
+        with sessions() as session:
+            yield session
+
+    app.dependency_overrides[get_db_session] = dependency
+    monkeypatch.setattr(
+        route,
+        "rebuild_pgvector_schema",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("ordinary reindex must not rebuild vector schema")
+        ),
+    )
+    monkeypatch.setattr(
+        route.knowledge_reindex_jobs,
+        "run_job_in_background",
+        lambda *_args, **_kwargs: None,
+    )
+    try:
+        response = TestClient(app).post(
+            "/api/knowledge/reindex",
+            headers={"X-Local-Trigger": "1"},
+        )
+    finally:
+        app.dependency_overrides.pop(get_db_session, None)
+        engine.dispose()
+
+    assert response.status_code == 202
+
+
 def test_vector_schema_rebuild_requires_local_trigger(monkeypatch):
     from backend.api.routes import knowledge as route
 

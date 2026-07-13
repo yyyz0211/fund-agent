@@ -94,8 +94,17 @@ def test_vector_health_detects_configured_database_dimension_mismatch():
         def __exit__(self, *_args):
             return False
 
-        def scalar(self, _statement):
-            return "vector(768)"
+        def execute(self, _statement):
+            rows = [
+                ("document_id", "bigint"),
+                ("embedding", "vector(768)"),
+                ("embedding_model", "character varying"),
+                ("embedding_version", "character varying"),
+                ("content_hash", "character varying(64)"),
+                ("created_at", "timestamp with time zone"),
+                ("updated_at", "timestamp with time zone"),
+            ]
+            return SimpleNamespace(all=lambda: rows)
 
     class Engine:
         dialect = SimpleNamespace(name="postgresql")
@@ -124,6 +133,54 @@ def test_vector_health_detects_configured_database_dimension_mismatch():
         "configured_dimensions": 1024,
         "database_dimensions": 768,
     }
+
+
+def test_vector_health_rejects_incomplete_pgvector_schema():
+    from types import SimpleNamespace
+
+    from backend.services.knowledge_pgvector import knowledge_vector_health_snapshot
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, _statement):
+            return SimpleNamespace(all=lambda: [
+                ("document_id", "bigint"),
+                ("embedding", "vector(16)"),
+            ])
+
+    class Engine:
+        dialect = SimpleNamespace(name="postgresql")
+
+        @staticmethod
+        def connect():
+            return Connection()
+
+    settings = SimpleNamespace(
+        knowledge_rag_enabled=True,
+        knowledge_vector_backend="pgvector",
+        knowledge_embedding_base_url="https://unused.example/v1",
+        knowledge_embedding_api_key="secret",
+        knowledge_embedding_model="embed-model",
+        knowledge_embedding_version="v1",
+        knowledge_embedding_dimensions=16,
+    )
+
+    snapshot = knowledge_vector_health_snapshot(Engine(), settings)
+
+    assert snapshot["status"] == "degraded"
+    assert snapshot["reason"] == "incomplete_schema"
+    assert snapshot["missing_columns"] == [
+        "content_hash",
+        "created_at",
+        "embedding_model",
+        "embedding_version",
+        "updated_at",
+    ]
 
 
 def test_openapi_has_four_routers():

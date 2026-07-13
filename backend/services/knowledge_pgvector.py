@@ -6,7 +6,7 @@ from typing import Any
 
 from sqlalchemy import text
 
-from backend.db.init_db import get_pgvector_dimension
+from backend.db.init_db import PgVectorSchemaError, validate_pgvector_schema
 from backend.services.knowledge_vector import VectorHit, VectorItem
 
 
@@ -207,13 +207,20 @@ def knowledge_vector_health_snapshot(engine, settings: Any) -> dict[str, Any]:
     else:
         try:
             with engine.connect() as conn:
-                database_dimensions = get_pgvector_dimension(conn)
-            if database_dimensions is None:
+                validate_pgvector_schema(
+                    conn,
+                    int(getattr(settings, "knowledge_embedding_dimensions")),
+                )
+        except PgVectorSchemaError as exc:
+            if exc.table_missing:
                 reason = "knowledge_embeddings_missing"
-            elif database_dimensions != int(
-                getattr(settings, "knowledge_embedding_dimensions")
-            ):
+            elif exc.missing_columns:
+                reason = "incomplete_schema"
+            elif exc.database_dimension is not None:
                 reason = "dimension_mismatch"
+            else:
+                reason = "invalid_schema"
+            schema_error = exc
         except Exception as exc:
             reason = f"schema_check_failed:{type(exc).__name__}"
 
@@ -231,6 +238,8 @@ def knowledge_vector_health_snapshot(engine, settings: Any) -> dict[str, Any]:
             snapshot["configured_dimensions"] = int(
                 getattr(settings, "knowledge_embedding_dimensions")
             )
-            snapshot["database_dimensions"] = database_dimensions
+            snapshot["database_dimensions"] = schema_error.database_dimension
+        if reason == "incomplete_schema":
+            snapshot["missing_columns"] = sorted(schema_error.missing_columns)
         return snapshot
     return {"status": "ready", "backend": "pgvector", "dialect": dialect}
