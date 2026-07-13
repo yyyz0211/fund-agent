@@ -17,6 +17,53 @@ export interface NavPoint {
   as_of: string;
 }
 
+// ---- Market evidence (Wave 1) ----
+export type EvidenceCategory =
+  | "policy"
+  | "announcement"
+  | "overseas_disclosure"
+  | "macro"
+  | "sector"
+  | "news";
+
+export type EvidenceReliability = "official" | "wire" | "rumor";
+
+export interface MarketEvidenceItem {
+  id: number;
+  trade_date: string;
+  category: EvidenceCategory;
+  title: string;
+  summary: string | null;
+  symbols: string[];
+  metrics: Record<string, number | string> | null;
+  source: string;
+  source_url: string;
+  published_at: string | null;
+  reliability: EvidenceReliability;
+}
+
+export interface MarketEvidenceResponse {
+  count: number;
+  groups: Partial<Record<EvidenceCategory, MarketEvidenceItem[]>>;
+  items?: MarketEvidenceItem[];
+}
+
+export interface MarketEvidenceRefreshStatus {
+  status: "idle" | "running" | "completed" | "partial" | "failed";
+  brief_type: string;
+  job_id?: string;
+  trigger?: string;
+  started_at?: string;
+  finished_at?: string;
+  error?: string;
+  result?: {
+    inserted: number;
+    fetched: number;
+    errors: Array<{ adapter?: string; error: string; details?: Record<string, unknown> }>;
+    categories: Record<string, number>;
+  };
+}
+
 export type InvestmentPlanFrequency = "daily" | "weekly" | "monthly";
 export type InvestmentPlanStatus = "active" | "paused";
 export type PendingBuyStatus = "pending" | "confirmed" | "cancelled";
@@ -105,6 +152,7 @@ export interface FundMetrics {
 }
 
 export interface BriefingSection {
+  // Legacy flat fields (for backward compatibility)
   market_snapshot?: Array<{
     symbol: string;
     name?: string | null;
@@ -120,25 +168,200 @@ export interface BriefingSection {
   }>;
   errors?: Array<Record<string, unknown>>;
   disclaimer?: string;
+  // V2 structured fields
+  quick_summary?: QuickSummarySection;
+  market_state?: MarketStateSection;
+  themes_and_flows?: ThemesAndFlowsSection;
+  watchlist_impact?: WatchlistImpactSection;
+  risk_radar?: RiskRadarSection;
+  key_evidence?: KeyEvidenceSection;
+  data_statement?: DataStatementSection;
+  // V2 sections JSON top-level keys (when sections_json has module_order)
+  brief_type?: string;
+  profile_version?: string;
+  module_order?: string[];
+  modules?: Record<string, BriefingModule>;
+  warnings?: string[];
+}
+
+export interface QuickSummarySection {
+  key: string;
+  title: string;
+  status: "ready" | "partial" | "missing" | "failed";
+  market_state?: string;
+  main_themes?: string[];
+  top_risks?: string[];
+  watchlist_impact?: WatchlistImpact;
+  confidence?: BriefingConfidence;
+}
+
+export interface MarketStateSection {
+  key: string;
+  title: string;
+  status: "ready" | "partial" | "missing" | "failed";
+  label?: string;
+  summary?: string;
+}
+
+export interface ThemeItem {
+  name: string;
+  direction?: "leading" | "lagging";
+  change_pct?: number;
+  net_flow?: number;
+  trend?: ThemeTrend;
+  confidence?: BriefingConfidence;
+}
+
+export interface ThemesAndFlowsSection {
+  key: string;
+  title: string;
+  status: "ready" | "partial" | "missing" | "failed";
+  items?: ThemeItem[];
+  warnings?: string[];
+}
+
+export interface WatchlistImpactSection {
+  key: string;
+  title: string;
+  status: "ready" | "partial" | "missing" | "failed";
+  summary?: string;
+  positive?: Array<{ fund_code: string; fund_name: string; reason: string }>;
+  negative?: Array<{ fund_code: string; fund_name: string; reason: string }>;
+  neutral?: Array<{ fund_code: string; fund_name: string }>;
+  divergent?: Array<{ fund_code: string; fund_name: string; reason: string }>;
+}
+
+export interface RiskItem {
+  level: RiskLevel;
+  signal: string;
+  detail?: string;
+}
+
+export interface RiskRadarSection {
+  key: string;
+  title: string;
+  status: "ready" | "partial" | "missing" | "failed";
+  market?: RiskItem[];
+  sector?: RiskItem[];
+  watchlist?: RiskItem[];
+  data?: RiskItem[];
+}
+
+export interface EvidenceItem {
+  evidence_id?: number;
+  category: string;
+  title: string;
+  source?: string | null;
+  source_url?: string | null;
+  published_at?: string | null;
+  freshness?: EvidenceFreshness;
+  weight?: EvidenceWeight;
+}
+
+export interface KeyEvidenceSection {
+  key: string;
+  title: string;
+  status: "ready" | "partial" | "missing" | "failed";
+  items?: EvidenceItem[];
+  missing_data?: string[];
+  warnings?: string[];
+}
+
+export interface DataStatementSection {
+  key: string;
+  title: string;
+  status: "ready" | "partial" | "missing" | "failed";
+  summary?: string;
+  content?: {
+    data_quality?: DataQuality;
+    confidence?: BriefingConfidence;
+    missing_data?: string[];
+    failed_modules?: Array<{ module: string; fund_code?: string; reason: string }>;
+    data_sources_last_updated?: Record<string, string>;
+    disclaimer?: string;
+    // watchlist_impact content
+    overall?: WatchlistImpact;
+    positive?: Array<{ fund_code: string; fund_name: string; reason: string }>;
+    negative?: Array<{ fund_code: string; fund_name: string; reason: string }>;
+    neutral?: Array<{ fund_code: string; fund_name: string }>;
+    divergent?: Array<{ fund_code: string; fund_name: string; reason: string }>;
+    // themes_and_flows content
+    leading_themes?: ThemeItem[];
+    lagging_themes?: ThemeItem[];
+    // market_state content
+    label?: string;
+    reasons?: string[];
+    signals?: string[];
+    state?: string;
+    // risk_radar content (already covered by risk_radar fields above)
+    market?: RiskItem[];
+    sector?: RiskItem[];
+    watchlist?: RiskItem[];
+    data?: RiskItem[];
+    // key_evidence content
+    items?: EvidenceItem[];
+    // quick_summary content
+    market_state?: string;
+    main_themes?: string[];
+    top_risks?: string[];
+    watchlist_impact?: WatchlistImpact;
+  };
+  evidence_ids?: number[];
+  missing_data?: string[];
+  warnings?: string[];
+  confidence?: BriefingConfidence;
+}
+
+// V2 sections JSON envelope
+export interface BriefingModule {
+  key: string;
+  title: string;
+  status: "ready" | "partial" | "missing" | "failed";
+  summary?: string;
+  content?: DataStatementSection["content"];
+  evidence_ids?: number[];
+  missing_data?: string[];
+  warnings?: string[];
+  confidence?: BriefingConfidence;
 }
 
 export interface Briefing {
   id: number;
   briefing_date: string;
+  brief_type?: string;
   title: string;
   markdown: string;
   sections: BriefingSection | Record<string, unknown>;
   source: string | null;
   as_of: string | null;
+  data_quality?: DataQuality | null;
+  confidence?: BriefingConfidence | null;
+  missing_data?: string[];
+  evidence_count?: number | null;
+  // V2 fields
+  failed_modules?: Array<{ module: string; fund_code?: string; reason: string }>;
+  data_sources_last_updated?: Record<string, string>;
   created_at: string | null;
   updated_at: string | null;
 }
 
+export type DataQuality = "complete" | "partial" | "market_only" | "failed";
+export type BriefingConfidence = "high" | "medium" | "low";
+export type MarketState = "偏强" | "偏弱" | "分化" | "退潮" | "数据不足";
+export type WatchlistImpact = "positive" | "negative" | "neutral" | "mixed" | "empty";
+export type RiskLevel = "high" | "medium" | "low";
+export type ThemeTrend = "continuing" | "emerging" | "fading" | "new";
+export type EvidenceFreshness = "realtime" | "today" | "recent" | "older";
+export type EvidenceWeight = "high" | "medium" | "low";
+
 export interface BriefingSummary {
   id: number;
   briefing_date: string;
+  brief_type?: string;
   title: string;
   as_of: string | null;
+  data_quality?: DataQuality | null;
+  evidence_count?: number | null;
 }
 
 export interface BriefingLatestResponse {
@@ -154,6 +377,25 @@ export interface BriefingRunResponse {
   status: string;
   trigger: string;
   job_id?: string;
+  brief_type?: string;
+}
+
+export interface BriefingFeedbackPayload {
+  briefing_id: number;
+  user_id?: string;
+  risk_accuracy?: number | null;
+  theme_accuracy?: number | null;
+  evidence_quality?: number | null;
+  overall_satisfaction?: number | null;
+  comment?: string | null;
+  feedback_meta?: Record<string, unknown>;
+}
+
+export interface BriefingFeedbackResponse {
+  id: number;
+  briefing_id: number;
+  user_id: string;
+  created_at: string | null;
 }
 
 export interface WatchlistRow {

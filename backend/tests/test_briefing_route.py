@@ -28,7 +28,8 @@ def client_with_session():
     from sqlalchemy.orm import sessionmaker
     from sqlalchemy.pool import StaticPool
 
-    from backend.db.session import Base, get_session, engine, SessionLocal
+    from backend.api.deps import get_db_session
+    from backend.db.session import Base, engine, SessionLocal
     from backend.api.app import app
 
     # 1) 引入模型,确保 Base.metadata 注册完整
@@ -69,7 +70,7 @@ def client_with_session():
         finally:
             s.close()
 
-    app.dependency_overrides[get_session] = _override
+    app.dependency_overrides[get_db_session] = _override
 
     with TestClient(app) as client:
         yield client, TestingSession
@@ -81,12 +82,20 @@ def client_with_session():
     scheduler_module.start_scheduler = orig_start
 
 
-def _insert_briefing(session_factory, *, briefing_date: str, title: str, markdown: str):
+def _insert_briefing(
+    session_factory,
+    *,
+    briefing_date: str,
+    title: str,
+    markdown: str,
+    brief_type: str = "post_market",
+):
     s = session_factory()
     try:
         from backend.db.models import Briefing
         b = Briefing(
-            briefing_date=briefing_date, title=title, markdown=markdown,
+            briefing_date=briefing_date, brief_type=brief_type,
+            title=title, markdown=markdown,
             sections_json='{"market_snapshot":[],"watchlist_changes":[]}',
             source="akshare + deepseek", as_of=briefing_date,
         )
@@ -163,3 +172,23 @@ class TestRouteRun:
         assert resp.status_code == 202
         body = resp.json()
         assert body["status"] == "started"
+
+    def test_route_run_accepts_brief_type_body(self, client_with_session):
+        client, _ = client_with_session
+        captured = {}
+
+        def mock_run(**kwargs):
+            captured.update(kwargs)
+            return {"status": "started", "trigger": "manual", "brief_type": kwargs["brief_type"]}
+
+        from backend.services import briefing_service
+        with patch.object(briefing_service, "start_run_async", mock_run):
+            resp = client.post(
+                "/api/briefing/run",
+                headers={"X-Local-Trigger": "1"},
+                json={"brief_type": "pre_market"},
+            )
+
+        assert resp.status_code == 202
+        assert captured == {"trigger": "manual", "brief_type": "pre_market"}
+        assert resp.json()["brief_type"] == "pre_market"

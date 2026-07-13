@@ -88,6 +88,44 @@ NEXT_PUBLIC_LANGGRAPH_URL=http://100.64.0.2:2024
 不起后台线程。手动触发全量刷新另走 `POST /api/admin/refresh-all`(另见
 "信任模型与 admin 端点")。
 
+### 1.3b 知识库 RAG 配置 (可选)
+
+知识库 RAG 使用 PostgreSQL pgvector 做向量检索。默认关闭(Structured 模式)；
+配置 embedding 后自动启用 pgvector。
+
+```ini
+# embedding 服务 (OpenAI 兼容格式)
+KNOWLEDGE_EMBEDDING_BASE_URL=https://api.openai.com/v1
+KNOWLEDGE_EMBEDDING_API_KEY=sk-...
+KNOWLEDGE_EMBEDDING_MODEL=text-embedding-3-small
+KNOWLEDGE_EMBEDDING_DIMENSIONS=1536
+KNOWLEDGE_EMBEDDING_VERSION=001
+
+# 向量后端: auto (默认) / pgvector / structured
+KNOWLEDGE_VECTOR_BACKEND=auto
+```
+
+- `KNOWLEDGE_VECTOR_BACKEND=auto`: 自动检测 embedding 配置,有则用 pgvector,无则降级到结构化检索
+- `KNOWLEDGE_VECTOR_BACKEND=pgvector`: 强制 pgvector,无配置时 API 仍可启动但索引会跳过
+- `KNOWLEDGE_VECTOR_BACKEND=structured`: 纯结构化检索,不调用 embedding
+
+知识库增量流水线默认开启(`SCHEDULER_KNOWLEDGE_ENABLED=true`),每 6 分钟跑一次。
+可通过 `SCHEDULER_KNOWLEDGE_ENABLED=false` 关闭。
+
+模型或 embedding 版本变更时会由普通增量流水线自动触发重索引,不会删除向量表。
+dimension 变更时先更新 `KNOWLEDGE_EMBEDDING_DIMENSIONS` 并重启。启动检查会保留
+旧向量表、让 API 继续启动，同时 `/api/health` 报告 dimension mismatch。随后显式
+确认重建仅包含可再生向量的 `knowledge_embeddings` 表（该操作只支持 PostgreSQL）：
+
+```bash
+curl -X POST \
+  -H 'X-Local-Trigger: 1' \
+  'http://localhost:8000/api/knowledge/vector-schema/rebuild?confirm=true'
+```
+
+重建会把知识文档统一重新入队；之后由正常的知识库增量流水线重新生成向量。
+普通 `POST /api/knowledge/reindex` 永远不会删除表。
+
 ### 1.4 启动
 
 ```powershell
@@ -104,7 +142,7 @@ docker compose ps
 
 # 健康检查
 curl http://localhost:8000/api/health
-# → {"status":"ok"}
+# 顶层 status 保持兼容,并附带 database / knowledge_vector / scheduler 本地状态
 
 # 浏览器打开
 #    http://localhost:3000         ← 本机

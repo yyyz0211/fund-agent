@@ -1,24 +1,42 @@
-"""市场数据 LangChain 工具。
+"""市场数据 LangChain 工具。薄包装 market_service。
 
-这里保持薄包装原则:LLM 不能直接访问数据库/API,只能通过这些受控 tool
-读取已经结构化过的市场数据。
+Wave 1: 新增三个 evidence / briefing 相关工具
+- get_market_snapshot_auto: 读取最新 MarketSnapshot,缺失则触发采集
+- search_market_evidence: 查当日证据（政策/公告/宏观/行业热点）
+- get_market_briefing: 取最新 Briefing + 数据质量元数据
 """
-from __future__ import annotations
+from datetime import datetime
+
+import httpx
 
 from langchain_core.tools import tool
 from sqlalchemy import select
 
+from backend.config.settings import get_settings
 from backend.db.models import Briefing
 from backend.db.session import get_session
-from backend.services import market_evidence_service as mev
-from backend.services import market_intel_service as mintel
+from backend.services import cls_telegraph_client
 from backend.services import market_service as msvc
+from backend.services import market_intel_service
+from backend.services import market_evidence_service
+from backend.services import briefing_service
+
+
+_CLS_TELEGRAPH_PUBLIC_KEYS = (
+    "title",
+    "summary",
+    "published_at",
+    "source",
+    "source_url",
+    "symbols",
+    "metrics",
+)
 
 
 def _limit(value: int, *, default: int = 5, max_value: int = 20) -> int:
     try:
         parsed = int(value)
-    except Exception:
+    except (TypeError, ValueError):
         parsed = default
     return max(1, min(parsed, max_value))
 
@@ -35,31 +53,24 @@ def _merge_flows(sectors: list[dict], flows: list[dict]) -> list[dict]:
     flow_map = {_flow_key(row): row for row in flows if _flow_key(row)}
     merged: list[dict] = []
     for row in sectors:
-        name = _flow_key(row)
-        flow = flow_map.get(name, {})
         item = dict(row)
         if "net_flow" not in item:
-            item["net_flow"] = flow.get("net_flow")
+            item["net_flow"] = flow_map.get(_flow_key(row), {}).get("net_flow")
         merged.append(item)
     return merged
 
 
-def _sort_rows(rows: list[dict], sort: str) -> list[dict]:
-    if sort == "flow":
-        return sorted(
-            rows,
-            key=lambda row: abs(float(row.get("net_flow") or 0)),
-            reverse=True,
-        )
+def _top_rows(rows: list[dict], *, limit: int, sort: str = "change_pct") -> list[dict]:
+    key = "net_flow" if sort == "flow" else "change_pct"
     return sorted(
         rows,
-        key=lambda row: abs(float(row.get("change_pct") or 0)),
+        key=lambda row: abs(float(row.get(key) or 0)),
         reverse=True,
-    )
+    )[:limit]
 
 
-def _top_rows(rows: list[dict], *, limit: int, sort: str = "change_pct") -> list[dict]:
-    return _sort_rows(rows, sort)[:limit]
+def _public_cls_telegraph_item(row: dict) -> dict:
+    return {key: row.get(key) for key in _CLS_TELEGRAPH_PUBLIC_KEYS if key in row}
 
 
 @tool
@@ -79,17 +90,30 @@ def get_market_snapshot_auto(
     date: str = "",
     snapshot_type: str = "post_market",
     limit: int = 5,
+    trade_date: str = "",
+    brief_type: str = "",
 ) -> dict:
-    """获取市场情报快照，适合回答"今天大盘/市场怎么样"。
+    """读取 MarketSnapshot (指数/板块/宽度等); 不存在则触发 `collect_market_intel`。
 
-    `date` 为空时使用今天；`snapshot_type` 支持 `morning` / `post_market`。
-    返回会裁剪 top 行业/概念/公告，避免把过大的市场快照塞给 LLM。
+    Args:
+        date/trade_date: YYYY-MM-DD；trade_date 是新版别名，留空取今天
+        snapshot_type/brief_type: morning / pre_market / post_market；brief_type 是新版别名
+        limit: 返回各类明细的最大条数
+
+    Returns:
+        含 indices / breadth / industry_sectors / overseas / themes / as_of / source 的 dict。
+        失败时含 `{error}` 键,不要伪造数字。
     """
+    td = (trade_date or date).strip() or datetime.now().strftime("%Y-%m-%d")
+    resolved_type = (brief_type or snapshot_type or "post_market").strip()
     lim = _limit(limit)
-    snapshot = mintel.get_market_snapshot(
-        trade_date=date or None,
-        snapshot_type=snapshot_type,
-    )
+    try:
+        snapshot = market_intel_service.get_market_snapshot(
+            trade_date=td, snapshot_type=resolved_type,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"error": str(exc), "trade_date": td, "snapshot_type": resolved_type}
+
     industry = _merge_flows(
         _safe_list(snapshot.get("industry_sectors")),
         _safe_list(snapshot.get("industry_flows")),
@@ -99,8 +123,8 @@ def get_market_snapshot_auto(
         _safe_list(snapshot.get("concept_flows")),
     )
     return {
-        "trade_date": snapshot.get("trade_date") or date or "",
-        "snapshot_type": snapshot.get("snapshot_type") or snapshot_type,
+        "trade_date": snapshot.get("trade_date") or td,
+        "snapshot_type": snapshot.get("snapshot_type") or resolved_type,
         "indices": _safe_list(snapshot.get("indices"))[:lim],
         "breadth": snapshot.get("breadth") if isinstance(snapshot.get("breadth"), dict) else {},
         "top_industry_sectors": _top_rows(industry, limit=lim),
@@ -109,7 +133,7 @@ def get_market_snapshot_auto(
         "announcements": _safe_list(snapshot.get("announcements"))[:lim],
         "errors": _safe_list(snapshot.get("errors")),
         "source": snapshot.get("source") or "akshare",
-        "as_of": snapshot.get("as_of") or snapshot.get("trade_date") or date or "",
+        "as_of": snapshot.get("as_of") or snapshot.get("trade_date") or td,
     }
 
 
@@ -121,15 +145,10 @@ def get_sector_heatmap(
     date: str = "",
     snapshot_type: str = "post_market",
 ) -> dict:
-    """获取行业/概念板块强弱和资金流，适合回答"某板块今天怎么样"。
-
-    `kind ∈ {"industry","concept"}`；`sort ∈ {"change_pct","flow"}`。
-    若没有可验证的新闻/政策证据，只能说明行情表现，不能编造涨跌原因。
-    """
+    """获取行业/概念板块强弱和资金流；只描述行情，不单独证明催化原因。"""
     normalized_kind = "concept" if kind == "concept" else "industry"
     normalized_sort = "flow" if sort == "flow" else "change_pct"
-    lim = _limit(limit, default=10)
-    snapshot = mintel.get_market_snapshot(
+    snapshot = market_intel_service.get_market_snapshot(
         trade_date=date or None,
         snapshot_type=snapshot_type,
     )
@@ -144,7 +163,7 @@ def get_sector_heatmap(
         "sort": normalized_sort,
         "trade_date": snapshot.get("trade_date") or date or "",
         "snapshot_type": snapshot.get("snapshot_type") or snapshot_type,
-        "rows": _top_rows(rows, limit=lim, sort=normalized_sort),
+        "rows": _top_rows(rows, limit=_limit(limit, default=10), sort=normalized_sort),
         "source": snapshot.get("source") or "akshare",
         "as_of": snapshot.get("as_of") or snapshot.get("trade_date") or date or "",
         "missing_evidence_note": "该工具只返回行情强弱与资金流，不包含新闻/政策催化证据。",
@@ -153,7 +172,7 @@ def get_sector_heatmap(
 
 @tool
 def get_latest_market_brief() -> dict:
-    """获取最近一篇本地市场/基金简报，适合回答"今日简报/市场总结"。"""
+    """获取最近一篇本地市场/基金简报。"""
     session = get_session()
     try:
         row = session.scalar(
@@ -178,33 +197,104 @@ def get_latest_market_brief() -> dict:
 
 @tool
 def search_market_evidence(
-    query: str,
-    date: str = "",
+    query: str = "",
     category: str = "",
-    limit: int = 5,
+    trade_date: str = "",
+    limit: int = 20,
 ) -> dict:
-    """搜索本地市场证据，适合回答"为什么涨/跌/政策催化是什么"。
+    """按关键词/类别/日期查当日市场证据。
 
-    返回的 evidence 每条都带 source/source_url/published_at。没有结果时,
-    必须说明本地证据不足，不能确认催化原因。
+    Args:
+        query: 关键词,匹配 title/summary。空=不限
+        category: policy / announcement / overseas_disclosure / macro / sector / news。空=不限
+        trade_date: YYYY-MM-DD,空=今天
+        limit: 最多返回条数,默认 20
+
+    Returns:
+        {count, groups: {<category>: [rows...]}, items: [rows...]} 的 dict;
+        每条含 id / trade_date / category / title / summary / source / source_url /
+        published_at / reliability。无证据返回 {count:0, groups:{}, items:[]}。
+
+    注意: 用户问"为什么涨/跌 / 有什么催化"时,**先用此工具拉证据再下结论**;
+    工具没有返回时,只能如实说"本地证据不足",不得编造。
     """
-    rows = mev.search_evidence(
-        query=query,
-        trade_date=date,
-        category=category,
-        limit=_limit(limit, default=5),
-    )
-    return {
-        "query": query,
-        "trade_date": date,
-        "category": category,
-        "evidence": rows,
-        "source": "local_market_evidence",
-        "as_of": rows[0]["published_at"] if rows else date,
-        "missing_evidence_note": (
-            "" if rows else "本地证据不足，不能确认催化原因；只能描述已采集到的行情事实。"
-        ),
-    }
+    td = trade_date.strip() or datetime.now().strftime("%Y-%m-%d")
+    try:
+        rows = market_evidence_service.search_evidence(
+            trade_date=td,
+            category=(category or "").strip() or None,
+            query=(query or "").strip() or None,
+            limit=limit,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"error": str(exc), "trade_date": td}
+    groups: dict = {}
+    for r in rows:
+        groups.setdefault(r["category"], []).append(r)
+    return {"count": len(rows), "groups": groups, "items": rows, "trade_date": td}
+
+
+@tool
+def search_cls_telegraph(
+    keyword: str = "",
+    category: str = "",
+    limit: int = 10,
+) -> dict:
+    """实时搜索财联社电报。
+
+    Args:
+        keyword: 搜索关键词。空字符串直接返回空结果。
+        category: 财联社分类: fund / watch / announcement / hk_us / red / remind。空=不限
+        limit: 最多返回条数,受 CLS_MAX_SEARCH_LIMIT 限制。
+
+    Returns:
+        {count, items, error}。每条 item 含 title / summary / published_at /
+        source / source_url / symbols / metrics。回答时必须附 source_url。
+    """
+    settings = get_settings()
+    if not settings.cls_search_enabled:
+        return {"count": 0, "items": [], "error": "CLS search disabled"}
+    kw = (keyword or "").strip()
+    if not kw:
+        return {"count": 0, "items": [], "error": ""}
+    effective_limit = max(1, min(int(limit or settings.cls_max_search_limit), settings.cls_max_search_limit))
+    try:
+        with httpx.Client(follow_redirects=True, timeout=settings.cls_timeout_seconds) as client:
+            rows = cls_telegraph_client.search_telegraph(
+                client=client,
+                keyword=kw,
+                category=(category or "").strip(),
+                limit=effective_limit,
+                timeout_seconds=settings.cls_timeout_seconds,
+                app_version=settings.cls_app_version,
+            )
+        items = [_public_cls_telegraph_item(row) for row in rows]
+        return {"count": len(items), "items": items, "error": ""}
+    except Exception as exc:  # noqa: BLE001
+        return {"count": 0, "items": [], "error": str(exc)}
+
+
+@tool
+def get_market_briefing(brief_date: str = "", brief_type: str = "post_market") -> dict:
+    """读取最新(或指定日期) Briefing markdown + 数据质量。
+
+    Returns:
+        包含 briefing.markdown / sections / data_quality / confidence /
+        missing_data / evidence_count / source / as_of 的 dict。无 briefing 返回 {briefing: None}。
+
+        引用时**必须带上** source + as_of + data_quality;data_quality=market_only
+        或 partial 时简短告知"部分数据缺失",不要把"缺失"陈述为事实。
+    """
+    try:
+        snap = briefing_service.read_briefing(
+            brief_date or None,
+            brief_type=brief_type or "post_market",
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"error": str(exc)}
+    if snap is None:
+        return {"briefing": None}
+    return {"briefing": snap}
 
 
 MARKET_TOOLS = [
@@ -214,4 +304,6 @@ MARKET_TOOLS = [
     get_sector_heatmap,
     get_latest_market_brief,
     search_market_evidence,
+    search_cls_telegraph,
+    get_market_briefing,
 ]

@@ -20,6 +20,9 @@ def get_db_session() -> Iterator[Session]:
     s = SessionLocal()
     try:
         yield s
+    except Exception:
+        s.rollback()
+        raise
     finally:
         s.close()
 

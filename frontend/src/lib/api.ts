@@ -9,6 +9,8 @@ import type {
   WatchlistRow, WatchlistUpsertPayload,
   PortfolioPnlSeries,
   Briefing, BriefingLatestResponse, BriefingListResponse, BriefingRunResponse,
+  BriefingFeedbackPayload, BriefingFeedbackResponse,
+  MarketEvidenceResponse, EvidenceCategory,
 } from "@/types/api";
 
 // 兼容两种命名:Docker 部署用 NEXT_PUBLIC_API_BASE_URL,本地 dev 历史上用 NEXT_PUBLIC_API_BASE
@@ -51,6 +53,8 @@ async function send<T>(
   if (r.status === 204) return undefined as T;
   return r.json() as Promise<T>;
 }
+
+const post = <T>(path: string, body?: unknown) => send<T>("POST", path, body);
 
 export const api = {
   fund: (code: string) => get<Fund>(`/api/funds/${code}`),
@@ -169,17 +173,28 @@ export const api = {
       `/api/watchlist/${encodeURIComponent(fundCode)}/pending-buys/${pendingId}/cancel`,
     ),
   marketLatest: () => get<MarketLatest>("/api/market/latest"),
-  briefingLatest: () => get<BriefingLatestResponse>("/api/briefing/latest"),
-  briefingList: (limit = 30) => get<BriefingListResponse>("/api/briefing/list", { limit }),
-  briefingRun: () =>
+  marketEvidence: (date: string, category?: EvidenceCategory, limit: number = 20) =>
+    get<MarketEvidenceResponse>("/api/market/evidence", {
+      date,
+      category: category ?? "",
+      limit,
+    }),
+  briefingLatest: (type = "post_market") =>
+    get<BriefingLatestResponse>("/api/briefing/latest", { type }),
+  briefingList: (limit = 30, type = "post_market") =>
+    get<BriefingListResponse>("/api/briefing/list", { limit, type }),
+  briefingRun: (briefType = "post_market") =>
     fetch(BASE + "/api/briefing/run", {
       method: "POST",
-      headers: { "X-Local-Trigger": "1" },
+      headers: { "X-Local-Trigger": "1", "Content-Type": "application/json" },
+      body: JSON.stringify({ brief_type: briefType }),
       cache: "no-store",
     }).then(async (r) => {
       if (!r.ok) throw new Error(`/api/briefing/run -> ${r.status}`);
       return (await r.json()) as BriefingRunResponse;
     }),
+  briefingFeedback: (payload: BriefingFeedbackPayload) =>
+    post<BriefingFeedbackResponse>("/api/briefing/feedback", payload),
   announcements: (fundCode = "", limit = 20) =>
     get<AnnouncementList>("/api/announcements", { fund_code: fundCode, limit }),
   portfolioPnl: (codes: string[] = []) =>

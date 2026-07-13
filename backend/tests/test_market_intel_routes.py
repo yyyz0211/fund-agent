@@ -54,3 +54,115 @@ def test_refresh_with_header_returns_started(client):
                                headers={"X-Local-Trigger": "1"})
     assert response.status_code == 200
     assert response.json()["status"] == "started"
+
+
+def test_evidence_endpoint_returns_grouped_rows(client):
+    """evidence API 返回按类别分组的证据。"""
+    with patch("backend.services.market_evidence_service.search_evidence",
+               return_value=[
+                   {
+                       "id": 1,
+                       "trade_date": "2026-07-07",
+                       "category": "policy",
+                       "title": "创新药政策",
+                       "summary": "审评提速。",
+                       "source": "NMPA",
+                       "source_url": "https://example.gov/a",
+                       "published_at": "2026-07-07",
+                       "reliability": "official",
+                   },
+                   {
+                       "id": 2,
+                       "trade_date": "2026-07-07",
+                       "category": "macro",
+                       "title": "FRED 利率",
+                       "summary": "DFF = 4.25",
+                       "source": "FRED",
+                       "source_url": "https://fred.stlouisfed.org/series/DFF",
+                       "published_at": "2026-07-06",
+                       "reliability": "official",
+                   },
+               ]):
+        response = client.get("/api/market/evidence?date=2026-07-07&limit=20")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["count"] == 2
+    assert data["items"][0]["title"] == "创新药政策"
+    assert data["items"][1]["source"] == "FRED"
+    assert data["groups"]["policy"][0]["title"] == "创新药政策"
+    assert data["groups"]["macro"][0]["source"] == "FRED"
+
+
+def test_evidence_refresh_status_endpoint_returns_last_result(client):
+    with patch(
+        "backend.services.market_evidence_service.get_last_refresh_status",
+        return_value={
+            "status": "failed",
+            "brief_type": "post_market",
+            "result": {
+                "inserted": 0,
+                "fetched": 0,
+                "errors": [{"adapter": "财联社", "error": "ConnectError"}],
+                "categories": {},
+            },
+        },
+    ):
+        response = client.get("/api/market/evidence/refresh/status?brief_type=post_market")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "failed"
+    assert response.json()["result"]["errors"][0]["adapter"] == "财联社"
+
+
+def test_cls_telegraph_endpoint_returns_items(client):
+    with patch(
+        "backend.services.cls_telegraph_sync_service.list_cls_telegraph_items",
+        return_value=[
+            {
+                "cls_id": "2421002",
+                "title": "财联社电报：基金市场回暖",
+                "brief": "基金市场回暖",
+                "content": "基金市场回暖",
+                "category": "fund",
+                "subjects": ["盘面直播"],
+                "symbols": ["沪深300"],
+                "source_url": "https://www.cls.cn/detail/2421002",
+                "ctime": 1783564494,
+                "published_at": "2026-07-09 10:34:54",
+                "fetched_at": "2026-07-09T10:35:00",
+                "raw_json": {"id": 2421002},
+            }
+        ],
+    ) as mocked:
+        response = client.get("/api/cls/telegraph?limit=5&category=fund&keyword=基金&since_id=2420000")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["count"] == 1
+    assert data["items"][0]["cls_id"] == "2421002"
+    mocked.assert_called_once()
+    assert mocked.call_args.kwargs["limit"] == 5
+    assert mocked.call_args.kwargs["category"] == "fund"
+    assert mocked.call_args.kwargs["keyword"] == "基金"
+    assert mocked.call_args.kwargs["since_id"] == "2420000"
+
+
+def test_cls_telegraph_sync_status_endpoint_returns_state(client):
+    with patch(
+        "backend.services.cls_telegraph_sync_service.get_cls_telegraph_sync_status",
+        return_value={
+            "status": "ok",
+            "last_success_at": "2026-07-09T10:35:00+08:00",
+            "latest_cls_id": "2421002",
+            "lag_seconds": 30,
+            "last_error": None,
+        },
+    ):
+        response = client.get("/api/cls/telegraph/sync/status")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "ok"
+    assert data["latest_cls_id"] == "2421002"
+    assert data["lag_seconds"] == 30

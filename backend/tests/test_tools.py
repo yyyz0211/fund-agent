@@ -32,6 +32,8 @@ from backend.tools import watchlist_tools as wt
 from backend.tools import market_tools as mt
 from backend.services import watchlist_service as wsvc
 from backend.services import market_service as msvc
+from backend.services import cls_telegraph_client as cls_client
+from backend.config.settings import get_settings
 
 
 def test_watchlist_tools_forward(monkeypatch):
@@ -58,12 +60,11 @@ def test_tool_lists_exposed(monkeypatch):
         "get_watchlist", "add_fund_to_watchlist",
         "remove_fund_from_watchlist", "update_fund_note"}
     assert {t.name for t in mt.MARKET_TOOLS} == {
-        "get_market_indices",
-        "refresh_market",
-        "get_market_snapshot_auto",
-        "get_sector_heatmap",
-        "get_latest_market_brief",
-        "search_market_evidence",
+        "get_market_indices", "refresh_market",
+        "get_market_snapshot_auto", "get_sector_heatmap",
+        "get_latest_market_brief", "search_market_evidence",
+        "search_cls_telegraph",
+        "get_market_briefing",
     }
 
 
@@ -141,8 +142,95 @@ def test_diagnose_fund_auto_tool(monkeypatch):
     assert out["refresh"]["attempted"] is False
 
 
+def test_search_cls_telegraph_tool_forwards_to_client(monkeypatch):
+    monkeypatch.setenv("CLS_SEARCH_ENABLED", "true")
+    monkeypatch.setenv("CLS_MAX_SEARCH_LIMIT", "3")
+    get_settings.cache_clear()
+
+    def fake_search_telegraph(**kwargs):
+        assert kwargs["keyword"] == "基金"
+        assert kwargs["category"] == "fund"
+        assert kwargs["limit"] == 3
+        return [{
+            "title": "基金快讯",
+            "summary": "摘要",
+            "published_at": "2026-07-08 11:31:46",
+            "source": "财联社",
+            "source_url": "https://www.cls.cn/detail/1",
+            "symbols": ["基金"],
+            "metrics": {"cls_id": 1},
+        }]
+
+    monkeypatch.setattr(cls_client, "search_telegraph", fake_search_telegraph)
+
+    out = mt.search_cls_telegraph.invoke({"keyword": "基金", "category": "fund", "limit": 99})
+
+    assert out["count"] == 1
+    assert out["items"][0]["title"] == "基金快讯"
+    assert out["error"] == ""
+
+
+def test_search_cls_telegraph_tool_strips_raw_fields(monkeypatch):
+    monkeypatch.setenv("CLS_SEARCH_ENABLED", "true")
+    get_settings.cache_clear()
+
+    def fake_search_telegraph(**kwargs):
+        return [{
+            "title": "基金快讯",
+            "summary": "摘要",
+            "published_at": "2026-07-08 11:31:46",
+            "source": "财联社",
+            "source_url": "https://www.cls.cn/detail/1",
+            "symbols": ["基金"],
+            "metrics": {"cls_id": 1},
+            "raw": {"content": "不应进入工具返回"},
+        }]
+
+    monkeypatch.setattr(cls_client, "search_telegraph", fake_search_telegraph)
+
+    out = mt.search_cls_telegraph.invoke({"keyword": "基金"})
+
+    assert "raw" not in out["items"][0]
+    assert set(out["items"][0]) == {
+        "title", "summary", "published_at", "source",
+        "source_url", "symbols", "metrics",
+    }
+
+
+def test_search_cls_telegraph_tool_respects_disable(monkeypatch):
+    monkeypatch.setenv("CLS_SEARCH_ENABLED", "false")
+    get_settings.cache_clear()
+
+    out = mt.search_cls_telegraph.invoke({"keyword": "基金"})
+
+    assert out["count"] == 0
+    assert out["items"] == []
+    assert out["error"] == "CLS search disabled"
+
+
+def test_get_market_briefing_passes_brief_type(monkeypatch):
+    from backend.services import briefing_service
+
+    captured = {}
+
+    def fake_read_briefing(brief_date=None, brief_type="post_market"):
+        captured["brief_date"] = brief_date
+        captured["brief_type"] = brief_type
+        return {"briefing_date": brief_date, "brief_type": brief_type}
+
+    monkeypatch.setattr(briefing_service, "read_briefing", fake_read_briefing)
+
+    out = mt.get_market_briefing.invoke({
+        "brief_date": "2026-07-09",
+        "brief_type": "pre_market",
+    })
+
+    assert captured == {"brief_date": "2026-07-09", "brief_type": "pre_market"}
+    assert out["briefing"]["brief_type"] == "pre_market"
+
+
 def test_all_tools_aggregate_has_unique_set():
-    # 8 fund + 4 watchlist + 6 market + 1 pnl + 1 what_if = 20
+    # 8 fund + 4 watchlist + 8 market + 1 pnl + 1 what_if = 22
     names = [t.name for t in fund_tools.ALL_TOOLS]
     assert len(names) == len(set(names))  # no name collisions
     assert set(names) == {
@@ -150,7 +238,11 @@ def test_all_tools_aggregate_has_unique_set():
         "get_fund_nav_history", "refresh_fund", "diagnose_fund",
         "lookup_fund_auto", "diagnose_fund_auto", "get_watchlist",
         "add_fund_to_watchlist", "remove_fund_from_watchlist", "update_fund_note",
-        "get_market_indices", "refresh_market", "get_market_snapshot_auto",
-        "get_sector_heatmap", "get_latest_market_brief", "search_market_evidence",
-        "calculate_holding_pnl", "what_if_analysis",
+        "get_market_indices", "refresh_market",
+        "get_market_snapshot_auto", "get_sector_heatmap",
+        "get_latest_market_brief", "search_market_evidence",
+        "search_cls_telegraph",
+        "get_market_briefing",
+        "calculate_holding_pnl",
+        "what_if_analysis",
     }

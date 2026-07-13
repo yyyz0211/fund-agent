@@ -1,35 +1,31 @@
 "use client";
 import { useState } from "react";
-import { useMarketSnapshot } from "@/lib/market";
-import { MarketBreadthBanner } from "@/components/market/MarketBreadthBanner";
-import { MarketOverviewCards } from "@/components/market/MarketOverviewCards";
-import { IndustrySectorTable } from "@/components/market/IndustrySectorTable";
-import { ConceptSectorTable } from "@/components/market/ConceptSectorTable";
-import { ThemeBoards } from "@/components/market/ThemeBoards";
+import { resolveMarketDate, isMarketDateToday, useMarketSnapshot, useMarketEvidence } from "@/lib/market";
+import { MarketHero } from "@/components/market/MarketHero";
+import { MarketEvidencePanel } from "@/components/market/MarketEvidencePanel";
+import { SectorTabbedTable } from "@/components/market/SectorTabbedTable";
 import { OverseasMarkets } from "@/components/market/OverseasMarkets";
 import { AnnouncementList } from "@/components/market/AnnouncementList";
+import { ThemeBoards } from "@/components/market/ThemeBoards";
 import { SnapshotRefreshButton } from "@/components/market/SnapshotRefreshButton";
 import { SectionHeader } from "@/components/PageHeader";
 import { AlertTriangle } from "lucide-react";
+import { StateBlock } from "@/components/StateBlock";
 
 const DATE_OPTIONS = [
   { label: "今日", value: "today" },
   { label: "昨日", value: "yesterday" },
 ];
 
-function resolveDate(opt: string): string {
-  const d = new Date();
-  if (opt === "yesterday") d.setDate(d.getDate() - 1);
-  return d.toISOString().slice(0, 10);
-}
-
 export default function MarketPage() {
   const [dateOpt, setDateOpt] = useState("today");
-  const date = resolveDate(dateOpt);
+  const date = resolveMarketDate(dateOpt);
   const { data: snap, isLoading, error } = useMarketSnapshot(date, "post_market");
+  const evidence = useMarketEvidence(date);
+  const evidenceCount = evidence.data?.count ?? 0;
 
   return (
-    <div className="mx-auto max-w-7xl space-y-7 px-4 pb-10 sm:px-6 lg:px-8">
+    <div className="mx-auto max-w-7xl space-y-6 px-4 pb-10 sm:px-6 lg:px-8">
       <div className="rounded-2xl border border-gray-200 bg-white/90 p-5 shadow-sm">
         <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
           <div className="max-w-3xl">
@@ -40,7 +36,7 @@ export default function MarketPage() {
               市场情报中心
             </h1>
             <p className="mt-2 text-sm leading-6 text-gray-600">
-              收盘后快照，集中查看指数、市场宽度、行业/概念板块、外围市场与公告。
+              收盘后快照，集中查看指数、市场宽度、证据面板、板块强弱、外围市场与公告。
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -59,19 +55,12 @@ export default function MarketPage() {
                 </button>
               ))}
             </div>
-            <SnapshotRefreshButton />
+            <SnapshotRefreshButton date={date} canRefresh={isMarketDateToday(date)} />
           </div>
         </div>
       </div>
 
-      {isLoading && (
-        <div className="flex min-h-[360px] items-center justify-center rounded-2xl border border-gray-200 bg-white text-gray-400 shadow-sm">
-          <div className="flex flex-col items-center gap-2">
-            <div className="h-8 w-8 rounded-full border-2 border-blue-400 border-t-transparent animate-spin" />
-            <span>加载市场数据…</span>
-          </div>
-        </div>
-      )}
+      {isLoading && <StateBlock title="加载市场数据…" tone="loading" />}
 
       {error && !isLoading && (
         <div className="flex items-start gap-3 rounded-2xl border border-red-200 bg-red-50 p-5 text-sm text-red-700">
@@ -84,20 +73,21 @@ export default function MarketPage() {
       )}
 
       {snap && !isLoading && (
-        <div className="space-y-7">
-          <section className="grid gap-4 lg:grid-cols-[minmax(0,1.35fr)_minmax(320px,0.65fr)]">
-            <MarketBreadthBanner snap={snap} />
-            <MarketOverviewCards snap={snap} />
+        <div className="space-y-5">
+          <section className="space-y-3">
+            <SectionHeader
+              title="今日市场"
+              description={`as of ${snap.as_of} · 证据 ${evidenceCount} 条`}
+            />
+            <MarketHero snap={snap} />
           </section>
 
-          <section className="space-y-4">
-            <SectionHeader
-              title="板块强弱"
-              description="按涨跌幅绝对值排序，红涨绿跌，条形以 0 为中心。"
-            />
-            <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-              <IndustrySectorTable snap={snap} />
-              <ConceptSectorTable snap={snap} />
+          <section className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(500px,0.95fr)_minmax(0,1.05fr)]">
+            <div className="min-w-0 lg:h-full">
+              <MarketEvidencePanel date={date} />
+            </div>
+            <div className="min-w-0 lg:h-full">
+              <SectorTabbedTable snap={snap} />
             </div>
           </section>
 

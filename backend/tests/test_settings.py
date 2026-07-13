@@ -16,7 +16,7 @@ def test_settings_defaults(monkeypatch):
     get_settings.cache_clear()
     s = get_settings()
     assert s.deepseek_base_url == "https://api.deepseek.com"
-    assert s.deepseek_model == "deepseek-chat"
+    assert s.deepseek_model == "deepseek-v4-flash"
     assert s.database_url == "sqlite:///backend/data/fund_agent.db"
 
 
@@ -53,7 +53,7 @@ def test_sqlite_engine_applies_concurrency_pragmas(tmp_path):
         foreign_keys = conn.execute(text("PRAGMA foreign_keys")).scalar()
 
     assert str(journal_mode).lower() == "wal"
-    assert busy_timeout == 5000
+    assert busy_timeout == 15000
     assert foreign_keys == 1
 
 
@@ -64,5 +64,166 @@ def test_sqlite_memory_engine_accepts_pragmas_without_wal_requirement():
         busy_timeout = conn.execute(text("PRAGMA busy_timeout")).scalar()
         foreign_keys = conn.execute(text("PRAGMA foreign_keys")).scalar()
 
-    assert busy_timeout == 5000
+    assert busy_timeout == 15000
     assert foreign_keys == 1
+
+
+def test_cls_settings_defaults(monkeypatch):
+    for key in [
+        "CLS_ENABLED",
+        "CLS_SEARCH_ENABLED",
+        "CLS_TIMEOUT_SECONDS",
+        "CLS_CATEGORIES",
+        "CLS_PER_CATEGORY_LIMIT",
+        "CLS_MAX_SEARCH_LIMIT",
+        "CLS_APP_VERSION",
+        "CLS_TELEGRAPH_SYNC_ENABLED",
+        "CLS_TELEGRAPH_SYNC_INTERVAL_SECONDS",
+        "CLS_TELEGRAPH_SYNC_PAGE_SIZE",
+        "CLS_TELEGRAPH_SYNC_MAX_PAGES",
+    ]:
+        monkeypatch.delenv(key, raising=False)
+    get_settings.cache_clear()
+    s = get_settings()
+    assert s.cls_enabled is True
+    assert s.cls_search_enabled is True
+    assert s.cls_timeout_seconds == 5.0
+    assert s.cls_categories == "fund,watch,announcement,hk_us,red,remind"
+    assert s.cls_per_category_limit == 10
+    assert s.cls_max_search_limit == 10
+    assert s.cls_app_version == "8.7.9"
+    assert s.cls_telegraph_sync_enabled is True
+    assert s.cls_telegraph_sync_interval_seconds == 360
+    assert s.cls_telegraph_sync_page_size == 50
+    assert s.cls_telegraph_sync_max_pages == 3
+
+
+def test_cls_settings_read_env(monkeypatch):
+    monkeypatch.setenv("CLS_ENABLED", "false")
+    monkeypatch.setenv("CLS_SEARCH_ENABLED", "false")
+    monkeypatch.setenv("CLS_TIMEOUT_SECONDS", "3.5")
+    monkeypatch.setenv("CLS_CATEGORIES", "fund,watch")
+    monkeypatch.setenv("CLS_PER_CATEGORY_LIMIT", "2")
+    monkeypatch.setenv("CLS_MAX_SEARCH_LIMIT", "4")
+    monkeypatch.setenv("CLS_APP_VERSION", "9.0.0")
+    monkeypatch.setenv("CLS_TELEGRAPH_SYNC_ENABLED", "false")
+    monkeypatch.setenv("CLS_TELEGRAPH_SYNC_INTERVAL_SECONDS", "30")
+    monkeypatch.setenv("CLS_TELEGRAPH_SYNC_PAGE_SIZE", "25")
+    monkeypatch.setenv("CLS_TELEGRAPH_SYNC_MAX_PAGES", "2")
+    get_settings.cache_clear()
+    s = get_settings()
+    assert s.cls_enabled is False
+    assert s.cls_search_enabled is False
+    assert s.cls_timeout_seconds == 3.5
+    assert s.cls_categories == "fund,watch"
+    assert s.cls_per_category_limit == 2
+    assert s.cls_max_search_limit == 4
+    assert s.cls_app_version == "9.0.0"
+    assert s.cls_telegraph_sync_enabled is False
+    assert s.cls_telegraph_sync_interval_seconds == 30
+    assert s.cls_telegraph_sync_page_size == 25
+    assert s.cls_telegraph_sync_max_pages == 2
+
+
+def test_knowledge_settings_defaults(monkeypatch):
+    for key in [
+        "KNOWLEDGE_RAG_ENABLED",
+        "KNOWLEDGE_VECTOR_BACKEND",
+        "KNOWLEDGE_EMBEDDING_BASE_URL",
+        "KNOWLEDGE_EMBEDDING_API_KEY",
+        "KNOWLEDGE_EMBEDDING_MODEL",
+        "KNOWLEDGE_EMBEDDING_VERSION",
+        "KNOWLEDGE_EMBEDDING_DIMENSIONS",
+        "KNOWLEDGE_CLASSIFICATION_MODEL",
+        "KNOWLEDGE_CLASSIFICATION_PROMPT_VERSION",
+        "KNOWLEDGE_CLASSIFICATION_BATCH_SIZE",
+        "KNOWLEDGE_CLASSIFICATION_MAX_ATTEMPTS",
+        "KNOWLEDGE_CLASSIFICATION_RETRY_SECONDS",
+        "KNOWLEDGE_INDEX_BATCH_SIZE",
+        "KNOWLEDGE_INDEX_MAX_ATTEMPTS",
+        "KNOWLEDGE_INDEX_RETRY_SECONDS",
+        "KNOWLEDGE_DEFAULT_TTL_DAYS",
+        "KNOWLEDGE_INCLUDE_PENDING_FALLBACK",
+        "KNOWLEDGE_MAX_SEARCH_LIMIT",
+        "KNOWLEDGE_MAX_QUEUE_STATUS_LIMIT",
+        "SCHEDULER_KNOWLEDGE_ENABLED",
+        "SCHEDULER_KNOWLEDGE_INTERVAL_MINUTES",
+    ]:
+        monkeypatch.delenv(key, raising=False)
+    get_settings.cache_clear()
+    s = get_settings()
+    assert s.knowledge_rag_enabled is True
+    assert s.knowledge_vector_backend == "auto"
+    assert s.knowledge_embedding_base_url is None
+    assert s.knowledge_embedding_api_key is None
+    assert s.knowledge_embedding_model is None
+    assert s.knowledge_embedding_version is None
+    assert s.knowledge_embedding_dimensions is None
+    assert s.knowledge_classification_model is None
+    assert s.knowledge_classification_prompt_version == "v1"
+    assert s.knowledge_classification_batch_size == 10
+    assert s.knowledge_classification_max_attempts == 3
+    assert s.knowledge_classification_retry_seconds == 300
+    assert s.knowledge_index_batch_size == 20
+    assert s.knowledge_index_max_attempts == 3
+    assert s.knowledge_index_retry_seconds == 300
+    assert s.knowledge_default_ttl_days == 14
+    assert s.knowledge_include_pending_fallback is True
+    assert s.knowledge_max_search_limit == 50
+    assert s.knowledge_max_queue_status_limit == 200
+    assert s.scheduler_knowledge_enabled is True
+    assert s.scheduler_knowledge_interval_minutes == 6
+
+
+def test_knowledge_settings_read_env(monkeypatch):
+    monkeypatch.setenv("KNOWLEDGE_RAG_ENABLED", "false")
+    monkeypatch.setenv("KNOWLEDGE_VECTOR_BACKEND", "pgvector")
+    monkeypatch.setenv("KNOWLEDGE_EMBEDDING_BASE_URL", "https://embed.example/v1")
+    monkeypatch.setenv("KNOWLEDGE_EMBEDDING_API_KEY", "embed-key")
+    monkeypatch.setenv("KNOWLEDGE_EMBEDDING_MODEL", "embed-test")
+    monkeypatch.setenv("KNOWLEDGE_EMBEDDING_VERSION", "v2")
+    monkeypatch.setenv("KNOWLEDGE_EMBEDDING_DIMENSIONS", "1024")
+    monkeypatch.setenv("KNOWLEDGE_CLASSIFICATION_MODEL", "classify-test")
+    monkeypatch.setenv("KNOWLEDGE_CLASSIFICATION_PROMPT_VERSION", "v9")
+    monkeypatch.setenv("KNOWLEDGE_CLASSIFICATION_BATCH_SIZE", "3")
+    monkeypatch.setenv("KNOWLEDGE_CLASSIFICATION_MAX_ATTEMPTS", "5")
+    monkeypatch.setenv("KNOWLEDGE_CLASSIFICATION_RETRY_SECONDS", "45")
+    monkeypatch.setenv("KNOWLEDGE_INDEX_BATCH_SIZE", "4")
+    monkeypatch.setenv("KNOWLEDGE_INDEX_MAX_ATTEMPTS", "6")
+    monkeypatch.setenv("KNOWLEDGE_INDEX_RETRY_SECONDS", "90")
+    monkeypatch.setenv("KNOWLEDGE_DEFAULT_TTL_DAYS", "21")
+    monkeypatch.setenv("KNOWLEDGE_INCLUDE_PENDING_FALLBACK", "false")
+    monkeypatch.setenv("KNOWLEDGE_MAX_SEARCH_LIMIT", "25")
+    monkeypatch.setenv("KNOWLEDGE_MAX_QUEUE_STATUS_LIMIT", "75")
+    monkeypatch.setenv("SCHEDULER_KNOWLEDGE_ENABLED", "false")
+    monkeypatch.setenv("SCHEDULER_KNOWLEDGE_INTERVAL_MINUTES", "12")
+    get_settings.cache_clear()
+    s = get_settings()
+    assert s.knowledge_rag_enabled is False
+    assert s.knowledge_vector_backend == "pgvector"
+    assert s.knowledge_embedding_base_url == "https://embed.example/v1"
+    assert s.knowledge_embedding_api_key == "embed-key"
+    assert s.knowledge_embedding_model == "embed-test"
+    assert s.knowledge_embedding_version == "v2"
+    assert s.knowledge_embedding_dimensions == 1024
+    assert s.knowledge_classification_model == "classify-test"
+    assert s.knowledge_classification_prompt_version == "v9"
+    assert s.knowledge_classification_batch_size == 3
+    assert s.knowledge_classification_max_attempts == 5
+    assert s.knowledge_classification_retry_seconds == 45
+    assert s.knowledge_index_batch_size == 4
+    assert s.knowledge_index_max_attempts == 6
+    assert s.knowledge_index_retry_seconds == 90
+    assert s.knowledge_default_ttl_days == 21
+    assert s.knowledge_include_pending_fallback is False
+    assert s.knowledge_max_search_limit == 25
+    assert s.knowledge_max_queue_status_limit == 75
+    assert s.scheduler_knowledge_enabled is False
+    assert s.scheduler_knowledge_interval_minutes == 12
+
+
+def test_optional_embedding_dimensions_ignore_empty_env(monkeypatch):
+    monkeypatch.setenv("KNOWLEDGE_EMBEDDING_DIMENSIONS", "")
+    get_settings.cache_clear()
+
+    assert get_settings().knowledge_embedding_dimensions is None

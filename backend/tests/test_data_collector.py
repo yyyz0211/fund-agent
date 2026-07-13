@@ -1,4 +1,5 @@
 import types
+import time
 
 import pandas as pd
 import pytest
@@ -360,6 +361,67 @@ def test_fetch_concept_sectors_returns_list():
     assert isinstance(result, list)
 
 
+def test_fetch_concept_sectors_uses_concept_name_list(monkeypatch):
+    class _ConceptListAkshare:
+        def __init__(self):
+            self.calls = []
+
+        def stock_board_concept_name_em(self):
+            self.calls.append("stock_board_concept_name_em")
+            return pd.DataFrame({
+                "板块名称": ["AI算力", "机器人", "低空经济"],
+                "涨跌幅": [3.2, 1.1, -2.4],
+            })
+
+        def stock_board_concept_spot_em(self):
+            self.calls.append("stock_board_concept_spot_em")
+            return pd.DataFrame()
+
+    fake = _ConceptListAkshare()
+    monkeypatch.setattr(dc, "ak", fake)
+
+    result = dc.fetch_concept_sectors(limit_n=1)
+
+    assert [row["name"] for row in result] == ["AI算力", "低空经济"]
+    assert [row["change_pct"] for row in result] == [3.2, -2.4]
+    assert fake.calls == ["stock_board_concept_name_em"]
+
+
+def test_fetch_concept_sectors_falls_back_to_fund_flow_concept(monkeypatch):
+    class _ConceptSectorFallbackAkshare:
+        def __init__(self):
+            self.calls = []
+
+        def stock_board_concept_name_em(self):
+            self.calls.append("stock_board_concept_name_em")
+            raise RuntimeError("eastmoney dns")
+
+        def stock_board_concept_spot_em(self):
+            self.calls.append("stock_board_concept_spot_em")
+            return pd.DataFrame()
+
+        def stock_fund_flow_concept(self, symbol="即时"):
+            self.calls.append(("stock_fund_flow_concept", symbol))
+            return pd.DataFrame({
+                "行业": ["AI智能体", "云计算", "比亚迪概念"],
+                "行业-涨跌幅": [2.8, 1.5, -3.4],
+                "净额": ["54.77亿", "50.84亿", "-143.91亿"],
+            })
+
+    fake = _ConceptSectorFallbackAkshare()
+    monkeypatch.setattr(dc, "ak", fake)
+
+    result = dc.fetch_concept_sectors(limit_n=1)
+
+    assert [row["name"] for row in result] == ["AI智能体", "比亚迪概念"]
+    assert [row["change_pct"] for row in result] == [2.8, -3.4]
+    assert fake.calls == [
+        "stock_board_concept_name_em",
+        "stock_board_concept_spot_em",
+        ("stock_fund_flow_concept", "即时"),
+    ]
+
+
 def test_fetch_industry_flows_returns_list():
     from backend.services.data_collector import fetch_industry_flows
     result = fetch_industry_flows()
@@ -370,6 +432,32 @@ def test_fetch_concept_flows_returns_list():
     from backend.services.data_collector import fetch_concept_flows
     result = fetch_concept_flows()
     assert isinstance(result, list)
+
+
+def test_fetch_concept_flows_uses_fund_flow_concept(monkeypatch):
+    class _ConceptFlowAkshare:
+        def __init__(self):
+            self.calls = []
+
+        def stock_fund_flow_concept(self, symbol="即时"):
+            self.calls.append(("stock_fund_flow_concept", symbol))
+            return pd.DataFrame({
+                "行业": ["AI算力", "机器人", "低空经济"],
+                "净额": ["2.50亿", "8000万", "-9000万"],
+            })
+
+        def stock_board_concept_summary_ths(self):
+            self.calls.append(("stock_board_concept_summary_ths",))
+            return pd.DataFrame()
+
+    fake = _ConceptFlowAkshare()
+    monkeypatch.setattr(dc, "ak", fake)
+
+    result = dc.fetch_concept_flows(limit_n=1)
+
+    assert [row["name"] for row in result] == ["AI算力", "低空经济"]
+    assert [row["net_flow"] for row in result] == [2.5, -0.9]
+    assert fake.calls == [("stock_fund_flow_concept", "即时")]
 
 
 def test_fetch_theme_boards_returns_list():
@@ -394,3 +482,57 @@ def test_fetch_announcements_returns_list():
     from backend.services.data_collector import fetch_announcements
     result = fetch_announcements(limit=5)
     assert isinstance(result, list)
+
+
+# ---------------------------------------------------------------------------
+# AKShare 全局串行化 — 防止 mini_racer worker pool race crash
+# ---------------------------------------------------------------------------
+
+def test_akshare_lock_is_module_level():
+    """AKSHARE_LOCK 必须在模块级, 跨 fetch_* 函数共享同一把锁。"""
+    assert hasattr(dc, "AKSHARE_LOCK"), "缺少进程级 AKSHARE_LOCK"
+    assert dc.AKSHARE_LOCK is dc.AKSHARE_LOCK  # 单例
+
+
+def test_fetch_announcements_serializes_concurrent_calls(monkeypatch):
+    """并发调用 fetch_announcements 时, 真正的 ak.* 调用必须串行执行。
+    这是防止 libmini_racer.dylib FATAL:address_pool_manager.cc(67) 的核心保护。
+    """
+    import threading
+
+    timings: list[float] = []
+    timings_lock = threading.Lock()
+    single_call_ms = 80
+    N = 4
+
+    class _TimedAkshare:
+        def fund_announcement_dividend_em(self, symbol: str):
+            import time as _time
+            with timings_lock:
+                timings.append(_time.monotonic())
+            _time.sleep(single_call_ms / 1000.0)
+            return pd.DataFrame()
+
+    from backend.db.models import Watchlist
+    from unittest.mock import MagicMock
+
+    fake_session = MagicMock()
+    fake_session.scalars.return_value.all.return_value = [Watchlist(fund_code="000001")]
+    import backend.db.session as db_session_mod
+    monkeypatch.setattr(db_session_mod, "get_session", lambda: fake_session)
+    monkeypatch.setattr(dc, "ak", _TimedAkshare())
+
+    t0 = time.monotonic()
+    threads = [threading.Thread(target=dc.fetch_announcements, kwargs={"limit": 1}) for _ in range(N)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5.0)
+    elapsed_ms = (time.monotonic() - t0) * 1000
+
+    expected_min_ms = N * single_call_ms * 0.9
+    assert elapsed_ms >= expected_min_ms, (
+        f"串行化失败: 4 线程仅耗时 {elapsed_ms:.0f}ms, "
+        f"期望 >= {expected_min_ms:.0f}ms (= {N} x {single_call_ms}ms)。"
+    )
+    assert len(timings) == N
