@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
-from backend.db.init_db import ensure_pgvector_schema, init_db
+from backend.db.init_db import ensure_pgvector_schema, init_db, rebuild_pgvector_schema
 from backend.db.models import KnowledgeDocument
 from backend.services.knowledge_pgvector import PgVectorStore
 from backend.services.knowledge_vector import VectorItem
@@ -82,6 +82,52 @@ def test_pgvector_upsert_search_filter_and_cascade():
             "SELECT count(*) FROM knowledge_embeddings WHERE document_id = :document_id"
         ), {"document_id": ai.id})
         assert remaining == 0
+    finally:
+        session.close()
+        transaction.rollback()
+        connection.close()
+        engine.dispose()
+
+
+def test_pgvector_rebuild_requeues_documents_transactionally():
+    engine = create_engine(DATABASE_URL)
+    init_db(engine)
+    ensure_pgvector_schema(engine, dimensions=3)
+    connection = engine.connect()
+    transaction = connection.begin()
+    session = Session(bind=connection)
+
+    class _TransactionalEngine:
+        """Keep destructive DDL inside this test's rollback-only transaction."""
+
+        dialect = connection.dialect
+
+        @staticmethod
+        def begin():
+            return connection.begin_nested()
+
+    try:
+        document = _document("rebuild", "重建测试")
+        document.embedding_model = "old-model"
+        document.embedding_version = "old-version"
+        document.index_attempts = 2
+        document.last_index_error = "old failure"
+        session.add(document)
+        session.flush()
+
+        requeued = rebuild_pgvector_schema(
+            _TransactionalEngine(),
+            dimensions=3,
+            confirmed=True,
+        )
+        session.expire(document)
+
+        assert requeued >= 1
+        assert document.index_status == "pending"
+        assert document.embedding_model is None
+        assert document.embedding_version is None
+        assert document.index_attempts == 0
+        assert document.last_index_error is None
     finally:
         session.close()
         transaction.rollback()

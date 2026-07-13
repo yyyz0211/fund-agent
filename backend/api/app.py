@@ -87,7 +87,30 @@ def _stop_scheduler() -> None:
 
 @app.get("/api/health")
 def health() -> dict:
-    return {"status": "ok"}
+    from backend import scheduler as app_scheduler
+    from backend.config.settings import get_settings
+    from backend.db.session import engine
+    from backend.services.knowledge_pgvector import (
+        database_health_snapshot,
+        knowledge_vector_health_snapshot,
+    )
+
+    database = database_health_snapshot(engine)
+    knowledge_vector = knowledge_vector_health_snapshot(engine, get_settings())
+    active_scheduler = app_scheduler._scheduler
+    scheduler = {
+        "status": "running"
+        if active_scheduler is not None and bool(getattr(active_scheduler, "running", True))
+        else "stopped"
+    }
+    return {
+        "status": "degraded"
+        if database["status"] == "degraded" or knowledge_vector["status"] == "degraded"
+        else "ok",
+        "database": database,
+        "knowledge_vector": knowledge_vector,
+        "scheduler": scheduler,
+    }
 
 
 def add_routers(app: FastAPI) -> None:

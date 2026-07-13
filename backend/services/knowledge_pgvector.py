@@ -6,6 +6,7 @@ from typing import Any
 
 from sqlalchemy import text
 
+from backend.db.init_db import get_pgvector_dimension
 from backend.services.knowledge_vector import VectorHit, VectorItem
 
 
@@ -167,3 +168,69 @@ def build_vector_store(session, settings: Any):
         version=str(version),
         dimensions=int(dimensions),
     )
+
+
+def database_health_snapshot(engine) -> dict[str, Any]:
+    """Check the local SQL connection without contacting external services."""
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return {"status": "ok", "dialect": engine.dialect.name}
+    except Exception as exc:
+        return {
+            "status": "degraded",
+            "dialect": getattr(getattr(engine, "dialect", None), "name", "unknown"),
+            "error": type(exc).__name__,
+        }
+
+
+def knowledge_vector_health_snapshot(engine, settings: Any) -> dict[str, Any]:
+    """Describe local vector readiness without constructing an embedding client."""
+    backend = str(getattr(settings, "knowledge_vector_backend", "auto"))
+    if backend == "structured" or not bool(getattr(settings, "knowledge_rag_enabled", True)):
+        return {"status": "disabled", "backend": backend}
+
+    required = (
+        "knowledge_embedding_base_url",
+        "knowledge_embedding_api_key",
+        "knowledge_embedding_model",
+        "knowledge_embedding_version",
+        "knowledge_embedding_dimensions",
+    )
+    missing = [name for name in required if not getattr(settings, name, None)]
+    dialect = getattr(getattr(engine, "dialect", None), "name", "unknown")
+    reason = None
+    if missing:
+        reason = "missing_embedding_config"
+    elif dialect != "postgresql":
+        reason = "postgresql_required"
+    else:
+        try:
+            with engine.connect() as conn:
+                database_dimensions = get_pgvector_dimension(conn)
+            if database_dimensions is None:
+                reason = "knowledge_embeddings_missing"
+            elif database_dimensions != int(
+                getattr(settings, "knowledge_embedding_dimensions")
+            ):
+                reason = "dimension_mismatch"
+        except Exception as exc:
+            reason = f"schema_check_failed:{type(exc).__name__}"
+
+    if reason is not None:
+        status = "degraded" if backend == "pgvector" else "structured_fallback"
+        snapshot: dict[str, Any] = {
+            "status": status,
+            "backend": backend,
+            "dialect": dialect,
+            "reason": reason,
+        }
+        if missing:
+            snapshot["missing"] = missing
+        if reason == "dimension_mismatch":
+            snapshot["configured_dimensions"] = int(
+                getattr(settings, "knowledge_embedding_dimensions")
+            )
+            snapshot["database_dimensions"] = database_dimensions
+        return snapshot
+    return {"status": "ready", "backend": "pgvector", "dialect": dialect}

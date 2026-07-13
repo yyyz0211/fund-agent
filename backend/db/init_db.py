@@ -26,6 +26,10 @@ from backend.db.repository import backfill_watchlist_fund_names
 from backend.db.session import Base, engine as default_engine, get_session
 
 
+class PgVectorDimensionMismatch(RuntimeError):
+    """Configured embedding dimensions differ from the existing vector column."""
+
+
 def init_db(engine: Engine | None = None) -> None:
     """用指定的 engine 建齐 `Base.metadata` 中的全部表,并对已存在的
     老表按 ORM 模型补齐缺失的列。
@@ -45,7 +49,19 @@ def init_db(engine: Engine | None = None) -> None:
     Base.metadata.create_all(eng)
     settings = get_settings()
     if settings.knowledge_vector_backend != "structured":
-        ensure_pgvector_schema(eng, settings.knowledge_embedding_dimensions)
+        try:
+            ensure_pgvector_schema(eng, settings.knowledge_embedding_dimensions)
+        except PgVectorDimensionMismatch:
+            # A dimension change requires the explicit confirmed management route.
+            # Keep the old table intact and let health report the mismatch so the API
+            # remains reachable to perform that rebuild.
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "Configured knowledge embedding dimension differs from the existing "
+                "vector table; leaving it untouched until explicit rebuild.",
+                exc_info=True,
+            )
     # Wave 2: Watchlist 加了 fund_name 列后, 老行是 NULL。
     # 启动时自动从 funds.fund_name 回填, 避免 briefing 一直显示空字符串。
     try:
@@ -74,41 +90,95 @@ def ensure_pgvector_schema(eng: Engine, dimensions: int | None) -> bool:
 
     with eng.begin() as conn:
         conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-        existing_type = conn.scalar(text("""
-            SELECT format_type(a.atttypid, a.atttypmod)
-            FROM pg_attribute AS a
-            JOIN pg_class AS c ON c.oid = a.attrelid
-            JOIN pg_namespace AS n ON n.oid = c.relnamespace
-            WHERE n.nspname = current_schema()
-              AND c.relname = 'knowledge_embeddings'
-              AND a.attname = 'embedding'
-              AND a.attnum > 0
-              AND NOT a.attisdropped
-        """))
-        expected_type = f"vector({dimension})"
-        if existing_type is not None and str(existing_type) != expected_type:
-            raise RuntimeError(
+        existing_dimension = get_pgvector_dimension(conn)
+        if existing_dimension is not None and existing_dimension != dimension:
+            raise PgVectorDimensionMismatch(
                 "knowledge embedding dimension mismatch: "
-                f"database={existing_type}, configured={expected_type}; "
+                f"database=vector({existing_dimension}), configured=vector({dimension}); "
                 "rebuild knowledge_embeddings before restarting"
             )
-        conn.execute(text(f"""
-            CREATE TABLE IF NOT EXISTS knowledge_embeddings (
-                document_id BIGINT PRIMARY KEY
-                    REFERENCES knowledge_documents(id) ON DELETE CASCADE,
-                embedding vector({dimension}) NOT NULL,
-                embedding_model VARCHAR NOT NULL,
-                embedding_version VARCHAR NOT NULL,
-                content_hash VARCHAR(64) NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            )
-        """))
-        conn.execute(text("""
-            CREATE INDEX IF NOT EXISTS ix_knowledge_embeddings_cosine
-            ON knowledge_embeddings USING hnsw (embedding vector_cosine_ops)
-        """))
+        _create_pgvector_table(conn, dimension)
     return True
+
+
+def get_pgvector_dimension(conn) -> int | None:
+    """Read the local PostgreSQL vector column dimension; return None if absent."""
+    existing_type = conn.scalar(text("""
+        SELECT format_type(a.atttypid, a.atttypmod)
+        FROM pg_attribute AS a
+        JOIN pg_class AS c ON c.oid = a.attrelid
+        JOIN pg_namespace AS n ON n.oid = c.relnamespace
+        WHERE n.nspname = current_schema()
+          AND c.relname = 'knowledge_embeddings'
+          AND a.attname = 'embedding'
+          AND a.attnum > 0
+          AND NOT a.attisdropped
+    """))
+    if existing_type is None:
+        return None
+    value = str(existing_type)
+    if not value.startswith("vector(") or not value.endswith(")"):
+        raise RuntimeError(f"unexpected knowledge embedding type: {value}")
+    try:
+        return int(value[len("vector("):-1])
+    except ValueError as exc:
+        raise RuntimeError(f"unexpected knowledge embedding type: {value}") from exc
+
+
+def _create_pgvector_table(conn, dimension: int) -> None:
+    """Create the disposable vector index table on an existing transaction."""
+    conn.execute(text(f"""
+        CREATE TABLE IF NOT EXISTS knowledge_embeddings (
+            document_id BIGINT PRIMARY KEY
+                REFERENCES knowledge_documents(id) ON DELETE CASCADE,
+            embedding vector({dimension}) NOT NULL,
+            embedding_model VARCHAR NOT NULL,
+            embedding_version VARCHAR NOT NULL,
+            content_hash VARCHAR(64) NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+    """))
+    conn.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_knowledge_embeddings_cosine
+        ON knowledge_embeddings USING hnsw (embedding vector_cosine_ops)
+    """))
+
+
+def rebuild_pgvector_schema(
+    eng: Engine,
+    dimensions: int | None,
+    *,
+    confirmed: bool,
+) -> int:
+    """Explicitly rebuild only ``knowledge_embeddings`` and requeue documents.
+
+    This deliberately cannot be reached through ordinary reindexing. All DDL and
+    document state changes share one PostgreSQL transaction so a failed rebuild
+    does not leave the knowledge index half-reset.
+    """
+    if not confirmed:
+        raise ValueError("vector schema rebuild requires confirm=true")
+    if eng.dialect.name != "postgresql":
+        raise ValueError("vector schema rebuild is only supported on PostgreSQL")
+    if dimensions is None or int(dimensions) <= 0:
+        raise ValueError("knowledge embedding dimensions must be positive")
+
+    dimension = int(dimensions)
+    with eng.begin() as conn:
+        conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        conn.execute(text("DROP TABLE IF EXISTS knowledge_embeddings"))
+        _create_pgvector_table(conn, dimension)
+        result = conn.execute(text("""
+            UPDATE knowledge_documents
+            SET index_status = 'pending',
+                embedding_model = NULL,
+                embedding_version = NULL,
+                index_attempts = 0,
+                last_index_error = NULL,
+                next_index_retry_at = NULL
+        """))
+    return int(result.rowcount or 0)
 
 
 def _apply_missing_columns(eng: Engine) -> None:

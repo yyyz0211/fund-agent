@@ -7,10 +7,32 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, 
 from sqlalchemy.orm import Session
 
 from backend.api.deps import get_db_session
+from backend.config.settings import get_settings
+from backend.db.init_db import rebuild_pgvector_schema
+from backend.db.session import engine as default_engine
 from backend.services import knowledge_reindex_jobs, knowledge_search_service
 
 
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
+
+
+@router.post("/vector-schema/rebuild")
+def rebuild_vector_schema(
+    confirm: bool = Query(default=False),
+    _trigger: str | None = Header(default=None, alias="X-Local-Trigger"),
+):
+    """Explicit destructive rebuild of the disposable PostgreSQL vector index."""
+    if not _trigger or _trigger.lower() not in ("1", "true"):
+        raise HTTPException(status_code=403, detail="missing X-Local-Trigger header")
+    try:
+        requeued = rebuild_pgvector_schema(
+            default_engine,
+            get_settings().knowledge_embedding_dimensions,
+            confirmed=confirm,
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"status": "rebuilt", "requeued_documents": requeued}
 
 
 @router.get("/search")

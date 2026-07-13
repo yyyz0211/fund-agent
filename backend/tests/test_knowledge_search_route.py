@@ -70,6 +70,63 @@ def test_knowledge_reindex_requires_local_trigger(monkeypatch):
     assert called["value"] is False
 
 
+def test_vector_schema_rebuild_requires_local_trigger(monkeypatch):
+    from backend.api.routes import knowledge as route
+
+    called = {"value": False}
+
+    def fake_rebuild(*args, **kwargs):
+        called["value"] = True
+        return 0
+
+    monkeypatch.setattr(route, "rebuild_pgvector_schema", fake_rebuild)
+
+    response = TestClient(app).post(
+        "/api/knowledge/vector-schema/rebuild",
+        params={"confirm": "true"},
+    )
+
+    assert response.status_code == 403
+    assert called["value"] is False
+
+
+def test_vector_schema_rebuild_requires_confirmation(monkeypatch):
+    from backend.api.routes import knowledge as route
+
+    def fake_rebuild(_engine, _dimensions, *, confirmed):
+        assert confirmed is False
+        raise ValueError("vector schema rebuild requires confirm=true")
+
+    monkeypatch.setattr(route, "rebuild_pgvector_schema", fake_rebuild)
+
+    response = TestClient(app).post(
+        "/api/knowledge/vector-schema/rebuild",
+        headers={"X-Local-Trigger": "1"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "vector schema rebuild requires confirm=true"
+
+
+def test_vector_schema_rebuild_returns_requeued_document_count(monkeypatch):
+    from backend.api.routes import knowledge as route
+
+    monkeypatch.setattr(
+        route,
+        "rebuild_pgvector_schema",
+        lambda _engine, _dimensions, *, confirmed: 7 if confirmed else 0,
+    )
+
+    response = TestClient(app).post(
+        "/api/knowledge/vector-schema/rebuild",
+        params={"confirm": "true"},
+        headers={"X-Local-Trigger": "true"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "rebuilt", "requeued_documents": 7}
+
+
 def test_knowledge_reindex_with_local_trigger(monkeypatch, tmp_path):
     """POST /api/knowledge/reindex 立刻返回 202 + job_id, 后台跑 pipeline。
 
