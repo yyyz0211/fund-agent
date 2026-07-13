@@ -123,7 +123,9 @@ def test_shutdown_scheduler(monkeypatch):
     recorder = []
     monkeypatch.setattr(sched, "_build_scheduler", lambda: _FakeScheduler(recorder))
     monkeypatch.setattr(sched, "_cron_trigger", lambda hour, minute, tz: ("cron",))
-    monkeypatch.setattr(sched, "_interval_trigger", lambda minutes, tz: ("interval",))
+    monkeypatch.setattr(
+        sched, "_interval_trigger", lambda minutes, tz, **kwargs: ("interval",),
+    )
 
     sched.start_scheduler(enabled=True, hour=20, minute=0, timezone="Asia/Shanghai")
     sched.shutdown_scheduler()
@@ -141,12 +143,6 @@ def test_scheduler_registers_evidence_hourly_when_enabled(monkeypatch):
     recorder = []
     monkeypatch.setattr(sched, "_build_scheduler", lambda: _FakeScheduler(recorder))
     monkeypatch.setattr(sched, "_cron_trigger", lambda hour, minute, tz: ("cron",))
-    interval_calls = []
-    monkeypatch.setattr(
-        sched, "_interval_trigger",
-        lambda minutes, tz: interval_calls.append((minutes, tz)) or ("interval", minutes, tz),
-    )
-
     out = sched.start_scheduler(enabled=True, hour=20, minute=0, timezone="Asia/Shanghai")
     assert out is not None
     assert any(r.get("id") == "post_market_evidence_hourly" for r in recorder)
@@ -156,7 +152,9 @@ def test_scheduler_registers_evidence_hourly_when_enabled(monkeypatch):
     # misfire grace 应该短于 cron 任务的 3600s,避免错过后堆积重跑
     assert job["misfire_grace_time"] <= 600
     # 默认 60 分钟
-    assert (60, "Asia/Shanghai") in interval_calls
+    assert job["trigger"].interval.total_seconds() == 3600
+    assert job["trigger"].jitter == 60
+    assert job["jitter"] is None
 
 
 def test_scheduler_registers_cls_telegraph_sync_when_enabled(monkeypatch):
@@ -170,12 +168,6 @@ def test_scheduler_registers_cls_telegraph_sync_when_enabled(monkeypatch):
     recorder = []
     monkeypatch.setattr(sched, "_build_scheduler", lambda: _FakeScheduler(recorder))
     monkeypatch.setattr(sched, "_cron_trigger", lambda hour, minute, tz: ("cron",))
-    interval_calls = []
-    monkeypatch.setattr(
-        sched, "_seconds_interval_trigger",
-        lambda seconds, tz: interval_calls.append((seconds, tz)) or ("interval_seconds", seconds, tz),
-    )
-
     out = sched.start_scheduler(enabled=True, hour=20, minute=0, timezone="Asia/Shanghai")
     assert out is not None
     assert any(r.get("id") == "cls_telegraph_sync" for r in recorder)
@@ -183,7 +175,9 @@ def test_scheduler_registers_cls_telegraph_sync_when_enabled(monkeypatch):
     assert job["max_instances"] == 1
     assert job["coalesce"] is True
     assert job["misfire_grace_time"] <= 120
-    assert (360, "Asia/Shanghai") in interval_calls
+    assert job["trigger"].interval.total_seconds() == 360
+    assert job["trigger"].jitter == 10
+    assert job["jitter"] is None
 
 
 def test_scheduler_registers_knowledge_pipeline_when_enabled(monkeypatch):
@@ -196,16 +190,6 @@ def test_scheduler_registers_knowledge_pipeline_when_enabled(monkeypatch):
     recorder = []
     monkeypatch.setattr(sched, "_build_scheduler", lambda: _FakeScheduler(recorder))
     monkeypatch.setattr(sched, "_cron_trigger", lambda hour, minute, tz: ("cron",))
-    interval_calls = []
-    monkeypatch.setattr(
-        sched, "_interval_trigger",
-        lambda minutes, tz: interval_calls.append((minutes, tz)) or ("interval", minutes, tz),
-    )
-    monkeypatch.setattr(
-        sched, "_seconds_interval_trigger",
-        lambda seconds, tz: ("interval_seconds", seconds, tz),
-    )
-
     out = sched.start_scheduler(enabled=True, hour=20, minute=0, timezone="Asia/Shanghai")
 
     assert out is not None
@@ -214,7 +198,14 @@ def test_scheduler_registers_knowledge_pipeline_when_enabled(monkeypatch):
     assert job["max_instances"] == 1
     assert job["coalesce"] is True
     assert job["misfire_grace_time"] <= 300
-    assert (6, "Asia/Shanghai") in interval_calls
+    assert job["trigger"].interval.total_seconds() == 360
+    assert job["trigger"].jitter == 60
+    assert job["jitter"] is None
+
+    cls_job = next(r for r in recorder if r.get("id") == "cls_telegraph_sync")
+    assert cls_job["trigger"].jitter == 10
+    start_offset = (job["trigger"].start_date - cls_job["trigger"].start_date).total_seconds()
+    assert 29 <= start_offset <= 31
 
 
 def test_scheduler_evidence_hourly_can_be_disabled(monkeypatch):
@@ -225,7 +216,9 @@ def test_scheduler_evidence_hourly_can_be_disabled(monkeypatch):
     recorder = []
     monkeypatch.setattr(sched, "_build_scheduler", lambda: _FakeScheduler(recorder))
     monkeypatch.setattr(sched, "_cron_trigger", lambda hour, minute, tz: ("cron",))
-    monkeypatch.setattr(sched, "_interval_trigger", lambda minutes, tz: ("interval",))
+    monkeypatch.setattr(
+        sched, "_interval_trigger", lambda minutes, tz, **kwargs: ("interval",),
+    )
 
     settings = get_settings()
     prev = settings.scheduler_evidence_hourly_enabled

@@ -12,6 +12,8 @@ scheduler job 在跑。这避免了 SQLite 单文件场景下并发写锁 + Queu
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -95,14 +97,42 @@ def _cron_trigger(hour: int, minute: int, tz: str) -> CronTrigger:
     return CronTrigger(hour=hour, minute=minute, timezone=tz)
 
 
-def _interval_trigger(minutes: int, tz: str) -> IntervalTrigger:
+def _interval_trigger(
+    minutes: int,
+    tz: str,
+    *,
+    jitter: int = 0,
+    start_delay_seconds: int = 0,
+) -> IntervalTrigger:
     """每 N 分钟触发一次。minutes<=0 视为关闭。"""
-    return IntervalTrigger(minutes=max(1, int(minutes)), timezone=tz)
+    start_date = datetime.now(ZoneInfo(tz)) + timedelta(
+        seconds=max(0, int(start_delay_seconds)),
+    )
+    return IntervalTrigger(
+        minutes=max(1, int(minutes)),
+        timezone=tz,
+        jitter=max(0, int(jitter)),
+        start_date=start_date,
+    )
 
 
-def _seconds_interval_trigger(seconds: int, tz: str) -> IntervalTrigger:
+def _seconds_interval_trigger(
+    seconds: int,
+    tz: str,
+    *,
+    jitter: int = 0,
+    start_delay_seconds: int = 0,
+) -> IntervalTrigger:
     """每 N 秒触发一次。seconds<=0 视为 60 秒。"""
-    return IntervalTrigger(seconds=max(1, int(seconds)), timezone=tz)
+    start_date = datetime.now(ZoneInfo(tz)) + timedelta(
+        seconds=max(0, int(start_delay_seconds)),
+    )
+    return IntervalTrigger(
+        seconds=max(1, int(seconds)),
+        timezone=tz,
+        jitter=max(0, int(jitter)),
+        start_date=start_date,
+    )
 
 
 def start_scheduler(*, enabled: bool | None = None,
@@ -211,14 +241,13 @@ def start_scheduler(*, enabled: bool | None = None,
                 lambda: market_evidence_service.refresh_market_evidence_async(
                     brief_type="post_market", trigger="scheduled_hourly",
                 ),
-                trigger=_interval_trigger(hourly_minutes, timezone),
+                trigger=_interval_trigger(hourly_minutes, timezone, jitter=60),
                 id="post_market_evidence_hourly",
                 max_instances=1,
                 coalesce=True,
                 # 短 misfire grace — 5 分钟内补跑可接受, 超过直接丢
                 # (下一轮会拉同样数据, 重复拉浪费但无害)
                 misfire_grace_time=300,
-                jitter=60,
             )
 
     if bool(getattr(settings, "cls_telegraph_sync_enabled", True)):
@@ -230,12 +259,15 @@ def start_scheduler(*, enabled: bool | None = None,
                     "cls_telegraph_sync",
                     cls_telegraph_sync_service.run_scheduled_cls_telegraph_sync,
                 ),
-                trigger=_seconds_interval_trigger(interval_seconds, timezone),
+                trigger=_seconds_interval_trigger(
+                    interval_seconds,
+                    timezone,
+                    jitter=min(10, max(0, interval_seconds // 5)),
+                ),
                 id="cls_telegraph_sync",
                 max_instances=1,
                 coalesce=True,
                 misfire_grace_time=120,
-                jitter=min(10, max(0, interval_seconds // 5)),
             )
 
     # 知识库增量流水线:从已落库的信息源中做 LLM 准入、向量索引和基金匹配。
@@ -247,12 +279,16 @@ def start_scheduler(*, enabled: bool | None = None,
         if knowledge_minutes > 0:
             scheduler.add_job(
                 lambda: _run_knowledge_pipeline_scheduled(),
-                trigger=_interval_trigger(knowledge_minutes, timezone),
+                trigger=_interval_trigger(
+                    knowledge_minutes,
+                    timezone,
+                    jitter=min(60, max(0, knowledge_minutes * 10)),
+                    start_delay_seconds=30,
+                ),
                 id="knowledge_ingest_index",
                 max_instances=1,
                 coalesce=True,
                 misfire_grace_time=300,
-                jitter=min(60, max(0, knowledge_minutes * 10)),
             )
 
     scheduler.start()
