@@ -70,13 +70,33 @@ def test_knowledge_reindex_requires_local_trigger(monkeypatch):
     assert called["value"] is False
 
 
-def test_knowledge_reindex_with_local_trigger(monkeypatch):
+def test_knowledge_reindex_with_local_trigger(monkeypatch, tmp_path):
     """POST /api/knowledge/reindex 立刻返回 202 + job_id, 后台跑 pipeline。
 
     旧版本会同步阻塞到 pipeline 完成；新版本走异步任务。
     """
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from backend.api.deps import get_db_session
     from backend.api.routes import knowledge as route
+    from backend.db.init_db import init_db
     from backend.services import knowledge_reindex_jobs as jobs_module
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'reindex.db'}",
+        connect_args={"check_same_thread": False},
+    )
+    init_db(engine)
+    sessions = sessionmaker(bind=engine, expire_on_commit=False)
+
+    def dependency():
+        with sessions() as session:
+            try:
+                yield session
+            except Exception:
+                session.rollback()
+                raise
 
     calls: list[dict] = []
 
@@ -89,9 +109,20 @@ def test_knowledge_reindex_with_local_trigger(monkeypatch):
 
     monkeypatch.setattr(jobs_module, "run_job_in_background", _fake_run_in_background)
 
-    client = TestClient(app)
-
-    response = client.post("/api/knowledge/reindex", headers={"X-Local-Trigger": "1"})
+    had_db_override = get_db_session in app.dependency_overrides
+    previous_db_override = app.dependency_overrides.get(get_db_session)
+    app.dependency_overrides[get_db_session] = dependency
+    try:
+        response = TestClient(app).post(
+            "/api/knowledge/reindex",
+            headers={"X-Local-Trigger": "1"},
+        )
+    finally:
+        if had_db_override:
+            app.dependency_overrides[get_db_session] = previous_db_override
+        else:
+            app.dependency_overrides.pop(get_db_session, None)
+        engine.dispose()
 
     assert response.status_code == 202
     body = response.json()
