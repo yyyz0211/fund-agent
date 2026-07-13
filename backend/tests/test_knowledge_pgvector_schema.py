@@ -66,3 +66,23 @@ def test_pgvector_schema_rejects_existing_dimension_mismatch():
 
     with pytest.raises(RuntimeError, match="dimension mismatch"):
         ensure_pgvector_schema(engine, dimensions=1024)
+
+
+def test_postgres_classification_log_constraint_migration_is_idempotent():
+    from backend.db.init_db import (
+        _migrate_knowledge_classification_log_unique_constraint,
+    )
+
+    engine = FakePostgresEngine()
+
+    _migrate_knowledge_classification_log_unique_constraint(engine)
+    _migrate_knowledge_classification_log_unique_constraint(engine)
+
+    sql = "\n".join(engine.connection.statements)
+    assert "DROP CONSTRAINT IF EXISTS uq_knowledge_classification_log_attempt" in sql
+    assert "uq_knowledge_classification_log_content_attempt" in sql
+    assert (
+        "source_type, source_id, canonical_content_hash,\n"
+        "                            prompt_version, attempt_no"
+    ) in sql
+    assert sql.count("IF NOT EXISTS") == 2

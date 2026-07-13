@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import create_engine, inspect, select
+from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.orm import Session
 
 from backend.db.init_db import init_db
@@ -157,3 +157,80 @@ def test_classification_state_persists_retry_schedule():
         state = s.scalar(select(KnowledgeClassificationState))
         assert state.last_attempt_at == attempted_at
         assert state.next_retry_at == attempted_at + timedelta(minutes=5)
+
+
+def test_init_db_migrates_classification_log_constraint_idempotently():
+    eng = create_engine("sqlite:///:memory:")
+    with eng.begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE knowledge_classification_log (
+                id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                source_type VARCHAR(32) NOT NULL,
+                source_id VARCHAR(128) NOT NULL,
+                canonical_content_hash VARCHAR(64),
+                attempt_no INTEGER NOT NULL,
+                prompt_version VARCHAR(32) NOT NULL,
+                status VARCHAR(16) NOT NULL,
+                should_index BOOLEAN,
+                relevance_score FLOAT,
+                reason VARCHAR,
+                raw_response_json VARCHAR,
+                error_message VARCHAR,
+                latency_ms INTEGER,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                CONSTRAINT uq_knowledge_classification_log_attempt UNIQUE (
+                    source_type, source_id, prompt_version, attempt_no
+                )
+            )
+        """))
+        conn.execute(text("""
+            INSERT INTO knowledge_classification_log (
+                source_type, source_id, canonical_content_hash, attempt_no,
+                prompt_version, status, error_message, latency_ms
+            ) VALUES (
+                'cls_telegraph', 'legacy-1', 'old-hash', 1,
+                'v1', 'failed', 'temporary failure', 10
+            )
+        """))
+
+    init_db(eng)
+    init_db(eng)
+
+    with eng.connect() as conn:
+        unique_columns = [
+            [
+                column[2]
+                for column in conn.exec_driver_sql(
+                    f"PRAGMA index_info({index[1]})"
+                ).all()
+            ]
+            for index in conn.exec_driver_sql(
+                "PRAGMA index_list(knowledge_classification_log)"
+            ).all()
+            if bool(index[2])
+        ]
+    assert [
+            "source_type",
+            "source_id",
+            "canonical_content_hash",
+            "prompt_version",
+            "attempt_no",
+        ] in unique_columns
+
+    with Session(eng) as s:
+        preserved = s.scalar(select(KnowledgeClassificationLog))
+        assert preserved.canonical_content_hash == "old-hash"
+        assert preserved.error_message == "temporary failure"
+        s.add(KnowledgeClassificationLog(
+            source_type="cls_telegraph",
+            source_id="legacy-1",
+            canonical_content_hash="new-hash",
+            attempt_no=1,
+            prompt_version="v1",
+            status="failed",
+            error_message="another temporary failure",
+            latency_ms=11,
+        ))
+        s.commit()
+
+        assert len(s.scalars(select(KnowledgeClassificationLog)).all()) == 2

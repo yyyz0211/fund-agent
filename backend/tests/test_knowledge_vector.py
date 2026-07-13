@@ -67,6 +67,67 @@ def test_index_pending_documents_marks_indexed():
         assert store.items[doc_id].metadata["topics"] == ["人工智能"]
 
 
+def test_indexed_documents_are_requeued_for_provider_metadata_mismatch():
+    provider = DeterministicEmbeddingProvider()
+    mismatches = [
+        (None, provider.version),
+        (provider.model, None),
+        ("old-model", provider.version),
+        (provider.model, "old-version"),
+    ]
+
+    for embedding_model, embedding_version in mismatches:
+        eng = create_engine("sqlite:///:memory:")
+        init_db(eng)
+        store = InMemoryVectorStore()
+
+        with Session(eng) as s:
+            doc_id = add_doc(s)
+            doc = s.get(KnowledgeDocument, doc_id)
+            doc.index_status = "indexed"
+            doc.embedding_model = embedding_model
+            doc.embedding_version = embedding_version
+            s.flush()
+
+            result = index_pending_documents(
+                session=s,
+                embedding_provider=provider,
+                vector_store=store,
+                limit=10,
+            )
+
+            refreshed = s.get(KnowledgeDocument, doc_id)
+            assert result == {"processed": 1, "indexed": 1, "failed": 0}
+            assert refreshed.embedding_model == provider.model
+            assert refreshed.embedding_version == provider.version
+            assert doc_id in store.items
+
+
+def test_indexed_document_with_matching_provider_metadata_is_not_requeued():
+    eng = create_engine("sqlite:///:memory:")
+    init_db(eng)
+    provider = DeterministicEmbeddingProvider()
+    store = InMemoryVectorStore()
+
+    with Session(eng) as s:
+        doc_id = add_doc(s)
+        doc = s.get(KnowledgeDocument, doc_id)
+        doc.index_status = "indexed"
+        doc.embedding_model = provider.model
+        doc.embedding_version = provider.version
+        s.flush()
+
+        result = index_pending_documents(
+            session=s,
+            embedding_provider=provider,
+            vector_store=store,
+            limit=10,
+        )
+
+        assert result == {"processed": 0, "indexed": 0, "failed": 0}
+        assert doc_id not in store.items
+
+
 def test_vector_search_respects_metadata_filter():
     store = InMemoryVectorStore()
     provider = DeterministicEmbeddingProvider()

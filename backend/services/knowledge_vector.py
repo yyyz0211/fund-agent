@@ -153,7 +153,7 @@ def index_pending_documents(
     max_attempts: int = 3,
     retry_seconds: int = 300,
 ) -> dict:
-    """索引 pending 或已到重试时间的 failed 文档。"""
+    """索引 pending、可重试 failed 或 embedding 配置已过期的文档。"""
     attempted_at = now or datetime.utcnow()
     docs = session.scalars(
         select(KnowledgeDocument)
@@ -165,6 +165,17 @@ def index_pending_documents(
                 or_(
                     KnowledgeDocument.next_index_retry_at.is_(None),
                     KnowledgeDocument.next_index_retry_at <= attempted_at,
+                ),
+            ),
+            and_(
+                KnowledgeDocument.index_status == "indexed",
+                or_(
+                    KnowledgeDocument.embedding_model.is_distinct_from(
+                        embedding_provider.model
+                    ),
+                    KnowledgeDocument.embedding_version.is_distinct_from(
+                        embedding_provider.version
+                    ),
                 ),
             ),
         ))

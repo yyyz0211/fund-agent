@@ -4,7 +4,11 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from backend.db.init_db import init_db
-from backend.db.models import KnowledgeClassificationState, KnowledgeDocument
+from backend.db.models import (
+    KnowledgeClassificationLog,
+    KnowledgeClassificationState,
+    KnowledgeDocument,
+)
 from backend.services.knowledge_classifier import ClassificationOutcome
 from backend.services.knowledge_ingestion_service import ingest_candidates
 from backend.services.knowledge_schema import KnowledgeClassificationResult, TopicTag
@@ -182,3 +186,34 @@ def test_ingest_candidates_stops_retrying_after_max_attempts():
 
         assert classifier.calls == 1
         assert second["retry_exhausted"] == 1
+
+
+def test_changed_content_resets_exhausted_classification_attempts():
+    eng = create_engine("sqlite:///:memory:")
+    init_db(eng)
+    classifier = CountingFailedClassifier()
+    candidate = {
+        "source_type": "cls_telegraph",
+        "source_id": "changed-after-failure-1",
+        "title": "AI消息",
+        "content": "旧内容",
+    }
+
+    with Session(eng) as s:
+        ingest_candidates([candidate], classifier=classifier, session=s)
+        state = s.scalar(select(KnowledgeClassificationState))
+        state.latest_attempt_no = 3
+        state.next_retry_at = None
+        s.flush()
+
+        changed = {**candidate, "content": "新内容"}
+        second = ingest_candidates([changed], classifier=classifier, session=s)
+        logs = s.scalars(
+            select(KnowledgeClassificationLog).order_by(KnowledgeClassificationLog.id)
+        ).all()
+
+        assert classifier.calls == 2
+        assert second["failed"] == 1
+        assert state.latest_attempt_no == 1
+        assert [log.attempt_no for log in logs] == [1, 1]
+        assert logs[0].canonical_content_hash != logs[1].canonical_content_hash

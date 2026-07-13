@@ -465,8 +465,9 @@ class KnowledgeClassificationLog(Base):
     __tablename__ = "knowledge_classification_log"
     __table_args__ = (
         UniqueConstraint(
-            "source_type", "source_id", "prompt_version", "attempt_no",
-            name="uq_knowledge_classification_log_attempt",
+            "source_type", "source_id", "canonical_content_hash",
+            "prompt_version", "attempt_no",
+            name="uq_knowledge_classification_log_content_attempt",
         ),
     )
 

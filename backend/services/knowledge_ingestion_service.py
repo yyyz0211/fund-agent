@@ -68,8 +68,12 @@ def _classification_state(session, candidate: dict):
     )
 
 
-def _next_attempt_no(state, prompt_version: str) -> int:
-    if state is None or state.prompt_version != prompt_version:
+def _next_attempt_no(state, canonical_hash: str, prompt_version: str) -> int:
+    if (
+        state is None
+        or state.canonical_content_hash != canonical_hash
+        or state.prompt_version != prompt_version
+    ):
         return 1
     return int(state.latest_attempt_no or 0) + 1
 
@@ -251,7 +255,7 @@ def ingest_candidates(
             else:
                 result_counts["retry_exhausted"] += 1
             continue
-        attempt_no = _next_attempt_no(state, prompt_version)
+        attempt_no = _next_attempt_no(state, canonical_hash, prompt_version)
         outcome = _classify(classifier, candidate)
 
         if outcome.status == "failed" or outcome.result is None:

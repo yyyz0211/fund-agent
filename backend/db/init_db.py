@@ -39,6 +39,7 @@ def init_db(engine: Engine | None = None) -> None:
     Base.metadata.create_all(eng)
     _apply_missing_columns(eng)
     _migrate_briefings_unique_constraint(eng)
+    _migrate_knowledge_classification_log_unique_constraint(eng)
     _drop_obsolete_columns(eng)
     # create_all 不冲突,再跑一次只是补 sanity(新表的索引等)。
     Base.metadata.create_all(eng)
@@ -249,6 +250,121 @@ def _migrate_briefings_unique_constraint(eng: Engine) -> None:
             "CREATE INDEX IF NOT EXISTS ix_briefings_brief_type "
             "ON briefings (brief_type)"
         ))
+
+
+def _migrate_knowledge_classification_log_unique_constraint(eng: Engine) -> None:
+    """按内容版本隔离 classification attempt 编号。
+
+    SQLite 无法删除表级 UNIQUE 约束，因此仅重建 classification log 表；
+    PostgreSQL 可以原地替换命名约束。两条路径均可安全重复执行。
+    """
+    table_name = "knowledge_classification_log"
+    old_constraint = "uq_knowledge_classification_log_attempt"
+    new_constraint = "uq_knowledge_classification_log_content_attempt"
+
+    if eng.dialect.name == "postgresql":
+        with eng.begin() as conn:
+            conn.execute(text(
+                f"ALTER TABLE {table_name} "
+                f"DROP CONSTRAINT IF EXISTS {old_constraint}"
+            ))
+            conn.execute(text(f"""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1
+                        FROM pg_constraint
+                        WHERE conname = '{new_constraint}'
+                          AND conrelid = '{table_name}'::regclass
+                    ) THEN
+                        ALTER TABLE {table_name}
+                        ADD CONSTRAINT {new_constraint} UNIQUE (
+                            source_type, source_id, canonical_content_hash,
+                            prompt_version, attempt_no
+                        );
+                    END IF;
+                END $$
+            """))
+        return
+
+    insp = inspect(eng)
+    if eng.dialect.name != "sqlite" or not insp.has_table(table_name):
+        return
+
+    with eng.begin() as conn:
+        unique_columns: list[list[str]] = []
+        for idx in conn.exec_driver_sql(
+            f"PRAGMA index_list({table_name})"
+        ).all():
+            if not bool(idx[2]):
+                continue
+            unique_columns.append([
+                col[2]
+                for col in conn.exec_driver_sql(
+                    f"PRAGMA index_info({idx[1]})"
+                ).all()
+            ])
+
+        expected = [
+            "source_type",
+            "source_id",
+            "canonical_content_hash",
+            "prompt_version",
+            "attempt_no",
+        ]
+        if expected in unique_columns:
+            return
+
+        conn.execute(text(
+            "ALTER TABLE knowledge_classification_log "
+            "RENAME TO knowledge_classification_log_old"
+        ))
+        conn.execute(text(f"""
+            CREATE TABLE knowledge_classification_log (
+                id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                source_type VARCHAR(32) NOT NULL,
+                source_id VARCHAR(128) NOT NULL,
+                canonical_content_hash VARCHAR(64),
+                attempt_no INTEGER NOT NULL,
+                prompt_version VARCHAR(32) NOT NULL,
+                status VARCHAR(16) NOT NULL,
+                should_index BOOLEAN,
+                relevance_score FLOAT,
+                reason VARCHAR,
+                raw_response_json VARCHAR,
+                error_message VARCHAR,
+                latency_ms INTEGER,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                CONSTRAINT {new_constraint} UNIQUE (
+                    source_type, source_id, canonical_content_hash,
+                    prompt_version, attempt_no
+                )
+            )
+        """))
+        conn.execute(text("""
+            INSERT INTO knowledge_classification_log (
+                id, source_type, source_id, canonical_content_hash, attempt_no,
+                prompt_version, status, should_index, relevance_score, reason,
+                raw_response_json, error_message, latency_ms, created_at
+            )
+            SELECT
+                id, source_type, source_id, canonical_content_hash, attempt_no,
+                prompt_version, status, should_index, relevance_score, reason,
+                raw_response_json, error_message, latency_ms, created_at
+            FROM knowledge_classification_log_old
+        """))
+        conn.execute(text("DROP TABLE knowledge_classification_log_old"))
+        for column in (
+            "source_type",
+            "source_id",
+            "canonical_content_hash",
+            "status",
+        ):
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS "
+                f"ix_knowledge_classification_log_{column} "
+                f"ON knowledge_classification_log ({column})"
+            ))
 
 
 if __name__ == "__main__":
