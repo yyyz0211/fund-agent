@@ -40,13 +40,11 @@ class Settings(BaseSettings):
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-v4-flash"
 
-    # 默认指向 backend/data/ 下的本地 SQLite 文件。目录由
-    # `db.init_db` / smoke 脚本按需创建。
-    database_url: str = "sqlite:///backend/data/fund_agent.db"
+    # PostgreSQL 数据库连接 URL。必须以 postgresql 开头。
+    # 缺失时应用快速失败，不使用 SQLite 作为回退。
+    database_url: str
 
-    # ---- 数据库连接池参数 (仅非 SQLite 方言生效) ----
-    # SQLite 使用 NullPool（每个 Session 用完即关），不受以下参数影响。
-    # 生产切到 Postgres 时可按需调大。
+    # ---- 数据库连接池参数 ----
     db_pool_size: int = 5
     db_max_overflow: int = 10
     # 单位：秒。连接等待超过此时长直接抛 TimeoutError，避免 30s 默认值

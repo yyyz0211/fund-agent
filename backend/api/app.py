@@ -34,24 +34,23 @@ app.add_middleware(
 
 @app.on_event("startup")
 def _ensure_schema() -> None:
-    """进程启动时运行 Alembic 迁移 + 启动定时刷新调度器。
+    """进程启动时运行 Alembic 迁移。
 
-    Alembic 负责所有 schema 变更（表、列、约束、索引）。如果 Alembic
-    不可用（如首次安装），init_db 会用 create_all 确保表存在。
+    Alembic 是 schema 的唯一权威。PostgreSQL 单一化后，不再使用 create_all。
     """
     import logging
+    import subprocess
+    import sys
 
-    from backend.db.init_db import init_db
     from backend import scheduler as app_scheduler
     from backend.config.settings import get_settings
+    from backend.db.init_db import init_db, MigrationError
     from backend.services import knowledge_reindex_jobs
 
     logger = logging.getLogger(__name__)
 
-    # 尝试运行 Alembic 迁移
+    # 运行 Alembic 迁移
     try:
-        import subprocess
-        import sys
         result = subprocess.run(
             [sys.executable, "-m", "alembic", "-c", "backend/alembic.ini", "upgrade", "head"],
             capture_output=True,
@@ -61,12 +60,11 @@ def _ensure_schema() -> None:
         if result.returncode == 0:
             logger.info("[startup] Alembic migrations applied successfully")
         else:
-            logger.warning("[startup] Alembic failed: %s", result.stderr)
-            # Alembic 失败时降级到 create_all
-            init_db()
+            raise RuntimeError(f"Alembic failed: {result.stderr}")
     except Exception as alembic_exc:
-        logger.warning("[startup] Alembic unavailable, falling back to create_all: %s", alembic_exc)
-        init_db()
+        logger.error("[startup] Alembic migration failed: %s", alembic_exc)
+        logger.error("[startup] Application cannot start without valid schema.")
+        raise SystemExit(1) from alembic_exc
 
     # 恢复中断的 jobs
     settings = get_settings()

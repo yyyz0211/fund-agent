@@ -1,30 +1,32 @@
-"""建表入口:把 `backend.db.models` 中定义的所有表建出来。
+"""数据库初始化入口。
 
-`Base.metadata.create_all` 对已存在的表不会再发 DDL,这意味着给
-老表加新字段(例如本次引入的 `Watchlist.cost_nav_basis`)时,已
-存在的 DB 不会自动升级 —— 这是 SQLite + create_all 组合的已知
-限制,不是 bug。本模块用一个**轻量级 schema migration** 补丁处理
-这种情况:
+PostgreSQL 单一化后，Alembic 是 schema 的唯一权威。
+本模块负责：
+1. 验证 Alembic migration 已完成
+2. 管理 pgvector schema（PostgreSQL 特有）
+3. 非破坏性健康校验
 
-1. 先 `create_all` 创建/确保新表存在(`fund_transactions`)。
-2. 然后反射所有 ORM 模型声明的列,逐一比对实际表结构;
-   缺的列用 `ALTER TABLE ... ADD COLUMN` 补齐(只在 SQLite 上跑,
-   其他方言理论上有类似行为,但本项目目前只对 SQLite 做补列)。
-3. 补列完成后再 `create_all` 一次保险。
-
-反射 → ALTER 的过程是幂等的,可以重复运行。
+不再使用 `create_all` 建表。
 """
 from __future__ import annotations
 
-from sqlalchemy import inspect, text
+import logging
+import subprocess
+import sys
+from pathlib import Path
+from typing import Optional
+
+from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session
 
-import backend.db.models  # noqa: F401  (必须 import,模型才会注册到 Base.metadata)
+import backend.db.models  # noqa: F401
 from backend.config.settings import get_settings
 from backend.db.repository import backfill_watchlist_fund_names
-from backend.db.session import Base, engine as default_engine, get_session
+from backend.db.session import engine as default_engine
+from backend.db.session import get_session
+
+logger = logging.getLogger(__name__)
 
 
 _PGVECTOR_REQUIRED_COLUMNS = frozenset({
@@ -45,9 +47,9 @@ class PgVectorSchemaError(RuntimeError):
         self,
         message: str,
         *,
-        missing_columns: set[str] | None = None,
+        missing_columns: Optional[set[str]] = None,
         table_missing: bool = False,
-        database_dimension: int | None = None,
+        database_dimension: Optional[int] = None,
     ) -> None:
         super().__init__(message)
         self.missing_columns = missing_columns or set()
@@ -60,59 +62,110 @@ class PgVectorDimensionMismatch(PgVectorSchemaError):
 
 
 class PgVectorUnavailableError(PgVectorSchemaError):
-    """PostgreSQL could not initialize the pgvector extension/table/index."""
+    """PostgreSQL could not initialize the pgvector extension/table."""
 
 
-def init_db(engine: Engine | None = None) -> None:
-    """用指定的 engine 建齐 `Base.metadata` 中的全部表,并对已存在的
-    老表按 ORM 模型补齐缺失的列。
+class MigrationError(RuntimeError):
+    """Alembic migration is not up to date."""
+
+
+def verify_migrations_up_to_date(engine: Engine) -> None:
+    """验证 Alembic migration 已完成到 head。
+
+    Raises:
+        MigrationError: migration 未完成或失败
+    """
+    with engine.connect() as conn:
+        # 检查 alembic_version 表
+        result = conn.execute(text("SELECT COUNT(*) FROM alembic_version"))
+        version_count = result.scalar()
+        if version_count == 0:
+            raise MigrationError(
+                "No alembic version found. Run 'alembic upgrade head' first."
+            )
+
+        # 检查当前版本是否与 head 一致
+        result = conn.execute(text("SELECT version_num FROM alembic_version"))
+        current = result.scalar()
+        if current is None:
+            raise MigrationError("alembic_version table is empty.")
+
+        # 获取 head
+        alembic_cfg = Path(__file__).parent.parent.parent / "alembic.ini"
+        if not alembic_cfg.exists():
+            alembic_cfg = Path(__file__).parent.parent.parent / "backend" / "alembic.ini"
+
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "alembic", "-c", str(alembic_cfg), "heads", "--verbose"],
+                capture_output=True,
+                text=True,
+                cwd=alembic_cfg.parent,
+            )
+            if result.returncode == 0:
+                heads = result.stdout.strip().split("\n")
+                if current not in heads:
+                    raise MigrationError(
+                        f"Migration not at head. Current: {current}, expected one of: {heads}"
+                    )
+        except FileNotFoundError:
+            logger.warning("Alembic not found in PATH, skipping head verification")
+        except subprocess.SubprocessError as exc:
+            logger.warning("Could not verify alembic head: %s", exc)
+
+
+def init_db(engine: Optional[Engine] = None, skip_migration_check: bool = False) -> None:
+    """初始化数据库。
+
+    Alembic 迁移必须在应用启动前完成。本函数验证迁移状态，
+    并管理 pgvector schema。
 
     Args:
-        engine: SQLAlchemy engine。为空时使用绑定到
-            `Settings().database_url` 的进程级 engine。测试通常
-            传一个内存 engine 来保证隔离。
+        engine: SQLAlchemy engine。默认为进程级 engine。
+        skip_migration_check: 跳过 migration 验证（仅用于测试）。
     """
     eng = engine or default_engine
-    Base.metadata.create_all(eng)
-    _apply_missing_columns(eng)
-    _migrate_briefings_unique_constraint(eng)
-    _migrate_knowledge_classification_log_unique_constraint(eng)
-    _drop_obsolete_columns(eng)
-    # create_all 不冲突,再跑一次只是补 sanity(新表的索引等)。
-    Base.metadata.create_all(eng)
+
+    # 验证方言
+    if eng.dialect.name != "postgresql":
+        raise ValueError(f"Only PostgreSQL is supported, got: {eng.dialect.name}")
+
+    # 验证 migration 状态
+    if not skip_migration_check:
+        try:
+            verify_migrations_up_to_date(eng)
+        except MigrationError as exc:
+            raise RuntimeError(
+                f"Database migration not up to date: {exc}. "
+                "Run 'alembic upgrade head' before starting the application."
+            ) from exc
+
+    # pgvector schema 管理
     settings = get_settings()
     if settings.knowledge_vector_backend != "structured":
         try:
             ensure_pgvector_schema(eng, settings.knowledge_embedding_dimensions)
         except PgVectorSchemaError as exc:
-            # Vector storage is a rebuildable optional component. Keep the primary
-            # ORM schema available and let health expose the precise local failure.
-            import logging
-
-            logging.getLogger(__name__).warning(
+            logger.warning(
                 "Knowledge vector schema unavailable during startup: %s", exc,
             )
-    # Wave 2: Watchlist 加了 fund_name 列后, 老行是 NULL。
-    # 启动时自动从 funds.fund_name 回填, 避免 briefing 一直显示空字符串。
+
+    # 回填 watchlist.fund_name（仅在需要时）
     try:
-        s = Session(eng)
+        session = get_session()
         try:
-            backfilled = backfill_watchlist_fund_names(s)
+            backfilled = backfill_watchlist_fund_names(session)
             if backfilled:
-                import logging
-                logging.getLogger(__name__).info(
-                    "Backfilled watchlist.fund_name for %d rows.", backfilled
-                )
+                logger.info("Backfilled watchlist.fund_name for %d rows.", backfilled)
         finally:
-            s.close()
+            session.close()
     except Exception:
-        # 回填失败不能阻挡 DB 启动, 运行时仍以 _watchlist_to_dict 返回 None 让上游降级。
         pass
 
 
-def ensure_pgvector_schema(eng: Engine, dimensions: int | None) -> bool:
-    """在 PostgreSQL 上创建持久向量表；SQLite 和未配置维度时明确跳过。"""
-    if eng.dialect.name != "postgresql" or dimensions is None:
+def ensure_pgvector_schema(eng: Engine, dimensions: Optional[int]) -> bool:
+    """在 PostgreSQL 上创建持久向量表。"""
+    if dimensions is None:
         return False
     dimension = int(dimensions)
     if dimension <= 0:
@@ -132,8 +185,8 @@ def ensure_pgvector_schema(eng: Engine, dimensions: int | None) -> bool:
     return True
 
 
-def get_pgvector_dimension(conn) -> int | None:
-    """Read the local PostgreSQL vector column dimension; return None if absent."""
+def get_pgvector_dimension(conn) -> Optional[int]:
+    """Read the local PostgreSQL vector column dimension."""
     return _parse_pgvector_dimension(_get_pgvector_columns(conn).get("embedding"))
 
 
@@ -152,7 +205,7 @@ def _get_pgvector_columns(conn) -> dict[str, str]:
     return {str(row[0]): str(row[1]) for row in rows}
 
 
-def _parse_pgvector_dimension(existing_type: str | None) -> int | None:
+def _parse_pgvector_dimension(existing_type: Optional[str]) -> Optional[int]:
     if existing_type is None:
         return None
     value = str(existing_type)
@@ -165,7 +218,7 @@ def _parse_pgvector_dimension(existing_type: str | None) -> int | None:
 
 
 def validate_pgvector_schema(conn, configured_dimension: int) -> dict[str, object]:
-    """Strictly validate required columns and vector dimension from local catalogs."""
+    """Validate required columns and vector dimension from local catalogs."""
     columns = _get_pgvector_columns(conn)
     missing = set(_PGVECTOR_REQUIRED_COLUMNS).difference(columns)
     if missing:
@@ -191,7 +244,7 @@ def validate_pgvector_schema(conn, configured_dimension: int) -> dict[str, objec
 
 
 def _create_pgvector_table(conn, dimension: int) -> None:
-    """Create the disposable vector index table on an existing transaction."""
+    """Create the vector index table."""
     conn.execute(text(f"""
         CREATE TABLE IF NOT EXISTS knowledge_embeddings (
             document_id BIGINT PRIMARY KEY
@@ -212,15 +265,13 @@ def _create_pgvector_table(conn, dimension: int) -> None:
 
 def rebuild_pgvector_schema(
     eng: Engine,
-    dimensions: int | None,
+    dimensions: Optional[int],
     *,
     confirmed: bool,
 ) -> int:
-    """Explicitly rebuild only ``knowledge_embeddings`` and requeue documents.
+    """Rebuild knowledge_embeddings and requeue documents.
 
-    This deliberately cannot be reached through ordinary reindexing. All DDL and
-    document state changes share one PostgreSQL transaction so a failed rebuild
-    does not leave the knowledge index half-reset.
+    All DDL and document state changes share one transaction.
     """
     if not confirmed:
         raise ValueError("vector schema rebuild requires confirm=true")
@@ -246,266 +297,6 @@ def rebuild_pgvector_schema(
     return int(result.rowcount or 0)
 
 
-def _apply_missing_columns(eng: Engine) -> None:
-    """对每个 ORM 表反射真实 schema,与声明的列对比,缺啥补啥。
-
-    只处理"加列",不改类型 / 不删列 / 不改约束 —— 那是 alembic 的事。
-    新列若 server_default 是字面量(本次 `cost_nav_basis` 没设,
-    留 None),SQLite ALTER 会允许 NULL,不需要额外 default。
-    """
-    insp = inspect(eng)
-    with eng.begin() as conn:
-        for table in Base.metadata.sorted_tables:
-            if not insp.has_table(table.name):
-                # create_all 刚建好,理论上不存在,但保险。
-                continue
-            existing = {c["name"] for c in insp.get_columns(table.name)}
-            for col in table.columns:
-                if col.name in existing:
-                    continue
-                # SQLite ALTER TABLE ADD COLUMN 不支持 NOT NULL 但允许
-                # NULL(默认)。本次缺的 `cost_nav_basis` 模型声明是
-                # nullable=True,直接 ADD 即可。
-                col_type = col.type.compile(eng.dialect)
-                conn.execute(text(
-                    f"ALTER TABLE {table.name} ADD COLUMN {col.name} {col_type}"
-                ))
-
-
-def _drop_obsolete_columns(eng: Engine) -> None:
-    """清理已经从 ORM 模型移除的 SQLite 旧列。
-
-    当前只处理 `watchlist.peer_category`。同类分类的权威缓存保留在
-    `fund_profiles.peer_category`,自选池表不再冗余存一份。
-    """
-    insp = inspect(eng)
-    if eng.dialect.name != "sqlite" or not insp.has_table("watchlist"):
-        return
-    existing = {c["name"] for c in insp.get_columns("watchlist")}
-    if "peer_category" not in existing:
-        return
-    with eng.begin() as conn:
-        try:
-            conn.execute(text("ALTER TABLE watchlist DROP COLUMN peer_category"))
-        except Exception:
-            # 旧 SQLite 版本不支持 DROP COLUMN 时,至少运行时代码已经
-            # 不再读写该列;不让启动因为历史冗余列失败。
-            pass
-
-
-def _migrate_briefings_unique_constraint(eng: Engine) -> None:
-    """把旧版 `UNIQUE(briefing_date)` 迁移为 `(briefing_date, brief_type)`。
-
-    SQLite 不能直接删除唯一约束；旧本地库需要重建 briefings 表。
-    新表或已迁移表只做 brief_type 空值回填。
-    """
-    insp = inspect(eng)
-    if eng.dialect.name != "sqlite" or not insp.has_table("briefings"):
-        return
-
-    def _unique_index_columns(conn) -> list[list[str]]:
-        indexes = conn.exec_driver_sql("PRAGMA index_list(briefings)").all()
-        unique_columns: list[list[str]] = []
-        for idx in indexes:
-            # PRAGMA index_list: seq, name, unique, origin, partial
-            if not bool(idx[2]):
-                continue
-            index_name = idx[1]
-            cols = [
-                col[2]
-                for col in conn.exec_driver_sql(f"PRAGMA index_info({index_name})").all()
-            ]
-            unique_columns.append(cols)
-        return unique_columns
-
-    with eng.begin() as conn:
-        existing_cols = {c["name"] for c in insp.get_columns("briefings")}
-        if "brief_type" not in existing_cols:
-            return
-
-        conn.execute(text(
-            "UPDATE briefings SET brief_type = 'post_market' "
-            "WHERE brief_type IS NULL OR brief_type = ''"
-        ))
-
-        unique_columns = _unique_index_columns(conn)
-        has_old_unique = ["briefing_date"] in unique_columns
-        if not has_old_unique:
-            return
-
-        conn.execute(text("ALTER TABLE briefings RENAME TO briefings_old"))
-        conn.execute(text("""
-            CREATE TABLE briefings (
-                id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-                briefing_date VARCHAR NOT NULL,
-                brief_type VARCHAR(32),
-                title VARCHAR NOT NULL,
-                markdown VARCHAR NOT NULL,
-                sections_json VARCHAR NOT NULL,
-                source VARCHAR,
-                as_of VARCHAR,
-                data_quality VARCHAR,
-                confidence VARCHAR,
-                missing_data_json VARCHAR,
-                evidence_count INTEGER,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                CONSTRAINT uq_briefing_date_type UNIQUE (briefing_date, brief_type)
-            )
-        """))
-        conn.execute(text("""
-            INSERT INTO briefings (
-                id, briefing_date, brief_type, title, markdown, sections_json,
-                source, as_of, data_quality, confidence, missing_data_json,
-                evidence_count, created_at, updated_at
-            )
-            SELECT
-                id,
-                briefing_date,
-                COALESCE(NULLIF(brief_type, ''), 'post_market'),
-                title,
-                markdown,
-                sections_json,
-                source,
-                as_of,
-                data_quality,
-                confidence,
-                missing_data_json,
-                evidence_count,
-                created_at,
-                updated_at
-            FROM briefings_old
-        """))
-        conn.execute(text("DROP TABLE briefings_old"))
-        conn.execute(text(
-            "CREATE INDEX IF NOT EXISTS ix_briefings_briefing_date "
-            "ON briefings (briefing_date)"
-        ))
-        conn.execute(text(
-            "CREATE INDEX IF NOT EXISTS ix_briefings_brief_type "
-            "ON briefings (brief_type)"
-        ))
-
-
-def _migrate_knowledge_classification_log_unique_constraint(eng: Engine) -> None:
-    """按内容版本隔离 classification attempt 编号。
-
-    SQLite 无法删除表级 UNIQUE 约束，因此仅重建 classification log 表；
-    PostgreSQL 可以原地替换命名约束。两条路径均可安全重复执行。
-    """
-    table_name = "knowledge_classification_log"
-    old_constraint = "uq_knowledge_classification_log_attempt"
-    new_constraint = "uq_knowledge_classification_log_content_attempt"
-
-    if eng.dialect.name == "postgresql":
-        with eng.begin() as conn:
-            conn.execute(text(
-                f"ALTER TABLE {table_name} "
-                f"DROP CONSTRAINT IF EXISTS {old_constraint}"
-            ))
-            conn.execute(text(f"""
-                DO $$
-                BEGIN
-                    IF NOT EXISTS (
-                        SELECT 1
-                        FROM pg_constraint
-                        WHERE conname = '{new_constraint}'
-                          AND conrelid = '{table_name}'::regclass
-                    ) THEN
-                        ALTER TABLE {table_name}
-                        ADD CONSTRAINT {new_constraint} UNIQUE (
-                            source_type, source_id, canonical_content_hash,
-                            prompt_version, attempt_no
-                        );
-                    END IF;
-                END $$
-            """))
-        return
-
-    insp = inspect(eng)
-    if eng.dialect.name != "sqlite" or not insp.has_table(table_name):
-        return
-
-    with eng.begin() as conn:
-        unique_columns: list[list[str]] = []
-        for idx in conn.exec_driver_sql(
-            f"PRAGMA index_list({table_name})"
-        ).all():
-            if not bool(idx[2]):
-                continue
-            unique_columns.append([
-                col[2]
-                for col in conn.exec_driver_sql(
-                    f"PRAGMA index_info({idx[1]})"
-                ).all()
-            ])
-
-        expected = [
-            "source_type",
-            "source_id",
-            "canonical_content_hash",
-            "prompt_version",
-            "attempt_no",
-        ]
-        if expected in unique_columns:
-            return
-
-        conn.execute(text(
-            "ALTER TABLE knowledge_classification_log "
-            "RENAME TO knowledge_classification_log_old"
-        ))
-        conn.execute(text(f"""
-            CREATE TABLE knowledge_classification_log (
-                id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-                source_type VARCHAR(32) NOT NULL,
-                source_id VARCHAR(128) NOT NULL,
-                canonical_content_hash VARCHAR(64),
-                attempt_no INTEGER NOT NULL,
-                prompt_version VARCHAR(32) NOT NULL,
-                status VARCHAR(16) NOT NULL,
-                should_index BOOLEAN,
-                relevance_score FLOAT,
-                reason VARCHAR,
-                raw_response_json VARCHAR,
-                error_message VARCHAR,
-                latency_ms INTEGER,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
-                CONSTRAINT {new_constraint} UNIQUE (
-                    source_type, source_id, canonical_content_hash,
-                    prompt_version, attempt_no
-                )
-            )
-        """))
-        conn.execute(text("""
-            INSERT INTO knowledge_classification_log (
-                id, source_type, source_id, canonical_content_hash, attempt_no,
-                prompt_version, status, should_index, relevance_score, reason,
-                raw_response_json, error_message, latency_ms, created_at
-            )
-            SELECT
-                id, source_type, source_id, canonical_content_hash, attempt_no,
-                prompt_version, status, should_index, relevance_score, reason,
-                raw_response_json, error_message, latency_ms, created_at
-            FROM knowledge_classification_log_old
-        """))
-        conn.execute(text("DROP TABLE knowledge_classification_log_old"))
-        for column in (
-            "source_type",
-            "source_id",
-            "canonical_content_hash",
-            "status",
-        ):
-            conn.execute(text(
-                "CREATE INDEX IF NOT EXISTS "
-                f"ix_knowledge_classification_log_{column} "
-                f"ON knowledge_classification_log ({column})"
-            ))
-
-
 if __name__ == "__main__":
-    import os
-    # SQLite 文件落在 backend/data/ 下;先把目录建出来,SQLAlchemy
-    # 才能直接打开文件,省掉一次额外的手动 mkdir。
-    os.makedirs("backend/data", exist_ok=True)
     init_db()
-    print("Tables created.")
+    print("Database initialized.")

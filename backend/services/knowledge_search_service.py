@@ -350,14 +350,8 @@ def run_knowledge_pipeline_once(
     classification_limit = int(limit or settings.knowledge_classification_batch_size)
     index_limit = int(limit or settings.knowledge_index_batch_size)
     started = time.monotonic()
-    # SQLite WAL 单文件场景下 commit 仍可能撞「database is locked」
-    # （uvicorn 工作线程读/写交错 + scheduler 短事务并发）,
-    # 用 call_with_sqlite_retry 包住整段 pipeline:每次失败回滚 session,重新跑。
-    # 所有子步骤本身都是幂等的
-    # （ingest_recent_knowledge 按 (source, source_id) 去重；
-    #  index_pending_documents 只处理 classification_status != indexed 的；
-    #  refresh_fund_watchlist_profiles / refresh_knowledge_fund_matches
-    #  按 (fund_code, ...) upsert）,重跑不会有副作用放大。
+    # PostgreSQL 使用行级锁和 MVCC，不需要重试包装。
+    # call_with_sqlite_retry 保留以保持接口兼容。
     def _run():
         return _run_knowledge_pipeline_once_inner(
             trigger=trigger,
