@@ -1,13 +1,13 @@
 """知识库重建任务 (`KnowledgeReindexJob`) 的服务层。
 
 设计动机：
-- 之前 `/api/knowledge/reindex` 在请求线程里同步跑完整条
-  `run_knowledge_pipeline_once`，耗时秒级，与 scheduler 抢锁导致
-  SQLite 写锁竞争 + QueuePool 排干连环放大故障。
-- 改为异步：路由收到请求后立刻在 `KnowledgeReindexJob` 落一行
-  `pending`，起一个后台线程跑 pipeline；前台用 `job_id` 轮询状态。
-- scheduler 触发的 run_knowledge_pipeline_once 也复用同一张表，
+- 把 `run_knowledge_pipeline_once` 从请求线程里挪到后台线程,耗时秒级,
+  让前端通过 `job_id` 轮询状态。
+- scheduler 触发的 run_knowledge_pipeline_once 也复用同一张表,
   方便前后端统一观察所有重建任务。
+- 状态写入用 `process_singleflight` 按 job_id 隔离,避免不同 job 互相
+  阻塞;LLM + 向量化期间单飞锁是空闲的,CLS 同步等其它 scheduler job
+  可并发跑。
 """
 from __future__ import annotations
 
@@ -155,34 +155,43 @@ def run_job_in_background(
         启动的 `threading.Thread` 实例(daemon=True),调用方可选择 join。
     """
     from backend.services.knowledge.knowledge_search_service import run_knowledge_pipeline_once
-    from backend.services.shared.scheduler_lock import SchedulerLockBusy, scheduler_lock
+    from backend.services.shared.process_singleflight import (
+        SingleflightBusy,
+        process_singleflight,
+    )
 
     def _runner():
         started = datetime.utcnow()
         # 段 1: 拿锁 + mark_running（< 100ms，仅 1 次 DB 写）
         try:
-            with scheduler_lock(f"knowledge_reindex:{job_id}", timeout_seconds=2.0):
+            with process_singleflight(
+                f"knowledge_reindex:{job_id}",
+                timeout_seconds=2.0,
+            ):
                 mark_running(job_id)
-        except SchedulerLockBusy as exc:
+        except SingleflightBusy as exc:
             logger.warning("[knowledge_reindex] job=%s busy_skipped: %s", job_id, exc)
             _mark_busy_skipped(job_id, error=str(exc))
             return
 
         # 段 2: 在锁外跑 LLM + 向量 + DB 写入，pipeline 内部自己控短事务。
-        # LLM/向量化期间 scheduler_lock 是空闲的，CLS 同步等其它 job 可并发跑。
+        # LLM/向量化期间单飞锁是空闲的，CLS 同步等其它 job 可并发跑。
         try:
             result = run_knowledge_pipeline_once(**pipeline_kwargs)
         except Exception as exc:  # noqa: BLE001
             latency = int((datetime.utcnow() - started).total_seconds() * 1000)
             logger.exception("[knowledge_reindex] job=%s failed", job_id)
             try:
-                with scheduler_lock(f"knowledge_reindex:{job_id}", timeout_seconds=2.0):
+                with process_singleflight(
+                    f"knowledge_reindex:{job_id}",
+                    timeout_seconds=2.0,
+                ):
                     mark_failed(
                         job_id,
                         error=f"{type(exc).__name__}: {exc}",
                         latency_ms=latency,
                     )
-            except SchedulerLockBusy:
+            except SingleflightBusy:
                 # 极端并发时连 mark_failed 都拿不到锁，留给 recover_interrupted_jobs 兜底
                 logger.warning(
                     "[knowledge_reindex] job=%s mark_failed deferred to recovery",
@@ -193,9 +202,12 @@ def run_job_in_background(
         # 段 3: 拿锁 + mark_completed（同上，短事务）
         latency = int((datetime.utcnow() - started).total_seconds() * 1000)
         try:
-            with scheduler_lock(f"knowledge_reindex:{job_id}", timeout_seconds=2.0):
+            with process_singleflight(
+                f"knowledge_reindex:{job_id}",
+                timeout_seconds=2.0,
+            ):
                 mark_completed(job_id, result=result, latency_ms=latency)
-        except SchedulerLockBusy:
+        except SingleflightBusy:
             # 极端并发：completed 状态写入也撞锁，留给人工或下一轮 reconcile 处理。
             # 但 result 已经算出来了，先把它落库，状态由 recovery 修正。
             logger.warning(

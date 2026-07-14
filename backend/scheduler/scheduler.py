@@ -4,10 +4,10 @@
 调度到点时调用 `scheduled_refresh.refresh_all_watchlist`,遍历自选池刷新 NAV + 画像。
 `max_instances=1` + `coalesce=True` 保证上一次没跑完时不会叠加触发。
 
-写入型 job（`cls_telegraph_sync`、`knowledge_ingest_index`）额外走
-`scheduler_lock` 进程级单飞锁，确保同进程内任意时刻只有一个写入型
-scheduler job 在跑。这避免了 SQLite 单文件场景下并发写锁 + QueuePool
-排干的双层放大故障（见 [`terminals/9.txt`](../../.cursor/projects/Users-leon-fund-agent/terminals/9.txt)）。
+写入型 job（`cls_telegraph_sync`、`knowledge_ingest_index`）走
+`process_singleflight` 按业务键隔离的单进程单飞锁:同 label 串行、不同 label
+可并发。PostgreSQL 行级锁/MVCC 已经处理跨连接写入一致性,这里只补"同进程内
+重复触发"这一层防护。
 """
 from __future__ import annotations
 
@@ -22,7 +22,10 @@ from apscheduler.triggers.interval import IntervalTrigger
 from backend.config.settings import get_settings
 from backend.services.briefing import briefing_service
 from backend.services.market import scheduled_refresh
-from backend.services.shared.scheduler_lock import SchedulerLockBusy, scheduler_lock
+from backend.services.shared.process_singleflight import (
+    SingleflightBusy,
+    process_singleflight,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -32,17 +35,19 @@ _scheduler: BackgroundScheduler | None = None
 
 
 def _safe_job(label: str, fn, *args, **kwargs):
-    """把 scheduler job 主体包进 scheduler_lock。
+    """把 scheduler job 主体包进 process_singleflight。
 
     - 锁空闲时正常执行；
     - 锁被占（fast_fail=True）时打 warning 并直接放弃本次触发，由
       APScheduler 在下一轮 interval 自然重试，不会叠加积压；
     - 业务异常向上抛给 APScheduler 记录（保持现有行为）。
+
+    不同 label 互不阻塞 — 这是相对原全局单飞锁的关键升级。
     """
     try:
-        with scheduler_lock(label):
+        with process_singleflight(f"scheduler.{label}"):
             return fn(*args, **kwargs)
-    except SchedulerLockBusy as exc:
+    except SingleflightBusy as exc:
         logger.warning(
             "[scheduler] job=%s skipped: %s",
             label, exc,
@@ -57,20 +62,23 @@ def _run_knowledge_pipeline_scheduled():
     状态。相比手动触发(reindex route)，这里复用同一张表方便统一观察。
 
     锁窗口拆细：
-    - 段 1: `scheduler_lock` 内只做 `create_job`（短事务，< 100ms）
+    - 段 1: `process_singleflight` 内只做 `create_job`（短事务，< 100ms）
     - 段 2: 锁外启动后台线程跑 pipeline（pipeline 自身又会短事务拿锁
       mark_running / mark_completed,见 `knowledge_reindex_jobs.run_job_in_background`）
-    - 这样 LLM + 向量化执行期间 scheduler_lock 是空闲的,CLS 同步、market
+    - 这样 LLM + 向量化执行期间单飞锁是空闲的,CLS 同步、market
       evidence 等其他 scheduler job 可并发跑。
     """
     from backend.services.knowledge import knowledge_reindex_jobs
     # 段 1: 拿锁 + 落 pending 行（< 100ms）
     try:
-        with scheduler_lock("knowledge_ingest_index", timeout_seconds=2.0):
+        with process_singleflight(
+            "scheduler.knowledge_ingest_index",
+            timeout_seconds=2.0,
+        ):
             job = knowledge_reindex_jobs.create_job(trigger="scheduled")
             job_id = int(job.id)
             # create_job 内部已经 commit + close（owns=True 路径）
-    except SchedulerLockBusy:
+    except SingleflightBusy:
         logger.warning(
             "[scheduler] knowledge_ingest_index skipped: previous pipeline still finalizing"
         )
