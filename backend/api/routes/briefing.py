@@ -137,7 +137,14 @@ def run_now(
     if not x_local_trigger or x_local_trigger.lower() not in ("1", "true"):
         raise HTTPException(status_code=403, detail="missing X-Local-Trigger header")
     brief_type = (payload.brief_type if payload is not None else None) or type or "post_market"
-    return briefing_service.start_run_async(trigger="manual", brief_type=brief_type)
+    # Phase 1.1: 显式构造 model 注入 service,而不是让 service lazy import graph.model。
+    # 失败时 model 构造抛 RuntimeError,FastAPI handler 转成 503 让前端区分"系统问题"。
+    try:
+        from backend.graph.model import build_model
+        model = build_model()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=f"briefing_model_unavailable: {exc}")
+    return briefing_service.start_run_async(trigger="manual", brief_type=brief_type, model=model)
 
 
 # ---------------------------------------------------------------------------

@@ -1,14 +1,25 @@
-"""Briefing 领域的稳定输入、输出类型和依赖注入端口。"""
+"""Briefing 领域的稳定输入、输出类型和依赖注入端口。
+
+注意 `module_briefing` 仅在 `TYPE_CHECKING` 模式下导入 — 否则会与
+`module_briefing` 的顶层 import 形成循环:
+  types → module_briefing (获取 dataclass 类型)
+  module_briefing → types (获取 ChatModel Protocol)
+
+这是 Python dataclass + Protocol 跨文件的常见坑。运行时 dataclass 字段
+不需要从 `module_briefing` 导入也能工作(只要 dataclass 自己已经定义),
+所以这里只在类型检查时引入它。运行时 type hint 使用 `from __future__
+import annotations` 已经全部转为字符串解析。
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Optional, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Optional, Protocol, TypeVar
 
-from backend.services.briefing.module_briefing import (
-    BriefTypeProfile,
-    ModuleSection,
-    get_brief_type_profile,
-)
+if TYPE_CHECKING:
+    from backend.services.briefing.module_briefing import (
+        BriefTypeProfile,
+        ModuleSection,
+    )
 
 InputT = TypeVar("InputT")
 OutputT = TypeVar("OutputT")
@@ -108,5 +119,4 @@ __all__ = [
     "ModuleSection",
     "StreamableChatModel",
     "WatchlistSnapshot",
-    "get_brief_type_profile",
 ]

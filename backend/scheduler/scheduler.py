@@ -192,8 +192,27 @@ def start_scheduler(*, enabled: bool | None = None,
     if bool(getattr(settings, "scheduler_briefing_enabled", True)):
         b_hour = int(getattr(settings, "scheduler_briefing_cron_hour", 17))
         b_minute = int(getattr(settings, "scheduler_briefing_cron_minute", 0))
+
+        def _run_scheduled_briefing() -> None:
+            """调度器触发的简报 job。
+
+            Phase 1.1: 显式构造 model 注入 service。如果 build_model 因
+            DEEPSEEK_API_KEY 缺失抛 RuntimeError,这里打 warning 让下次
+            cron 自然重试(避免在 LLM 暂时不可用时拉崩调度器)。
+            """
+            try:
+                from backend.graph.model import build_model
+                model = build_model()
+            except RuntimeError as exc:
+                logger.warning(
+                    "[scheduler] daily_briefing skipped: %s",
+                    exc,
+                )
+                return
+            briefing_service.run_daily_briefing(trigger="scheduled", model=model)
+
         scheduler.add_job(
-            lambda: briefing_service.run_daily_briefing(trigger="scheduled"),
+            _run_scheduled_briefing,
             trigger=_cron_trigger(b_hour, b_minute, timezone),
             id="daily_briefing",
             max_instances=1,

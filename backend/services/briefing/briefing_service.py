@@ -20,9 +20,8 @@ from sqlalchemy import select
 from backend.config import settings as app_settings
 from backend.db.models import Briefing
 from backend.db.session import get_session
-# 注意: backend.graph.model 不可在 module 顶部 import, 否则会触发循环
-#   backend.graph.__init__ → qa_graph → model → tools → market_tools → briefing_service → model (循环)。
-# 改为在 compose_briefing() 内部 lazy import。
+from backend.services.briefing.prompts import BRIEFING_PROMPT_TEMPLATE_V2
+from backend.services.briefing.types import ChatModel
 from backend.services.market import data_collector as dc
 from backend.services.market import market_service, market_evidence_service
 from backend.services.watchlist import watchlist_service
@@ -332,7 +331,7 @@ def compose_briefing(
     snapshot: dict,
     evidence: list[dict] | None = None,
     *,
-    model: Any = None,
+    model: ChatModel | None = None,
     profile: BriefTypeProfile | None = None,
 ) -> dict:
     """调用 DeepSeek 把 snapshot + evidence 合成 markdown + sections。
@@ -343,8 +342,13 @@ def compose_briefing(
     Args:
         snapshot: 市场快照数据
         evidence: 当日证据列表，将被拼入 prompt 供 LLM 引用
-        model: 聊天模型实例。为 None 时使用默认 build_model()。
+        model: 聊天模型实例。**必须**由 composition root(API 路由 / scheduler)
+            通过 `backend.graph.model.build_model()` 构造并显式传入;本函数不再
+            提供 lazy import 兜底 — 缺 model 时立刻 `RuntimeError` 让上层发现。
         profile: V2 profile；None 时默认走 post_market（向后兼容）
+
+    Raises:
+        RuntimeError: `model` 为 None(未注入)。
     """
     from string import Template
     from backend.services.briefing import module_briefing as mb
@@ -411,7 +415,6 @@ def compose_briefing(
     }
 
     module_json = json.dumps(sections_structured, ensure_ascii=False, indent=2)
-    from backend.graph.prompts import BRIEFING_PROMPT_TEMPLATE_V2
     prompt = BRIEFING_PROMPT_TEMPLATE_V2.substitute(
         brief_type=profile.brief_type,
         max_markdown_words=profile.max_markdown_words,
@@ -427,10 +430,13 @@ def compose_briefing(
         module_sections_json=module_json,
     )
 
-    # 使用注入的 model 或 lazy import
+    # Phase 1.1: model 由 composition root 注入。如果上层忘记传,这里立刻失败
+    # 而不是悄悄 lazy import — 让调用方在测试或部署时立即发现。
     if model is None:
-        from backend.graph import model as _model_module
-        model = _model_module.build_model()
+        raise RuntimeError(
+            "compose_briefing requires `model` to be injected by the composition root "
+            "(API route or scheduler). Call build_model() in the entry point and pass it."
+        )
     response = model.invoke(prompt)
     raw_content = response.content if hasattr(response, "content") else str(response)
 
@@ -486,6 +492,7 @@ def run_daily_briefing(
     trigger: str = "scheduled",
     session=None,
     brief_type: str = "post_market",
+    model: ChatModel | None = None,
 ) -> dict:
     """编排: collect → compose → upsert Briefing → 写内存快照。
 
@@ -493,6 +500,14 @@ def run_daily_briefing(
 
     brief_type: post_market / pre_market / intraday。默认 post_market 以保持
     旧调用（未传参）行为一致。
+
+    Args:
+        trigger: 触发来源(manual / scheduled / api)。
+        session: 数据库 session,`None` 时新建。
+        brief_type: 简报类型。
+        model: 聊天模型实例,**必须**由 composition root 注入。如果为 None,
+            `compose_briefing` 会立即 `RuntimeError`,本函数捕获后记入
+            failures 列表,继续走"无 LLM 输出"的降级路径。
     """
     from backend.db.repository import upsert_briefing
     from backend.services.briefing import module_briefing as mb
@@ -565,7 +580,12 @@ def run_daily_briefing(
 
     # compose — 使用 compose_briefing（内部走 V2 module system）
     try:
-        compose_result = compose_briefing(snapshot, evidence=evidence_rows, profile=profile)
+        compose_result = compose_briefing(
+            snapshot,
+            evidence=evidence_rows,
+            profile=profile,
+            model=model,
+        )
         if profile_warnings:
             compose_result["warnings"] = profile_warnings + list(compose_result.get("warnings", []))
         succeeded = 1
@@ -730,10 +750,21 @@ _active_job_id: str | None = None
 _async_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="briefing-run")
 
 
-def start_run_async(*, trigger: str = "manual", brief_type: str = "post_market") -> dict:
+def start_run_async(
+    *,
+    trigger: str = "manual",
+    brief_type: str = "post_market",
+    model: ChatModel | None = None,
+) -> dict:
     """后台线程触发一次简报生成,立即返回 {status, trigger, brief_type}。
 
     单飞:已有任务在跑时直接返回 running 状态。
+
+    Args:
+        model: 聊天模型实例,**必须**由调用方(composition root)注入并
+            一路传到 `run_daily_briefing` → `compose_briefing`。生产路径
+            应在 API 路由里调 `build_model()` 后传入;为 None 时后台任务
+            会立刻失败记入 failures,调度语义保持不变。
     """
     global _active_job_id
     with _active_lock:
@@ -746,7 +777,7 @@ def start_run_async(*, trigger: str = "manual", brief_type: str = "post_market")
     def _task() -> None:
         global _active_job_id
         try:
-            run_daily_briefing(trigger=trigger, brief_type=brief_type)
+            run_daily_briefing(trigger=trigger, brief_type=brief_type, model=model)
         finally:
             with _active_lock:
                 _active_job_id = None

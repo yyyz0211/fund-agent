@@ -11,7 +11,8 @@ import json
 from dataclasses import dataclass, field, asdict
 from typing import Any, Literal
 
-from backend.graph.prompts import BRIEFING_PROMPT_TEMPLATE_V2
+from backend.services.briefing.prompts import BRIEFING_PROMPT_TEMPLATE_V2
+from backend.services.briefing.types import ChatModel
 
 
 # ---------------------------------------------------------------------------
@@ -1049,7 +1050,7 @@ def compose_briefing_v2(
     snapshot: dict,
     evidence: list[dict],
     *,
-    model: Any = None,
+    model: ChatModel | None = None,
 ) -> dict:
     """V2 final composer：把 module sections 组织成最终 markdown。
 
@@ -1057,7 +1058,8 @@ def compose_briefing_v2(
     返回 dict: {markdown, sections, warnings, markdown_warnings}
 
     Args:
-        model: 聊天模型实例。为 None 时使用默认 build_model()。
+        model: 聊天模型实例。**必须**由 composition root 注入。`None` 时
+            立即 `RuntimeError`,与 `compose_briefing` 保持一致。
     """
     from string import Template
 
@@ -1087,10 +1089,11 @@ def compose_briefing_v2(
         module_sections_json=module_json,
     )
 
-    # 使用注入的 model 或 lazy import
+    # Phase 1.1: model 由 composition root 注入,缺则立即失败(不要 lazy import)。
     if model is None:
-        from backend.graph import model as _model_module
-        model = _model_module.build_model()
+        raise RuntimeError(
+            "compose_briefing_v2 requires `model` to be injected by the composition root."
+        )
     response = model.invoke(prompt)
     raw_content = response.content if hasattr(response, "content") else str(response)
 
