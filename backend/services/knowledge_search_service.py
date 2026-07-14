@@ -18,6 +18,7 @@ from backend.services import (
     knowledge_match_service,
     knowledge_vector,
 )
+from backend.services.db_retry import call_with_sqlite_retry
 from backend.services.knowledge_embedding import build_embedding_provider
 from backend.services.knowledge_pgvector import build_vector_store
 
@@ -349,8 +350,45 @@ def run_knowledge_pipeline_once(
     classification_limit = int(limit or settings.knowledge_classification_batch_size)
     index_limit = int(limit or settings.knowledge_index_batch_size)
     started = time.monotonic()
-    owns_session = session is None
-    active_session = session or get_session()
+    # SQLite WAL 单文件场景下 commit 仍可能撞「database is locked」
+    # （uvicorn 工作线程读/写交错 + scheduler 短事务并发）,
+    # 用 call_with_sqlite_retry 包住整段 pipeline:每次失败回滚 session,重新跑。
+    # 所有子步骤本身都是幂等的
+    # （ingest_recent_knowledge 按 (source, source_id) 去重；
+    #  index_pending_documents 只处理 classification_status != indexed 的；
+    #  refresh_fund_watchlist_profiles / refresh_knowledge_fund_matches
+    #  按 (fund_code, ...) upsert）,重跑不会有副作用放大。
+    def _run():
+        return _run_knowledge_pipeline_once_inner(
+            trigger=trigger,
+            settings=settings,
+            classification_limit=classification_limit,
+            index_limit=index_limit,
+            started=started,
+            session=session,
+            owns_session=session is None,
+            classifier=classifier,
+            embedding_provider=embedding_provider,
+            vector_store=vector_store,
+        )
+    return call_with_sqlite_retry(_run)
+
+
+def _run_knowledge_pipeline_once_inner(
+    *,
+    trigger: str,
+    settings,
+    classification_limit: int,
+    index_limit: int,
+    started: float,
+    session,
+    owns_session: bool,
+    classifier,
+    embedding_provider,
+    vector_store,
+) -> dict:
+    """`run_knowledge_pipeline_once` 的实际工作体,被外层 `call_with_sqlite_retry` 包裹。"""
+    active_session = session if session is not None else get_session()
     ctx = active_session if owns_session else nullcontext(active_session)
     with ctx as s:
         try:
@@ -391,6 +429,8 @@ def run_knowledge_pipeline_once(
                 "latency_ms": int((time.monotonic() - started) * 1000),
             }
         except Exception:
-            if owns_session:
+            try:
                 s.rollback()
+            except Exception:
+                pass
             raise

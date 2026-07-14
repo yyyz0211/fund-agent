@@ -41,29 +41,47 @@ _OWNER: dict[str, object] = {"label": None, "since": None}
 
 
 @contextmanager
-def scheduler_lock(label: str) -> Iterator[None]:
+def scheduler_lock(label: str, *, timeout_seconds: float | None = None):
     """获取 scheduler 进程级单飞锁。
 
     Args:
         label: 持有者标识（例如 `cls_telegraph_sync`、`knowledge_ingest_index`）。
             出现在日志中便于排障。
+        timeout_seconds: 最长等待秒数。默认 `None` 保持旧行为——非阻塞立即
+            抢锁，失败立即抛 `SchedulerLockBusy`。传入正数后改为阻塞模式，
+            最多等 `timeout_seconds` 秒；超时抛 `SchedulerLockBusy`。负数
+            视为 `None`（立即失败）。
 
     Raises:
-        SchedulerLockBusy: 锁被占时（非阻塞）立即抛出；调用方应放弃本次
-            触发，由 APScheduler 在下一轮 interval 自然重试。
+        SchedulerLockBusy: 锁被占且超过 `timeout_seconds`（或默认立即失败）。
+            调用方应放弃本次触发，由 APScheduler 在下一轮 interval 自然重试。
     """
-    if not _LOCK.acquire(blocking=False):
-        owner = _OWNER.get("label")
-        since = _OWNER.get("since")
-        wait_for = (time.monotonic() - since) if since else 0.0
-        logger.debug(
-            "[scheduler_lock] busy: holder=%s running_for=%.2fs requester=%s",
-            owner, wait_for, label,
-        )
-        raise SchedulerLockBusy(
-            f"scheduler_lock held by {owner!r} for {wait_for:.2f}s; "
-            f"requester={label!r} rejected"
-        )
+    blocking = timeout_seconds is not None and timeout_seconds > 0
+    deadline = (time.monotonic() + float(timeout_seconds)) if blocking else None
+
+    if blocking:
+        # 循环 + 短 sleep：避免 _LOCK.acquire 超长阻塞（它本身能接受 timeout），
+        # 同时方便定期检查 deadline。
+        while True:
+            if _LOCK.acquire(timeout=min(0.05, float(timeout_seconds))):
+                break
+            if deadline is not None and time.monotonic() >= deadline:
+                owner = _OWNER.get("label")
+                since = _OWNER.get("since")
+                wait_for = (time.monotonic() - since) if since else 0.0
+                raise SchedulerLockBusy(
+                    f"scheduler_lock held by {owner!r} for {wait_for:.2f}s; "
+                    f"requester={label!r} timed out after {timeout_seconds:.2f}s"
+                )
+    else:
+        if not _LOCK.acquire(blocking=False):
+            owner = _OWNER.get("label")
+            since = _OWNER.get("since")
+            wait_for = (time.monotonic() - since) if since else 0.0
+            raise SchedulerLockBusy(
+                f"scheduler_lock held by {owner!r} for {wait_for:.2f}s; "
+                f"requester={label!r} rejected"
+            )
 
     _OWNER["label"] = label
     _OWNER["since"] = time.monotonic()

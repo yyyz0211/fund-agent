@@ -83,8 +83,10 @@ def fetch_cls_roll_page_raw(
     category: str = "",
     limit: int = 50,
     last_time: int | None = None,
-    timeout_seconds: float = 5.0,
+    timeout_seconds: float = 15.0,
     app_version: str = cls_client.DEFAULT_APP_VERSION,
+    max_attempts: int = 1,
+    retry_base_seconds: float = 1.0,
 ) -> list[dict]:
     """抓取一页 CLS roll-list 原始行。"""
     started = datetime.now(timezone.utc)
@@ -96,22 +98,16 @@ def fetch_cls_roll_page_raw(
     if category:
         params["category"] = category
     signed = cls_client._signed_params(params, app_version=app_version)
-    try:
-        response = client.get(
-            f"{cls_client.BASE_URL}/v1/roll/get_roll_list",
-            params=signed,
-            headers=cls_client.DEFAULT_HEADERS,
-            timeout=timeout_seconds,
-        )
-        response.raise_for_status()
-        payload = response.json()
-    except Exception:
-        payload = cls_client._curl_get_json(
-            url=f"{cls_client.BASE_URL}/v1/roll/get_roll_list",
-            params=signed,
-            headers=cls_client.DEFAULT_HEADERS,
-            timeout_seconds=timeout_seconds,
-        )
+    payload = cls_client._retry_get_with_curl(
+        client=client,
+        path="/v1/roll/get_roll_list",
+        params=signed,
+        headers=cls_client.DEFAULT_HEADERS,
+        timeout_seconds=timeout_seconds,
+        max_attempts=max_attempts,
+        base_delay=retry_base_seconds,
+        category=category,
+    )
     if payload.get("errno") not in (0, "0", None):
         raise RuntimeError(f"CLS roll-list errno={payload.get('errno')}: {payload.get('msg') or ''}")
     rows = ((payload.get("data") or {}).get("roll_data")) or []
@@ -175,6 +171,8 @@ def sync_cls_telegraph_once(
     max_pages = max_pages or int(settings.cls_telegraph_sync_max_pages)
     timeout_seconds = timeout_seconds or float(settings.cls_timeout_seconds)
     app_version = app_version or settings.cls_app_version
+    max_attempts = max(1, int(getattr(settings, "cls_max_attempts", 1)))
+    retry_base_seconds = float(getattr(settings, "cls_retry_base_seconds", 1.0))
     fetch_page = fetch_page or fetch_cls_roll_page_raw
 
     owns_session = session is None
@@ -201,6 +199,8 @@ def sync_cls_telegraph_once(
                 last_time=last_time,
                 timeout_seconds=timeout_seconds,
                 app_version=app_version,
+                max_attempts=max_attempts,
+                retry_base_seconds=retry_base_seconds,
             )
             if not raw_rows:
                 break

@@ -158,28 +158,50 @@ def run_job_in_background(
     from backend.services.scheduler_lock import SchedulerLockBusy, scheduler_lock
 
     def _runner():
-        # 1. 进入 scheduler_lock（与 scheduler job 共用同一锁）
+        started = datetime.utcnow()
+        # 段 1: 拿锁 + mark_running（< 100ms，仅 1 次 DB 写）
         try:
-            with scheduler_lock(f"knowledge_reindex:{job_id}"):
+            with scheduler_lock(f"knowledge_reindex:{job_id}", timeout_seconds=2.0):
                 mark_running(job_id)
-                started = datetime.utcnow()
-                try:
-                    result = run_knowledge_pipeline_once(**pipeline_kwargs)
-                    latency = int((datetime.utcnow() - started).total_seconds() * 1000)
-                    mark_completed(job_id, result=result, latency_ms=latency)
-                except Exception as exc:  # noqa: BLE001
-                    latency = int((datetime.utcnow() - started).total_seconds() * 1000)
-                    logger.exception("[knowledge_reindex] job=%s failed", job_id)
+        except SchedulerLockBusy as exc:
+            logger.warning("[knowledge_reindex] job=%s busy_skipped: %s", job_id, exc)
+            _mark_busy_skipped(job_id, error=str(exc))
+            return
+
+        # 段 2: 在锁外跑 LLM + 向量 + DB 写入，pipeline 内部自己控短事务。
+        # LLM/向量化期间 scheduler_lock 是空闲的，CLS 同步等其它 job 可并发跑。
+        try:
+            result = run_knowledge_pipeline_once(**pipeline_kwargs)
+        except Exception as exc:  # noqa: BLE001
+            latency = int((datetime.utcnow() - started).total_seconds() * 1000)
+            logger.exception("[knowledge_reindex] job=%s failed", job_id)
+            try:
+                with scheduler_lock(f"knowledge_reindex:{job_id}", timeout_seconds=2.0):
                     mark_failed(
                         job_id,
                         error=f"{type(exc).__name__}: {exc}",
                         latency_ms=latency,
                     )
-        except SchedulerLockBusy as exc:
-            # 锁被占（另一个 scheduler job 正在跑），把这任务标记为 busy_skipped，
-            # 前端轮询能看到完整状态而不会一直 pending。
-            logger.warning("[knowledge_reindex] job=%s busy_skipped: %s", job_id, exc)
-            _mark_busy_skipped(job_id, error=str(exc))
+            except SchedulerLockBusy:
+                # 极端并发时连 mark_failed 都拿不到锁，留给 recover_interrupted_jobs 兜底
+                logger.warning(
+                    "[knowledge_reindex] job=%s mark_failed deferred to recovery",
+                    job_id,
+                )
+            return
+
+        # 段 3: 拿锁 + mark_completed（同上，短事务）
+        latency = int((datetime.utcnow() - started).total_seconds() * 1000)
+        try:
+            with scheduler_lock(f"knowledge_reindex:{job_id}", timeout_seconds=2.0):
+                mark_completed(job_id, result=result, latency_ms=latency)
+        except SchedulerLockBusy:
+            # 极端并发：completed 状态写入也撞锁，留给人工或下一轮 reconcile 处理。
+            # 但 result 已经算出来了，先把它落库，状态由 recovery 修正。
+            logger.warning(
+                "[knowledge_reindex] job=%s mark_completed deferred to recovery",
+                job_id,
+            )
 
     thread = threading.Thread(
         target=_runner,

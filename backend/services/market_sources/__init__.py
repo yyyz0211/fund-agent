@@ -100,6 +100,8 @@ def build_default_adapters(*, client, brief_type: str = "post_market",
                     per_category_limit=settings.cls_per_category_limit,
                     timeout_seconds=settings.cls_timeout_seconds,
                     app_version=settings.cls_app_version,
+                    max_attempts=int(getattr(settings, "cls_max_attempts", 1)),
+                    retry_base_seconds=float(getattr(settings, "cls_retry_base_seconds", 1.0)),
                 ))
         except Exception as exc:  # noqa: BLE001
             logger.warning(

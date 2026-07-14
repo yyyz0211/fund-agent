@@ -267,6 +267,8 @@ def search_cls_telegraph(
                 limit=effective_limit,
                 timeout_seconds=settings.cls_timeout_seconds,
                 app_version=settings.cls_app_version,
+                max_attempts=int(getattr(settings, "cls_max_attempts", 1)),
+                retry_base_seconds=float(getattr(settings, "cls_retry_base_seconds", 1.0)),
             )
         items = [_public_cls_telegraph_item(row) for row in rows]
         return {"count": len(items), "items": items, "error": ""}

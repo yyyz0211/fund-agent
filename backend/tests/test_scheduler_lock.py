@@ -89,3 +89,64 @@ def test_try_acquire_returns_none_when_held():
     """try_acquire 在锁被占时返回 None。"""
     with scheduler_lock("holder"):
         assert try_acquire("requester") is None
+
+
+def test_lock_default_is_fast_fail():
+    """不传 timeout_seconds 时保持旧行为——非阻塞立即失败。"""
+    with scheduler_lock("holder"):
+        t0 = time.monotonic()
+        with pytest.raises(SchedulerLockBusy):
+            with scheduler_lock("requester"):
+                pass
+        elapsed = time.monotonic() - t0
+        # 立即失败,不应该 sleep 等待
+        assert elapsed < 0.1, f"expected fast fail within 100ms, got {elapsed:.3f}s"
+
+
+def test_lock_timeout_seconds_waits_then_fails():
+    """传 timeout_seconds 时等够时间后抛 SchedulerLockBusy。"""
+    with scheduler_lock("holder"):
+        t0 = time.monotonic()
+        with pytest.raises(SchedulerLockBusy) as excinfo:
+            with scheduler_lock("requester", timeout_seconds=0.3):
+                pass
+        elapsed = time.monotonic() - t0
+        # 应该等待到 timeout,允许 ±100ms 抖动(轮询 sleep 50ms)
+        assert 0.25 <= elapsed <= 0.6, f"expected ~0.3s, got {elapsed:.3f}s"
+        assert "timed out" in str(excinfo.value)
+
+
+def test_lock_timeout_seconds_succeeds_when_released():
+    """传 timeout_seconds 时,锁在超时前释放应该能成功进入。"""
+    holder_acquired = threading.Event()
+    holder_release = threading.Event()
+    requester_entered = threading.Event()
+
+    def holder():
+        with scheduler_lock("holder"):
+            holder_acquired.set()
+            holder_release.wait(timeout=2.0)
+
+    def requester():
+        holder_acquired.wait(timeout=2.0)
+        # 给 holder 一点时间稳定在锁内,然后开始等
+        time.sleep(0.05)
+        try:
+            with scheduler_lock("requester", timeout_seconds=1.5):
+                requester_entered.set()
+        except SchedulerLockBusy:
+            pass
+
+    t_holder = threading.Thread(target=holder)
+    t_req = threading.Thread(target=requester)
+    t_holder.start()
+    t_req.start()
+
+    # holder 进入后等 0.2s 释放,requester 应该能拿到锁
+    holder_acquired.wait(timeout=1.0)
+    time.sleep(0.2)
+    holder_release.set()
+
+    t_holder.join(timeout=2.0)
+    t_req.join(timeout=2.0)
+    assert requester_entered.is_set(), "requester should have entered the lock after holder released"

@@ -205,18 +205,57 @@ def test_fetch_roll_list_falls_back_to_curl_and_records_diagnostics(monkeypatch)
     monkeypatch.setattr(client_mod.subprocess, "run", fake_run)
     diagnostics = []
 
+    # max_attempts=1 让「失败不重试」语义生效,curl 兜底成功后 diagnostics 为空。
     rows = fetch_roll_list(
         client=_FailingClient(),
         category="fund",
         limit=5,
         last_time=1783565229,
         diagnostics=diagnostics,
+        max_attempts=1,
     )
 
     assert rows[0]["title"] == "今日基金快讯"
     assert calls and calls[0][0][0] == "curl"
+    # curl 兜底成功 → diagnostics 没记录错误
+    assert diagnostics == []
+
+
+def test_fetch_roll_list_records_diagnostics_when_all_attempts_fail(monkeypatch):
+    """所有重试 + curl 都失败时,diagnostics 应有 'connect failed' 记录。"""
+    from backend.services import cls_telegraph_client as client_mod
+    from backend.services.cls_telegraph_client import fetch_roll_list
+
+    class _FailingClient:
+        def get(self, *args, **kwargs):
+            raise RuntimeError("connect failed")
+
+    class _CurlResult:
+        returncode = 28
+        stdout = ""
+        stderr = "curl: (28) Operation timed out"
+
+    def fake_run(cmd, **kwargs):
+        return _CurlResult()
+
+    monkeypatch.setattr(client_mod.subprocess, "run", fake_run)
+    diagnostics = []
+
+    rows = fetch_roll_list(
+        client=_FailingClient(),
+        category="fund",
+        limit=5,
+        last_time=1783565229,
+        diagnostics=diagnostics,
+        max_attempts=2,
+        retry_base_seconds=0.01,
+    )
+
+    assert rows == []
+    assert diagnostics
     assert diagnostics[0]["category"] == "fund"
-    assert "connect failed" in diagnostics[0]["error"]
+    msg = diagnostics[0]["error"]
+    assert "connect failed" in msg or "timed out" in msg
 
 
 def test_search_telegraph_posts_body_and_normalizes_rows():

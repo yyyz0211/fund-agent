@@ -27,14 +27,18 @@ class ClsTelegraphAdapter:
         client: Any | None = None,
         categories: str | list[str] | tuple[str, ...] | None = None,
         per_category_limit: int = 10,
-        timeout_seconds: float = 5.0,
+        timeout_seconds: float = 15.0,
         app_version: str = cls_client.DEFAULT_APP_VERSION,
+        max_attempts: int = 1,
+        retry_base_seconds: float = 1.0,
     ):
         self.client = client
         self.categories = _parse_categories(categories)
         self.per_category_limit = max(1, int(per_category_limit))
         self.timeout_seconds = float(timeout_seconds)
         self.app_version = app_version
+        self.max_attempts = max(1, int(max_attempts))
+        self.retry_base_seconds = float(retry_base_seconds)
         self.last_errors: list[dict] = []
 
     def _to_evidence(self, row: dict, *, trade_date: str, brief_type: str) -> dict | None:
@@ -76,6 +80,8 @@ class ClsTelegraphAdapter:
                         timeout_seconds=self.timeout_seconds,
                         app_version=self.app_version,
                         diagnostics=self.last_errors,
+                        max_attempts=self.max_attempts,
+                        retry_base_seconds=self.retry_base_seconds,
                     )
                 except Exception as exc:  # noqa: BLE001
                     self.last_errors.append({

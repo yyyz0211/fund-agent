@@ -219,15 +219,94 @@ def _curl_get_json(
     return json.loads(result.stdout)
 
 
+def _is_retryable_exc(exc: BaseException) -> bool:
+    """判断是否值得对当前异常做重试。
+
+    只对「明显瞬时」的错误做重试:超时、连接错误、5xx。
+    4xx (除了 429) 一律不重试。
+    """
+    import httpx
+
+    if isinstance(exc, (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError)):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = getattr(getattr(exc, "response", None), "status_code", 0)
+        return status == 429 or status >= 500
+    # curl 兜底:超时 (exit 28) / 连接失败 (exit 7/35) 算瞬时
+    if isinstance(exc, RuntimeError):
+        msg = str(exc).lower()
+        if "curl exit 28" in msg or "curl exit 7" in msg or "curl exit 35" in msg:
+            return True
+    return False
+
+
+def _retry_get_with_curl(
+    *,
+    client: Any,
+    path: str,
+    params: Mapping[str, Any],
+    headers: Mapping[str, str],
+    timeout_seconds: float,
+    max_attempts: int,
+    base_delay: float,
+    category: str,
+) -> dict:
+    """带重试的 GET 包装:httpx 失败时 fallback 到 curl,整体重试 max_attempts 次。
+
+    返回解析后的 JSON dict;任何一次成功即返回;最后失败抛原异常。
+    """
+    import time as _time
+
+    last_exc: BaseException | None = None
+    for attempt in range(max(1, int(max_attempts))):
+        try:
+            response = client.get(
+                f"{BASE_URL}{path}",
+                params=params,
+                headers=headers,
+                timeout=timeout_seconds,
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            # httpx 失败,试 curl 兜底(单次,避免双重退避)
+            try:
+                return _curl_get_json(
+                    url=f"{BASE_URL}{path}",
+                    params=params,
+                    headers=headers,
+                    timeout_seconds=timeout_seconds,
+                )
+            except Exception as curl_exc:  # noqa: BLE001
+                last_exc = curl_exc
+
+            retryable = _is_retryable_exc(exc) or _is_retryable_exc(last_exc)
+            if not retryable or attempt >= max_attempts - 1:
+                raise
+            delay = base_delay * (2 ** attempt)
+            logger.warning(
+                "[cls] GET %s category=%s attempt=%d/%d failed (%s); sleeping=%.2fs",
+                path, category, attempt + 1, max_attempts,
+                type(last_exc).__name__, delay,
+            )
+            _time.sleep(delay)
+    # 防御性:循环正常退出时不应当到这里,但兜底抛 last_exc。
+    assert last_exc is not None
+    raise last_exc
+
+
 def fetch_roll_list(
     *,
     client: Any,
     category: str = "",
     limit: int = 10,
     last_time: int | None = None,
-    timeout_seconds: float = 5.0,
+    timeout_seconds: float = 15.0,
     app_version: str = DEFAULT_APP_VERSION,
     diagnostics: list[dict] | None = None,
+    max_attempts: int = 1,
+    retry_base_seconds: float = 1.0,
 ) -> list[dict]:
     """Fetch one signed CLS roll-list page and return normalized rows."""
     started = datetime.now(timezone.utc)
@@ -241,35 +320,23 @@ def fetch_roll_list(
     signed = _signed_params(params, app_version=app_version)
     payload: dict | None = None
     try:
-        response = client.get(
-            f"{BASE_URL}/v1/roll/get_roll_list",
+        payload = _retry_get_with_curl(
+            client=client,
+            path="/v1/roll/get_roll_list",
             params=signed,
             headers=DEFAULT_HEADERS,
-            timeout=timeout_seconds,
+            timeout_seconds=timeout_seconds,
+            max_attempts=max_attempts,
+            base_delay=retry_base_seconds,
+            category=category,
         )
-        status = getattr(response, "status_code", 0)
-        response.raise_for_status()
-        payload = response.json()
     except Exception as exc:  # noqa: BLE001
         _append_diagnostic(diagnostics, category=category, error=f"{type(exc).__name__}: {exc}")
-        try:
-            payload = _curl_get_json(
-                url=f"{BASE_URL}/v1/roll/get_roll_list",
-                params=signed,
-                headers=DEFAULT_HEADERS,
-                timeout_seconds=timeout_seconds,
-            )
-        except Exception as curl_exc:  # noqa: BLE001
-            _append_diagnostic(
-                diagnostics,
-                category=category,
-                error=f"curl {type(curl_exc).__name__}: {curl_exc}",
-            )
-            logger.error(
-                "[cls] GET /v1/roll/get_roll_list category=%s error=%s curl_error=%s elapsed=%.2fs",
-                category, type(exc).__name__, type(curl_exc).__name__, _elapsed(started),
-            )
-            return []
+        logger.error(
+            "[cls] GET /v1/roll/get_roll_list category=%s error=%s elapsed=%.2fs",
+            category, type(exc).__name__, _elapsed(started),
+        )
+        return []
 
     if payload.get("errno") not in (0, "0", None):
         _append_diagnostic(
@@ -278,8 +345,8 @@ def fetch_roll_list(
             error=f"errno={payload.get('errno')}: {payload.get('msg') or ''}".strip(),
         )
         logger.warning(
-            "[cls] GET /v1/roll/get_roll_list category=%s status=%s errno=%s elapsed=%.2fs",
-            category, locals().get("status", 0), payload.get("errno"), _elapsed(started),
+            "[cls] GET /v1/roll/get_roll_list category=%s errno=%s elapsed=%.2fs",
+            category, payload.get("errno"), _elapsed(started),
         )
         return []
     rows = ((payload.get("data") or {}).get("roll_data")) or []
@@ -293,11 +360,15 @@ def search_telegraph(
     keyword: str,
     category: str = "",
     limit: int = 10,
-    timeout_seconds: float = 5.0,
+    timeout_seconds: float = 15.0,
     app_version: str = DEFAULT_APP_VERSION,
+    max_attempts: int = 1,
+    retry_base_seconds: float = 1.0,
 ) -> list[dict]:
     """Search CLS telegraph with signed query params and JSON body."""
     started = datetime.now(timezone.utc)
+    import time as _time
+
     kw = clean_html_text(keyword)
     if not kw:
         return []
@@ -308,27 +379,38 @@ def search_telegraph(
         "category": category or "",
         **_base_params(app_version=app_version),
     }
-    try:
-        response = client.post(
-            f"{BASE_URL}/api/csw",
-            params=signed,
-            json=body,
-            headers={**DEFAULT_HEADERS, "Content-Type": "application/json"},
-            timeout=timeout_seconds,
-        )
-        status = getattr(response, "status_code", 0)
-        response.raise_for_status()
-        payload = response.json()
-        rows = payload.get("list") or []
-        out = [normalize_telegraph_item(row, category=category, now=started) for row in rows[:limit]]
-        logger.info(
-            "[cls] POST /api/csw category=%s status=%s count=%s elapsed=%.2fs",
-            category, status, len([row for row in out if row is not None]), _elapsed(started),
-        )
-        return [row for row in out if row is not None]
-    except Exception as exc:  # noqa: BLE001
-        logger.error(
-            "[cls] POST /api/csw category=%s error=%s elapsed=%.2fs",
-            category, type(exc).__name__, _elapsed(started),
-        )
-        return []
+    last_exc: BaseException | None = None
+    for attempt in range(max(1, int(max_attempts))):
+        try:
+            response = client.post(
+                f"{BASE_URL}/api/csw",
+                params=signed,
+                json=body,
+                headers={**DEFAULT_HEADERS, "Content-Type": "application/json"},
+                timeout=timeout_seconds,
+            )
+            status = getattr(response, "status_code", 0)
+            response.raise_for_status()
+            payload = response.json()
+            rows = payload.get("list") or []
+            out = [normalize_telegraph_item(row, category=category, now=started) for row in rows[:limit]]
+            logger.info(
+                "[cls] POST /api/csw category=%s status=%s count=%s elapsed=%.2fs",
+                category, status, len([row for row in out if row is not None]), _elapsed(started),
+            )
+            return [row for row in out if row is not None]
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if not _is_retryable_exc(exc) or attempt >= max_attempts - 1:
+                logger.error(
+                    "[cls] POST /api/csw category=%s error=%s elapsed=%.2fs",
+                    category, type(exc).__name__, _elapsed(started),
+                )
+                return []
+            delay = retry_base_seconds * (2 ** attempt)
+            logger.warning(
+                "[cls] POST /api/csw category=%s attempt=%d/%d failed (%s); sleeping=%.2fs",
+                category, attempt + 1, max_attempts, type(exc).__name__, delay,
+            )
+            _time.sleep(delay)
+    return []

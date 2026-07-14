@@ -55,26 +55,33 @@ def _run_knowledge_pipeline_scheduled():
 
     创建一条 scheduled job 记录，拿到进程锁，执行 pipeline，最后写入
     状态。相比手动触发(reindex route)，这里复用同一张表方便统一观察。
-    """
-    from backend.services import knowledge_search_service
-    from backend.services import knowledge_reindex_jobs
 
-    # 1. 创建 scheduled job 记录
+    锁窗口拆细：
+    - 段 1: `scheduler_lock` 内只做 `create_job`（短事务，< 100ms）
+    - 段 2: 锁外启动后台线程跑 pipeline（pipeline 自身又会短事务拿锁
+      mark_running / mark_completed,见 `knowledge_reindex_jobs.run_job_in_background`）
+    - 这样 LLM + 向量化执行期间 scheduler_lock 是空闲的,CLS 同步、market
+      evidence 等其他 scheduler job 可并发跑。
+    """
+    from backend.services import knowledge_reindex_jobs
+    from backend.services.scheduler_lock import scheduler_lock, SchedulerLockBusy
+
+    # 段 1: 拿锁 + 落 pending 行（< 100ms）
     try:
-        job = knowledge_reindex_jobs.create_job(trigger="scheduled")
-        job_id = int(job.id)
-        # 立即 commit，让前台能立即看到这条 pending job
-        from backend.db.session import get_session
-        session = get_session()
-        try:
-            session.commit()
-        finally:
-            session.close()
+        with scheduler_lock("knowledge_ingest_index", timeout_seconds=2.0):
+            job = knowledge_reindex_jobs.create_job(trigger="scheduled")
+            job_id = int(job.id)
+            # create_job 内部已经 commit + close（owns=True 路径）
+    except SchedulerLockBusy:
+        logger.warning(
+            "[scheduler] knowledge_ingest_index skipped: previous pipeline still finalizing"
+        )
+        return
     except Exception as exc:
         logger.exception("[scheduler] knowledge pipeline failed to create job record")
         return
 
-    # 2. 复用后台线程执行逻辑
+    # 段 2: 在锁外启动后台线程
     try:
         knowledge_reindex_jobs.run_job_in_background(
             job_id,

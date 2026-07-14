@@ -80,7 +80,12 @@ class Settings(BaseSettings):
     # 财联社电报信息源。v1 只用于 post_market evidence + 实时搜索 tool。
     cls_enabled: bool = True
     cls_search_enabled: bool = True
-    cls_timeout_seconds: float = 5.0
+    cls_timeout_seconds: float = 15.0
+    # CLS API 在晚高峰会慢于 5s,1 次重试能盖住大部分偶发超时。
+    # 设为 1 表示「失败不重试」(兼容旧行为),生产环境推荐 1。
+    cls_max_attempts: int = 1
+    # 单次重试的退避秒数 (指数退避: 1s, 2s, 4s, ...)。
+    cls_retry_base_seconds: float = 1.0
     cls_categories: str = "fund,watch,announcement,hk_us,red,remind"
     cls_per_category_limit: int = 10
     cls_max_search_limit: int = 10

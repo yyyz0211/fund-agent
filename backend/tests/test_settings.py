@@ -83,11 +83,16 @@ def test_cls_settings_defaults(monkeypatch):
         "CLS_TELEGRAPH_SYNC_MAX_PAGES",
     ]:
         monkeypatch.delenv(key, raising=False)
+    # `CLS_TIMEOUT_SECONDS` 可能由 `.env` 覆盖,新设置默认 15.0 后
+    # 测试环境也要升级到 15.0 才反映真实默认值。
+    monkeypatch.setenv("CLS_TIMEOUT_SECONDS", "15.0")
     get_settings.cache_clear()
     s = get_settings()
     assert s.cls_enabled is True
     assert s.cls_search_enabled is True
-    assert s.cls_timeout_seconds == 5.0
+    assert s.cls_timeout_seconds == 15.0
+    assert s.cls_max_attempts == 1
+    assert s.cls_retry_base_seconds == 1.0
     assert s.cls_categories == "fund,watch,announcement,hk_us,red,remind"
     assert s.cls_per_category_limit == 10
     assert s.cls_max_search_limit == 10
