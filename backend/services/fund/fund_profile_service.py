@@ -5,27 +5,22 @@ import json
 from datetime import datetime, timedelta
 
 from backend.db import repository as repo
-from backend.db.session import get_session
+from backend.db.session_scope import session_scope
 from backend.services.market import data_collector as dc
 
 
-def _with_session(session):
-    return session or get_session()
-
-
-def refresh_profile(fund_code: str, session=None) -> dict:
+def refresh_profile(fund_code: str) -> dict:
     """刷新并持久化基金画像缓存。
 
+    网络拉取先于短事务写入,避免等待 AkShare 时持有数据库事务。
     AkShare 字段是增强数据,允许局部缺失。collector 返回的
     `peer_candidates` 是 Python list,本层负责序列化为
     `FundProfile.peer_candidates_json`。
     """
-    s = _with_session(session)
-    owns = session is None
-    try:
-        payload = dc.fetch_fund_profile(fund_code)
-        errors = payload.get("errors", [])
-        missing_data = payload.get("missing_data", [])
+    payload = dc.fetch_fund_profile(fund_code)
+    errors = payload.get("errors", [])
+    missing_data = payload.get("missing_data", [])
+    with session_scope() as s:
         profile = repo.upsert_fund_profile(s, fund_code, {
             "scale": payload.get("scale"),
             "scale_date": payload.get("scale_date"),
@@ -43,28 +38,22 @@ def refresh_profile(fund_code: str, session=None) -> dict:
             "as_of": payload.get("as_of") or dc.today_str(),
             "raw_errors": json.dumps(errors, ensure_ascii=False),
         })
-        return {
-            "fund_code": fund_code,
-            "profile": profile,
-            "missing_data": missing_data,
-            "errors": errors,
-            "source": payload.get("source") or dc.SOURCE,
-            "as_of": payload.get("as_of") or dc.today_str(),
-        }
-    finally:
-        if owns:
-            s.close()
+    return {
+        "fund_code": fund_code,
+        "profile": profile,
+        "missing_data": missing_data,
+        "errors": errors,
+        "source": payload.get("source") or dc.SOURCE,
+        "as_of": payload.get("as_of") or dc.today_str(),
+    }
 
 
 def get_profile(fund_code: str, session=None) -> dict | None:
     """读取本地画像缓存,不触发外部刷新。"""
-    s = _with_session(session)
-    owns = session is None
-    try:
-        return repo.get_fund_profile(s, fund_code)
-    finally:
-        if owns:
-            s.close()
+    if session is None:
+        with session_scope() as s:
+            return get_profile(fund_code, session=s)
+    return repo.get_fund_profile(session, fund_code)
 
 
 def is_profile_fresh(fund_code: str, ttl_hours: int = 24, session=None) -> bool:
