@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import json
-from contextlib import nullcontext
 from datetime import datetime
 
 from sqlalchemy import or_, select
 
 from backend.db import repository as repo
 from backend.db.models import FundWatchlistProfile, KnowledgeDocument, KnowledgeFundMatch
-from backend.db.session import get_session
+from backend.db.session_scope import session_scope
 
 
 def _as_set(values) -> set[str]:
@@ -89,47 +88,56 @@ def _profile_dict(row: FundWatchlistProfile) -> dict:
 
 
 def refresh_knowledge_fund_matches(*, session=None, document_limit: int | None = None) -> dict:
-    """刷新知识文档与当前基金自选池画像的匹配关系。"""
-    owns_session = session is None
-    active_session = session or get_session()
-    ctx = active_session if owns_session else nullcontext(active_session)
-    with ctx as s:
-        now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        stmt = select(KnowledgeDocument).where(
-            KnowledgeDocument.classification_status == "accepted",
-            or_(
-                KnowledgeDocument.effective_until.is_(None),
-                KnowledgeDocument.effective_until >= now_text,
-            ),
+    """刷新知识文档与当前基金自选池画像的匹配关系。
+
+    调用方注入 session 时,只在调用方事务内 flush;否则为本次刷新开
+    `session_scope()` short-tx。该函数内部不调用 commit/rollback/close。
+    """
+    if session is not None:
+        return _compute_and_upsert_matches(
+            session=session, document_limit=document_limit,
         )
-        if document_limit:
-            stmt = stmt.limit(max(1, int(document_limit)))
-        docs = s.scalars(stmt).all()
-        profiles = s.scalars(select(FundWatchlistProfile)).all()
-        written = 0
-        target_keys: set[tuple[int, str]] = set()
-        for doc in docs:
-            doc_dict = _document_dict(doc)
-            for profile in profiles:
-                score, topics, reason = calculate_match_score(doc_dict, _profile_dict(profile))
-                if score <= 0:
-                    continue
-                repo.upsert_knowledge_fund_match(s, {
-                    "document_id": doc.id,
-                    "fund_code": profile.fund_code,
-                    "match_score": score,
-                    "matched_topics_json": json.dumps(topics, ensure_ascii=False),
-                    "match_reason": reason,
-                })
-                target_keys.add((int(doc.id), profile.fund_code))
-                written += 1
-        existing_matches = s.scalars(select(KnowledgeFundMatch)).all()
-        deleted = 0
-        for match in existing_matches:
-            if (int(match.document_id), match.fund_code) not in target_keys:
-                s.delete(match)
-                deleted += 1
-        s.flush()
-        if owns_session:
-            s.commit()
-        return {"matches_written": written, "matches_deleted": deleted}
+    with session_scope() as s:
+        return _compute_and_upsert_matches(
+            session=s, document_limit=document_limit,
+        )
+
+
+def _compute_and_upsert_matches(*, session, document_limit: int | None) -> dict:
+    now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    stmt = select(KnowledgeDocument).where(
+        KnowledgeDocument.classification_status == "accepted",
+        or_(
+            KnowledgeDocument.effective_until.is_(None),
+            KnowledgeDocument.effective_until >= now_text,
+        ),
+    )
+    if document_limit:
+        stmt = stmt.limit(max(1, int(document_limit)))
+    docs = session.scalars(stmt).all()
+    profiles = session.scalars(select(FundWatchlistProfile)).all()
+    written = 0
+    target_keys: set[tuple[int, str]] = set()
+    for doc in docs:
+        doc_dict = _document_dict(doc)
+        for profile in profiles:
+            score, topics, reason = calculate_match_score(doc_dict, _profile_dict(profile))
+            if score <= 0:
+                continue
+            repo.upsert_knowledge_fund_match(session, {
+                "document_id": doc.id,
+                "fund_code": profile.fund_code,
+                "match_score": score,
+                "matched_topics_json": json.dumps(topics, ensure_ascii=False),
+                "match_reason": reason,
+            })
+            target_keys.add((int(doc.id), profile.fund_code))
+            written += 1
+    existing_matches = session.scalars(select(KnowledgeFundMatch)).all()
+    deleted = 0
+    for match in existing_matches:
+        if (int(match.document_id), match.fund_code) not in target_keys:
+            session.delete(match)
+            deleted += 1
+    session.flush()
+    return {"matches_written": written, "matches_deleted": deleted}

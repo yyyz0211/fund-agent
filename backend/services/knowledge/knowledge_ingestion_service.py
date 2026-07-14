@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from contextlib import nullcontext
 from datetime import date, datetime, timedelta
 
 from sqlalchemy import select
@@ -9,7 +8,7 @@ from sqlalchemy import select
 from backend.config.settings import get_settings
 from backend.db import repository as repo
 from backend.db.models import KnowledgeClassificationState
-from backend.db.session import get_session
+from backend.db.session_scope import session_scope
 from backend.services.knowledge import knowledge_classifier
 from backend.services.knowledge import knowledge_normalizer
 from backend.services.knowledge import knowledge_schema
@@ -307,24 +306,45 @@ def ingest_candidates(
     return result_counts
 
 
+def _fetch_recent_candidates(*, limit: int) -> list[dict]:
+    """读最近候选 — 独立 short-tx,与 LLM/写阶段分离。"""
+    with session_scope() as s:
+        cls_rows = repo.search_cls_telegraph_items(s, limit=limit)
+        evidence_rows = repo.search_market_evidence(
+            s, trade_date=date.today().isoformat(), limit=limit,
+        )
+    candidates = [candidate_from_cls(row) for row in cls_rows]
+    candidates.extend(candidate_from_market_evidence(row) for row in evidence_rows)
+    return candidates
+
+
 def ingest_recent_knowledge(
     *,
     limit: int = 50,
     session=None,
     classifier=None,
 ) -> dict:
-    """从现有来源表抽取最近候选并进入知识准入流程。"""
-    owns_session = session is None
-    active_session = session or get_session()
-    ctx = active_session if owns_session else nullcontext(active_session)
-    with ctx as s:
-        cls_rows = repo.search_cls_telegraph_items(s, limit=limit)
-        evidence_rows = repo.search_market_evidence(
-            s, trade_date=date.today().isoformat(), limit=limit,
-        )
-        candidates = [candidate_from_cls(row) for row in cls_rows]
-        candidates.extend(candidate_from_market_evidence(row) for row in evidence_rows)
-        result = ingest_candidates(candidates, classifier=classifier, session=s)
-        if owns_session:
-            s.commit()
-        return result
+    """从现有来源表抽取最近候选并进入知识准入流程。
+
+    事务边界：
+    - 候选抓取阶段独立 short-tx,与 LLM classify / DB 写入解耦。
+    - 调用方注入了 `session` 时仍走调用方事务(只 flush);否则为
+      `ingest_candidates` 单独开 short-tx。
+    """
+    candidates = _fetch_recent_candidates(limit=limit)
+    if not candidates:
+        return {
+            "processed": 0,
+            "accepted": 0,
+            "rejected": 0,
+            "failed": 0,
+            "documents_created": 0,
+            "documents_reused": 0,
+            "skipped_unchanged": 0,
+            "retry_deferred": 0,
+            "retry_exhausted": 0,
+        }
+    if session is not None:
+        return ingest_candidates(candidates, classifier=classifier, session=session)
+    with session_scope() as s:
+        return ingest_candidates(candidates, classifier=classifier, session=s)

@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 from backend.config.settings import get_settings
 from backend.db import repository as repo
-from backend.db.session import get_session
+from backend.db.session_scope import session_scope
 from backend.services.knowledge import cls_telegraph_client as cls_client
 
 logger = logging.getLogger(__name__)
@@ -126,9 +126,11 @@ def sync_cls_telegraph_once(
 ) -> dict:
     """执行一轮 CLS 电报同步。失败时保留旧状态并记录 `last_error`。
 
-    注意：只写入 `cls_telegraph_items` 表。`market_evidence` 表由
-    `market_evidence_service` 中的 `ClsTelegraphAdapter` 独立采集，
-    避免同一来源被双重写入。
+    事务边界:
+    - 外部 `session` 注入时,调用方拥有事务;本函数只在每页/状态写入后 flush,
+      由调用方决定 commit/rollback。
+    - 外部不注入时,每页 fetch 在事务外,upsert/状态更新走 `session_scope()`
+      short-tx;任何单页失败保留 `previous_state` 并仅写一条 `last_error`。
     """
     settings = get_settings()
     page_size = page_size or int(settings.cls_telegraph_sync_page_size)
@@ -140,18 +142,134 @@ def sync_cls_telegraph_once(
     fetch_page = fetch_page or fetch_cls_roll_page_raw
 
     owns_session = session is None
-    s = session or get_session()
     owns_client = client is None
     if client is None:
         import httpx
         client = httpx.Client(timeout=timeout_seconds, follow_redirects=True)
 
-    fetched = 0
-    inserted = 0
+    try:
+        if owns_session:
+            return _sync_pages_with_own_session(
+                fetch_page=fetch_page,
+                client=client,
+                page_size=page_size,
+                max_pages=max_pages,
+                timeout_seconds=timeout_seconds,
+                app_version=app_version,
+                max_attempts=max_attempts,
+                retry_base_seconds=retry_base_seconds,
+            )
+        return _sync_pages_with_external_session(
+            session=session,
+            fetch_page=fetch_page,
+            client=client,
+            page_size=page_size,
+            max_pages=max_pages,
+            timeout_seconds=timeout_seconds,
+            app_version=app_version,
+            max_attempts=max_attempts,
+            retry_base_seconds=retry_base_seconds,
+        )
+    finally:
+        if owns_client:
+            try:
+                client.close()
+            except Exception:
+                pass
+
+
+def _sync_pages_with_own_session(
+    *,
+    fetch_page,
+    client,
+    page_size: int,
+    max_pages: int,
+    timeout_seconds: float,
+    app_version: str,
+    max_attempts: int,
+    retry_base_seconds: float,
+) -> dict:
+    """顶层入口:每页 fetch 在事务外,upsert 走 short-tx。"""
+    last_time, previous_state = _load_last_time_for_page()
     newest_ctime: int | None = None
     newest_cls_id: str | None = None
-    last_time = int(datetime.now(timezone.utc).timestamp())
-    previous_state = repo.get_cls_telegraph_sync_state(s)
+    fetched = 0
+    inserted = 0
+
+    try:
+        for _page in range(max(1, int(max_pages))):
+            # stage 1: fetch one page (no DB transaction)
+            raw_rows = fetch_page(
+                client=client,
+                category="",
+                limit=page_size,
+                last_time=last_time,
+                timeout_seconds=timeout_seconds,
+                app_version=app_version,
+                max_attempts=max_attempts,
+                retry_base_seconds=retry_base_seconds,
+            )
+            if not raw_rows:
+                break
+            # stage 2: short-tx upsert of this page + local newest tracking
+            page_inserted, newest_ctime, newest_cls_id, page_min_ctime = (
+                _persist_page(
+                    raw_rows=raw_rows,
+                    newest_ctime=newest_ctime,
+                    newest_cls_id=newest_cls_id,
+                )
+            )
+            fetched += len(raw_rows)
+            inserted += page_inserted
+            if len(raw_rows) < int(page_size) or page_min_ctime is None:
+                break
+            last_time = max(0, page_min_ctime - 1)
+
+        # stage 3: short-tx state update
+        _record_success(newest_ctime=newest_ctime, newest_cls_id=newest_cls_id)
+    except Exception as exc:  # noqa: BLE001
+        error = f"{type(exc).__name__}: {exc}"
+        _record_failure(error=error, previous_state=previous_state)
+        logger.warning("[cls-sync] sync failed: %s", error)
+        return {
+            "status": "failed",
+            "fetched": fetched,
+            "inserted": inserted,
+            "evidence_inserted": 0,
+            "last_error": error,
+        }
+
+    return {
+        "status": "completed",
+        "fetched": fetched,
+        "inserted": inserted,
+        "evidence_inserted": 0,
+        "latest_cls_id": newest_cls_id,
+    }
+
+
+def _sync_pages_with_external_session(
+    *,
+    session,
+    fetch_page,
+    client,
+    page_size: int,
+    max_pages: int,
+    timeout_seconds: float,
+    app_version: str,
+    max_attempts: int,
+    retry_base_seconds: float,
+) -> dict:
+    """调用方注入 session 时仍保留单事务流,但每页走完 flush()。
+
+    调用方拥有 commit/rollback；service 仅 flush、不 commit/rollback/close。
+    """
+    previous_state = repo.get_cls_telegraph_sync_state(session) or {}
+    last_time, _ = _load_last_time_for_page()
+    newest_ctime: int | None = None
+    newest_cls_id: str | None = None
+    fetched = 0
+    inserted = 0
 
     try:
         for _page in range(max(1, int(max_pages))):
@@ -173,7 +291,7 @@ def sync_cls_telegraph_once(
                 if row is None:
                     continue
                 fetched += 1
-                if repo.upsert_cls_telegraph_item(s, row):
+                if repo.upsert_cls_telegraph_item(session, row):
                     inserted += 1
                 ctime = row.get("ctime")
                 if ctime is not None:
@@ -182,46 +300,32 @@ def sync_cls_telegraph_once(
                         newest_cls_id = row["cls_id"]
                     if page_min_ctime is None or ctime < page_min_ctime:
                         page_min_ctime = int(ctime)
+            session.flush()
             if len(raw_rows) < int(page_size) or page_min_ctime is None:
                 break
             last_time = max(0, page_min_ctime - 1)
 
         repo.update_cls_telegraph_sync_state(
-            s,
+            session,
             last_seen_ctime=newest_ctime,
             last_seen_cls_id=newest_cls_id,
             last_success_at=_now_iso(),
             last_error=None,
         )
-        s.commit()
-        return {
-            "status": "completed",
-            "fetched": fetched,
-            "inserted": inserted,
-            "evidence_inserted": 0,  # 已移除双写，evidence 由 ClsTelegraphAdapter 独立采集
-            "latest_cls_id": newest_cls_id,
-        }
+        session.flush()
     except Exception as exc:  # noqa: BLE001
-        try:
-            s.rollback()
-        except Exception as rollback_exc:  # noqa: BLE001
-            logger.warning("[cls-sync] rollback failed: %s", rollback_exc)
         error = f"{type(exc).__name__}: {exc}"
         prev = previous_state or {}
         try:
             repo.update_cls_telegraph_sync_state(
-                s,
+                session,
                 last_seen_ctime=prev.get("last_seen_ctime"),
                 last_seen_cls_id=prev.get("last_seen_cls_id"),
                 last_success_at=prev.get("last_success_at"),
                 last_error=error,
             )
-            s.commit()
+            session.flush()
         except Exception as state_exc:  # noqa: BLE001
-            try:
-                s.rollback()
-            except Exception:
-                pass
             logger.warning(
                 "[cls-sync] sync failed (%s) AND state update failed (%s)",
                 error, state_exc,
@@ -235,14 +339,86 @@ def sync_cls_telegraph_once(
             "evidence_inserted": 0,
             "last_error": error,
         }
-    finally:
-        if owns_client:
-            try:
-                client.close()
-            except Exception:
-                pass
-        if owns_session:
-            s.close()
+
+    return {
+        "status": "completed",
+        "fetched": fetched,
+        "inserted": inserted,
+        "evidence_inserted": 0,
+        "latest_cls_id": newest_cls_id,
+    }
+
+
+def _load_last_time_for_page() -> tuple[int, dict | None]:
+    """读 sync state,返回 (last_time_for_next_page, previous_state_snapshot)。"""
+    with session_scope() as s:
+        state = repo.get_cls_telegraph_sync_state(s) or {}
+    last_seen = state.get("last_seen_ctime")
+    if last_seen:
+        try:
+            return max(0, int(last_seen) - 1), state
+        except (TypeError, ValueError):
+            return int(datetime.now(timezone.utc).timestamp()), state
+    return int(datetime.now(timezone.utc).timestamp()), state
+
+
+def _persist_page(
+    *,
+    raw_rows: list[dict],
+    newest_ctime: int | None,
+    newest_cls_id: str | None,
+) -> tuple[int, int | None, str | None, int | None]:
+    """对一页 raw_rows 做归一化并写入 short-tx。
+
+    Returns:
+        (inserted, newest_ctime, newest_cls_id, page_min_ctime)
+    """
+    inserted = 0
+    page_min_ctime: int | None = None
+    with session_scope() as s:
+        for raw in raw_rows:
+            row = normalize_cls_telegraph_record(raw)
+            if row is None:
+                continue
+            if repo.upsert_cls_telegraph_item(s, row):
+                inserted += 1
+            ctime = row.get("ctime")
+            if ctime is not None:
+                if newest_ctime is None or ctime > newest_ctime:
+                    newest_ctime = int(ctime)
+                    newest_cls_id = row["cls_id"]
+                if page_min_ctime is None or ctime < page_min_ctime:
+                    page_min_ctime = int(ctime)
+    return inserted, newest_ctime, newest_cls_id, page_min_ctime
+
+
+def _record_success(*, newest_ctime: int | None, newest_cls_id: str | None) -> None:
+    with session_scope() as s:
+        repo.update_cls_telegraph_sync_state(
+            s,
+            last_seen_ctime=newest_ctime,
+            last_seen_cls_id=newest_cls_id,
+            last_success_at=_now_iso(),
+            last_error=None,
+        )
+
+
+def _record_failure(*, error: str, previous_state: dict | None) -> None:
+    prev = previous_state or {}
+    try:
+        with session_scope() as s:
+            repo.update_cls_telegraph_sync_state(
+                s,
+                last_seen_ctime=prev.get("last_seen_ctime"),
+                last_seen_cls_id=prev.get("last_seen_cls_id"),
+                last_success_at=prev.get("last_success_at"),
+                last_error=error,
+            )
+    except Exception as state_exc:  # noqa: BLE001
+        logger.warning(
+            "[cls-sync] sync failed (%s) AND state update failed (%s)",
+            error, state_exc,
+        )
 
 
 def list_cls_telegraph_items(
@@ -253,9 +429,16 @@ def list_cls_telegraph_items(
     since_id: str | None = None,
     keyword: str | None = None,
 ) -> list[dict]:
-    owns = session is None
-    s = session or get_session()
-    try:
+    """只读视图。owning 时 short-tx；caller-provided 时沿用其 session。"""
+    if session is not None:
+        return repo.search_cls_telegraph_items(
+            session,
+            limit=limit,
+            category=(category or "").strip() or None,
+            since_id=(since_id or "").strip() or None,
+            keyword=(keyword or "").strip() or None,
+        )
+    with session_scope() as s:
         return repo.search_cls_telegraph_items(
             s,
             limit=limit,
@@ -263,23 +446,22 @@ def list_cls_telegraph_items(
             since_id=(since_id or "").strip() or None,
             keyword=(keyword or "").strip() or None,
         )
-    finally:
-        if owns:
-            s.close()
 
 
 def get_cls_telegraph_sync_status(*, session=None) -> dict:
-    owns = session is None
-    s = session or get_session()
-    try:
-        state = repo.get_cls_telegraph_sync_state(s)
-    finally:
-        if owns:
-            s.close()
+    """只读视图。owning 时 short-tx；caller-provided 时沿用其 session。"""
+    if session is not None:
+        state = repo.get_cls_telegraph_sync_state(session) or {}
+    else:
+        with session_scope() as s:
+            state = repo.get_cls_telegraph_sync_state(s) or {}
     latest_ctime = state.get("last_seen_ctime")
     lag_seconds = None
     if latest_ctime is not None:
-        lag_seconds = max(0, int(datetime.now(timezone.utc).timestamp()) - int(latest_ctime))
+        try:
+            lag_seconds = max(0, int(datetime.now(timezone.utc).timestamp()) - int(latest_ctime))
+        except (TypeError, ValueError):
+            lag_seconds = None
     if state.get("last_error"):
         status = "failed"
     elif state.get("last_success_at"):

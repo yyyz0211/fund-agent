@@ -12,6 +12,7 @@ from backend.config.settings import get_settings
 from backend.db import repository as repo
 from backend.db.models import KnowledgeDocument, KnowledgeFundMatch, KnowledgeRetrievalLog
 from backend.db.session import get_session
+from backend.db.session_scope import session_scope
 from backend.services.knowledge import (
     knowledge_fund_profile_service,
     knowledge_ingestion_service,
@@ -171,7 +172,7 @@ def search_knowledge(
     """
     started = time.monotonic()
     owns_session = session is None
-    active_session = session or get_session()
+    active_session = session if session is not None else get_session()
     ctx = active_session if owns_session else nullcontext(active_session)
     with ctx as s:
         mode = "structured_fallback"
@@ -183,30 +184,30 @@ def search_knowledge(
             logger.warning("knowledge vector runtime unavailable: %s", exc)
             active_provider = None
             active_store = None
-        vector_available = active_provider is not None and active_store is not None
         match_by_doc: dict[int, KnowledgeFundMatch] = {}
         if fund_code:
             matches = s.scalars(
                 select(KnowledgeFundMatch).where(KnowledgeFundMatch.fund_code == fund_code)
             ).all()
             match_by_doc = {match.document_id: match for match in matches}
-            if not match_by_doc:
-                _write_retrieval_log(
-                    s,
-                    query=query,
-                    filters={"fund_code": fund_code, "topic": topic, "source_type": source_type},
-                    mode="structured_fallback",
-                    count=0,
-                    latency_ms=int((time.monotonic() - started) * 1000),
-                )
-                if owns_session:
-                    s.commit()
-                return {
-                    "count": 0,
-                    "retrieval_mode": "structured_fallback",
-                    "coverage_warning": STRUCTURED_FALLBACK_WARNING,
-                    "items": [],
-                }
+
+        if fund_code and not match_by_doc:
+            # stage 2: short-tx write of empty-retrieval log
+            _log_retrieval(
+                s if owns_session else None,
+                owns=owns_session,
+                query=query,
+                filters={"fund_code": fund_code, "topic": topic, "source_type": source_type},
+                mode="structured_fallback",
+                count=0,
+                latency_ms=int((time.monotonic() - started) * 1000),
+            )
+            return {
+                "count": 0,
+                "retrieval_mode": "structured_fallback",
+                "coverage_warning": STRUCTURED_FALLBACK_WARNING,
+                "items": [],
+            }
 
         filters = {
             "fund_code": fund_code,
@@ -216,98 +217,175 @@ def search_knowledge(
             "date_to": date_to,
             "include_pending": include_pending,
         }
-        candidate_limit = max(1, int(limit)) * 5
-        stmt = select(KnowledgeDocument).where(
-            KnowledgeDocument.classification_status == "accepted"
-        )
-        if match_by_doc:
-            stmt = stmt.where(KnowledgeDocument.id.in_(list(match_by_doc)))
-        stmt = _apply_structured_filters(
-            stmt,
+        # stage 1: fetch candidates + (optionally) semantic embeddings outside the
+        # long-running transaction. We share the active session only for the SQL
+        # `vector store.search` call, which needs a live connection.
+        items, mode, warning = _fetch_search_results(
+            s=s,
             query=query,
+            filters=filters,
             topic=topic,
             source_type=source_type,
             date_from=date_from,
             date_to=date_to,
             include_pending=include_pending,
-        )
-        docs = s.scalars(
-            stmt.order_by(
-                KnowledgeDocument.published_at.desc().nullslast(),
-                KnowledgeDocument.id.desc(),
-            ).limit(candidate_limit)
-        ).all()
-        structured_items = [
-            _document_to_search_item(doc, fund_match=match_by_doc.get(doc.id))
-            for doc in docs
-        ]
-        vector_items: list[dict] = []
-        if vector_available and query.strip():
-            try:
-                query_vector = active_provider.embed([query])[0]
-                vector_filters = {
-                    key: value for key, value in {
-                        "topic": topic,
-                        "source_type": source_type,
-                        "date_from": date_from,
-                        "date_to": date_to,
-                    }.items() if value not in (None, "")
-                }
-                hits = active_store.search(query_vector, vector_filters, candidate_limit)
-                semantic_by_doc = {
-                    int(hit.document_id): float(hit.score) for hit in hits
-                    if not match_by_doc or int(hit.document_id) in match_by_doc
-                }
-                if semantic_by_doc:
-                    vector_stmt = select(KnowledgeDocument).where(
-                        KnowledgeDocument.id.in_(list(semantic_by_doc)),
-                        KnowledgeDocument.classification_status == "accepted",
-                    )
-                    vector_stmt = _apply_structured_filters(
-                        vector_stmt,
-                        query="",
-                        topic=topic,
-                        source_type=source_type,
-                        date_from=date_from,
-                        date_to=date_to,
-                        include_pending=True,
-                    )
-                    vector_docs = s.scalars(vector_stmt).all()
-                    vector_items = [
-                        _document_to_search_item(
-                            doc,
-                            semantic_score=semantic_by_doc.get(int(doc.id)),
-                            fund_match=match_by_doc.get(doc.id),
-                        )
-                        for doc in vector_docs
-                    ]
-                mode = "hybrid"
-                warning = None
-            except Exception as exc:  # noqa: BLE001 - 语义失败走结构化兜底
-                logger.warning("knowledge vector search failed; using fallback: %s", exc)
-        items = merge_hybrid_candidates(
-            structured_items,
-            vector_items,
             limit=limit,
+            match_by_doc=match_by_doc,
+            active_provider=active_provider,
+            active_store=active_store,
         )
         for item in items:
             item["retrieval_mode"] = mode
-        _write_retrieval_log(
-            s,
-            query=query,
-            filters=filters,
-            mode=mode,
-            count=len(items),
-            latency_ms=int((time.monotonic() - started) * 1000),
-        )
+
+        # stage 2: short-tx write of retrieval log
         if owns_session:
-            s.commit()
+            with session_scope() as tx:
+                _write_retrieval_log(
+                    tx,
+                    query=query,
+                    filters=filters,
+                    mode=mode,
+                    count=len(items),
+                    latency_ms=int((time.monotonic() - started) * 1000),
+                )
+        else:
+            _write_retrieval_log(
+                s,
+                query=query,
+                filters=filters,
+                mode=mode,
+                count=len(items),
+                latency_ms=int((time.monotonic() - started) * 1000),
+            )
         return {
             "count": len(items),
             "retrieval_mode": mode,
             "coverage_warning": warning,
             "items": items,
         }
+
+
+def _log_retrieval(
+    s,
+    *,
+    owns: bool,
+    query: str,
+    filters: dict,
+    mode: str,
+    count: int,
+    latency_ms: int,
+) -> None:
+    """为空命中场景写一条 retrieval log；owning 时使用独立 short-tx。"""
+    if not owns:
+        _write_retrieval_log(
+            s, query=query, filters=filters, mode=mode, count=count, latency_ms=latency_ms,
+        )
+        return
+    with session_scope() as tx:
+        _write_retrieval_log(
+            tx, query=query, filters=filters, mode=mode, count=count, latency_ms=latency_ms,
+        )
+
+
+def _fetch_search_results(
+    *,
+    s,
+    query: str,
+    filters: dict,
+    topic: str | None,
+    source_type: str | None,
+    date_from: str | None,
+    date_to: str | None,
+    include_pending: bool,
+    limit: int,
+    match_by_doc: dict[int, KnowledgeFundMatch],
+    active_provider,
+    active_store,
+) -> tuple[list[dict], str, str | None]:
+    """执行检索 — structured + 可选 semantic,然后合并并按 limit 截断。"""
+    candidate_limit = max(1, int(limit)) * 5
+    stmt = select(KnowledgeDocument).where(
+        KnowledgeDocument.classification_status == "accepted"
+    )
+    if match_by_doc:
+        stmt = stmt.where(KnowledgeDocument.id.in_(list(match_by_doc)))
+    stmt = _apply_structured_filters(
+        stmt,
+        query=query,
+        topic=topic,
+        source_type=source_type,
+        date_from=date_from,
+        date_to=date_to,
+        include_pending=include_pending,
+    )
+    docs = s.scalars(
+        stmt.order_by(
+            KnowledgeDocument.published_at.desc().nullslast(),
+            KnowledgeDocument.id.desc(),
+        ).limit(candidate_limit)
+    ).all()
+    structured_items = [
+        _document_to_search_item(doc, fund_match=match_by_doc.get(doc.id))
+        for doc in docs
+    ]
+
+    mode = "structured_fallback"
+    warning: str | None = STRUCTURED_FALLBACK_WARNING
+    vector_items: list[dict] = []
+    if (
+        active_provider is not None
+        and active_store is not None
+        and query.strip()
+    ):
+        try:
+            query_vector = active_provider.embed([query])[0]
+            vector_filters = {
+                key: value for key, value in {
+                    "topic": topic,
+                    "source_type": source_type,
+                    "date_from": date_from,
+                    "date_to": date_to,
+                }.items() if value not in (None, "")
+            }
+            hits = active_store.search(query_vector, vector_filters, candidate_limit)
+            semantic_by_doc = {
+                int(hit.document_id): float(hit.score) for hit in hits
+                if not match_by_doc or int(hit.document_id) in match_by_doc
+            }
+            if semantic_by_doc:
+                vector_stmt = select(KnowledgeDocument).where(
+                    KnowledgeDocument.id.in_(list(semantic_by_doc)),
+                    KnowledgeDocument.classification_status == "accepted",
+                )
+                vector_stmt = _apply_structured_filters(
+                    vector_stmt,
+                    query="",
+                    topic=topic,
+                    source_type=source_type,
+                    date_from=date_from,
+                    date_to=date_to,
+                    include_pending=True,
+                )
+                vector_docs = s.scalars(vector_stmt).all()
+                vector_items = [
+                    _document_to_search_item(
+                        doc,
+                        semantic_score=semantic_by_doc.get(int(doc.id)),
+                        fund_match=match_by_doc.get(doc.id),
+                    )
+                    for doc in vector_docs
+                ]
+            mode = "hybrid"
+            warning = None
+        except Exception as exc:  # noqa: BLE001 - 语义失败走结构化兜底
+            logger.warning("knowledge vector search failed; using fallback: %s", exc)
+
+    items = merge_hybrid_candidates(
+        structured_items,
+        vector_items,
+        limit=limit,
+    )
+    return items, mode, warning
 
 
 def get_queue_status(
@@ -319,10 +397,17 @@ def get_queue_status(
     limit: int = 50,
     session=None,
 ) -> dict:
-    owns_session = session is None
-    active_session = session or get_session()
-    ctx = active_session if owns_session else nullcontext(active_session)
-    with ctx as s:
+    """知识队列状态读视图。调用方未提供 session 时走独立 short-tx。"""
+    if session is not None:
+        return repo.queue_status(
+            session,
+            source_type=source_type,
+            classification_status=classification_status,
+            index_status=index_status,
+            since=since,
+            limit=limit,
+        )
+    with session_scope() as s:
         return repo.queue_status(
             s,
             source_type=source_type,
@@ -380,21 +465,71 @@ def _run_knowledge_pipeline_once_inner(
     embedding_provider,
     vector_store,
 ) -> dict:
-    """`run_knowledge_pipeline_once` 的实际工作体。"""
-    active_session = session if session is not None else get_session()
-    ctx = active_session if owns_session else nullcontext(active_session)
-    with ctx as s:
+    """`run_knowledge_pipeline_once` 的实际工作体。
+
+    LLM classify / embedding 与向量化都跑在事务外,只把 DB 写入
+    (ingest / index / profile / match)以短事务提交。`session`
+    由外部注入时,本函数仅用其作为复用 session,不自管 commit/close。
+    """
+    def _ingest():
+        return knowledge_ingestion_service.ingest_recent_knowledge(
+            limit=classification_limit,
+            session=session,
+            classifier=classifier,
+        )
+
+    def _index():
         try:
+            active_provider = embedding_provider or build_embedding_provider(settings)
+            active_store = vector_store or build_vector_store(session, settings)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("knowledge vector runtime unavailable: %s", exc)
+            return {
+                "processed": 0,
+                "indexed": 0,
+                "failed": 0,
+                "skipped": "vector_unavailable",
+            }
+        if active_provider is None or active_store is None:
+            return {
+                "processed": 0,
+                "indexed": 0,
+                "failed": 0,
+                "skipped": "vector_unavailable",
+            }
+        return knowledge_vector.index_pending_documents(
+            session=session,
+            embedding_provider=active_provider,
+            vector_store=active_store,
+            limit=index_limit,
+            max_attempts=int(getattr(settings, "knowledge_index_max_attempts", 3)),
+            retry_seconds=int(getattr(settings, "knowledge_index_retry_seconds", 300)),
+        )
+
+    def _profiles():
+        return knowledge_fund_profile_service.refresh_fund_watchlist_profiles(session=session)
+
+    def _matches():
+        return knowledge_match_service.refresh_knowledge_fund_matches(session=session)
+
+    if owns_session:
+        with session_scope() as ingest_session:
             ingestion = knowledge_ingestion_service.ingest_recent_knowledge(
                 limit=classification_limit,
-                session=s,
+                session=ingest_session,
                 classifier=classifier,
             )
-            active_provider = embedding_provider or build_embedding_provider(settings)
-            active_store = vector_store or build_vector_store(s, settings)
+        with session_scope() as index_session:
+            try:
+                active_provider = embedding_provider or build_embedding_provider(settings)
+                active_store = vector_store or build_vector_store(index_session, settings)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("knowledge vector runtime unavailable: %s", exc)
+                active_provider = None
+                active_store = None
             if active_provider is not None and active_store is not None:
                 index_result = knowledge_vector.index_pending_documents(
-                    session=s,
+                    session=index_session,
                     embedding_provider=active_provider,
                     vector_store=active_store,
                     limit=index_limit,
@@ -408,22 +543,24 @@ def _run_knowledge_pipeline_once_inner(
                     "failed": 0,
                     "skipped": "vector_unavailable",
                 }
-            profiles = knowledge_fund_profile_service.refresh_fund_watchlist_profiles(session=s)
-            matches = knowledge_match_service.refresh_knowledge_fund_matches(session=s)
-            if owns_session:
-                s.commit()
-            return {
-                "status": "completed",
-                "trigger": trigger,
-                "ingestion": ingestion,
-                "index": index_result,
-                "profiles": profiles,
-                "matches": matches,
-                "latency_ms": int((time.monotonic() - started) * 1000),
-            }
-        except Exception:
-            try:
-                s.rollback()
-            except Exception:
-                pass
-            raise
+        with session_scope() as profile_session:
+            profiles = knowledge_fund_profile_service.refresh_fund_watchlist_profiles(session=profile_session)
+        with session_scope() as match_session:
+            matches = knowledge_match_service.refresh_knowledge_fund_matches(session=match_session)
+    else:
+        # caller-provided session: respect caller's transaction boundary
+        # (LLM/embedding happens within; we don't own the commit).
+        ingestion = _ingest()
+        index_result = _index()
+        profiles = _profiles()
+        matches = _matches()
+
+    return {
+        "status": "completed",
+        "trigger": trigger,
+        "ingestion": ingestion,
+        "index": index_result,
+        "profiles": profiles,
+        "matches": matches,
+        "latency_ms": int((time.monotonic() - started) * 1000),
+    }
