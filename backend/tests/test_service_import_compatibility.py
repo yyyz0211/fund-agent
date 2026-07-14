@@ -41,6 +41,7 @@ LEGACY_MODULES = {
     "metric_service": "shared.metric_service",
     "scheduler_lock": "shared.scheduler_lock",
     "transaction_service": "watchlist.transaction_service",
+    "transaction_service": "watchlist.transaction_service",
     "watchlist_preload_jobs": "watchlist.watchlist_preload_jobs",
     "watchlist_service": "watchlist.watchlist_service",
 }

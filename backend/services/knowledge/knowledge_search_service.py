@@ -18,7 +18,6 @@ from backend.services.knowledge import (
     knowledge_match_service,
     knowledge_vector,
 )
-from backend.services.shared import db_retry
 from backend.services.knowledge import knowledge_embedding
 from backend.services.knowledge import knowledge_pgvector
 
@@ -354,22 +353,18 @@ def run_knowledge_pipeline_once(
     classification_limit = int(limit or settings.knowledge_classification_batch_size)
     index_limit = int(limit or settings.knowledge_index_batch_size)
     started = time.monotonic()
-    # PostgreSQL 使用行级锁和 MVCC，不需要重试包装。
-    # db_retry.call_with_sqlite_retry 保留以保持接口兼容。
-    def _run():
-        return _run_knowledge_pipeline_once_inner(
-            trigger=trigger,
-            settings=settings,
-            classification_limit=classification_limit,
-            index_limit=index_limit,
-            started=started,
-            session=session,
-            owns_session=session is None,
-            classifier=classifier,
-            embedding_provider=embedding_provider,
-            vector_store=vector_store,
-        )
-    return db_retry.call_with_sqlite_retry(_run)
+    return _run_knowledge_pipeline_once_inner(
+        trigger=trigger,
+        settings=settings,
+        classification_limit=classification_limit,
+        index_limit=index_limit,
+        started=started,
+        session=session,
+        owns_session=session is None,
+        classifier=classifier,
+        embedding_provider=embedding_provider,
+        vector_store=vector_store,
+    )
 
 
 def _run_knowledge_pipeline_once_inner(
@@ -385,7 +380,7 @@ def _run_knowledge_pipeline_once_inner(
     embedding_provider,
     vector_store,
 ) -> dict:
-    """`run_knowledge_pipeline_once` 的实际工作体,被外层 `call_with_sqlite_retry` 包裹。"""
+    """`run_knowledge_pipeline_once` 的实际工作体。"""
     active_session = session if session is not None else get_session()
     ctx = active_session if owns_session else nullcontext(active_session)
     with ctx as s:
