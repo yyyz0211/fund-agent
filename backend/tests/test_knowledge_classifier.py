@@ -4,12 +4,12 @@ import json
 
 import pytest
 
-from backend.services.knowledge_classifier import (
+from backend.services.knowledge.knowledge_classifier import (
     build_classification_prompt,
     classify_candidate,
     parse_classification_response,
 )
-from backend.services.knowledge_schema import KnowledgeCandidate
+from backend.services.knowledge.knowledge_schema import KnowledgeCandidate
 
 
 class FakeModel:

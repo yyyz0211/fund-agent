@@ -41,7 +41,7 @@ class _DiagnosticAdapter(_Adapter):
 
 
 def test_ingest_market_evidence_writes_rows_and_dedupes(session):
-    from backend.services import market_evidence_ingestion as ing
+    from backend.services.market import market_evidence_ingestion as ing
 
     row = {
         "trade_date": "2026-07-07",
@@ -70,7 +70,7 @@ def test_ingest_market_evidence_writes_rows_and_dedupes(session):
 
 
 def test_ingest_market_evidence_continues_on_adapter_failure(session):
-    from backend.services import market_evidence_ingestion as ing
+    from backend.services.market import market_evidence_ingestion as ing
 
     result = ing.ingest_market_evidence(
         trade_date="2026-07-07",
@@ -83,7 +83,7 @@ def test_ingest_market_evidence_continues_on_adapter_failure(session):
 
 
 def test_ingest_market_evidence_surfaces_adapter_diagnostics(session):
-    from backend.services import market_evidence_ingestion as ing
+    from backend.services.market import market_evidence_ingestion as ing
 
     result = ing.ingest_market_evidence(
         trade_date="2026-07-09",
@@ -98,7 +98,7 @@ def test_ingest_market_evidence_surfaces_adapter_diagnostics(session):
 
 
 def test_ingest_market_evidence_accepts_cls_news_category(session):
-    from backend.services import market_evidence_ingestion as ing
+    from backend.services.market import market_evidence_ingestion as ing
 
     row = {
         "trade_date": "2026-07-08",
@@ -131,7 +131,7 @@ def test_ingest_market_evidence_hourly_idempotent_across_runs(session):
     只有第一次 inserted=1, 后续全是 no-op (DB 唯一键 + select-then-insert)。
     这是 hourly cron 不会"写重复数据"的核心保证。
     """
-    from backend.services import market_evidence_ingestion as ing
+    from backend.services.market import market_evidence_ingestion as ing
 
     cls_row = {
         "trade_date": "2026-07-08",
@@ -177,7 +177,7 @@ def test_ingest_market_evidence_skips_cross_date_duplicate_hash_and_continues(se
     同一财联社文章可能在次日 roll list 中继续出现; 这时应跳过旧文章,
     继续写入同批次的新文章,不能让 session 因 IntegrityError 整批回滚。
     """
-    from backend.services import market_evidence_ingestion as ing
+    from backend.services.market import market_evidence_ingestion as ing
 
     duplicate = {
         "category": "news",

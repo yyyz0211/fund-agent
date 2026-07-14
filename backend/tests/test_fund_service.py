@@ -4,8 +4,8 @@ from backend.db.session import make_engine
 from backend.db.init_db import init_db
 import backend.db.models  # noqa: F401
 from sqlalchemy.orm import sessionmaker
-from backend.services import fund_service as fs
-from backend.services import data_collector as dc
+from backend.services.fund import fund_service as fs
+from backend.services.market import data_collector as dc
 from backend.db import repository as repo
 
 
@@ -235,7 +235,7 @@ def test_diagnose_fund_auto_attaches_refresh_metadata(session, monkeypatch):
                             "as_of": "2026-07-07",
                         })
 
-    from backend.services import diagnosis_service as ds
+    from backend.services.shared import diagnosis_service as ds
 
     monkeypatch.setattr(ds, "diagnose_fund", lambda code, period="1y",
                         session=None: {

@@ -1,53 +1,35 @@
-"""Domain Types: Briefing 输入输出类型和端口定义。
-
-这些类型定义了 briefing 领域的稳定接口，不依赖外部实现。
-"""
+"""Briefing 领域的稳定输入、输出类型和依赖注入端口。"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal, Optional, Protocol, Sequence, TypeVar
+from typing import Any, Optional, Protocol, TypeVar
 
-# Generic type variables for Protocol
+from backend.services.briefing.module_briefing import (
+    BriefTypeProfile,
+    ModuleSection,
+    get_brief_type_profile,
+)
+
 InputT = TypeVar("InputT")
 OutputT = TypeVar("OutputT")
 
 
-# ---------------------------------------------------------------------------
-# ChatModel Protocol (dependency injection port)
-# ---------------------------------------------------------------------------
-
-
 class ChatModel(Protocol[InputT, OutputT]):
-    """聊天模型的最小接口定义。
+    """聊天模型的最小同步调用接口。"""
 
-    用于依赖注入，允许在测试时替换为 FakeModel。
-    """
-
-    def invoke(self, input: InputT, **kwargs: Any) -> OutputT:
-        """同步调用模型。"""
-        ...
+    def invoke(self, input: InputT, **kwargs: Any) -> OutputT: ...
 
 
 class StreamableChatModel(Protocol[InputT, OutputT]):
-    """支持流式输出的聊天模型接口。"""
+    """支持同步和流式输出的聊天模型接口。"""
 
-    def invoke(self, input: InputT, **kwargs: Any) -> OutputT:
-        """同步调用模型。"""
-        ...
+    def invoke(self, input: InputT, **kwargs: Any) -> OutputT: ...
 
-    def stream(self, input: InputT, **kwargs: Any) -> Any:
-        """流式调用模型。"""
-        ...
-
-
-# ---------------------------------------------------------------------------
-# Briefing Types
-# ---------------------------------------------------------------------------
+    def stream(self, input: InputT, **kwargs: Any) -> Any: ...
 
 
 @dataclass
 class WatchlistSnapshot:
-    """自选池快照。"""
     fund_codes: list[str]
     holdings: dict[str, dict]
     metrics: dict[str, dict]
@@ -56,7 +38,6 @@ class WatchlistSnapshot:
 
 @dataclass
 class MarketSnapshot:
-    """市场快照。"""
     indices: list[dict]
     breadth: dict
     industry_sectors: list[dict]
@@ -73,7 +54,6 @@ class MarketSnapshot:
 
 @dataclass
 class EvidenceRecord:
-    """市场证据记录。"""
     id: int
     trade_date: str
     category: str
@@ -87,7 +67,6 @@ class EvidenceRecord:
 
 @dataclass
 class BriefingInput:
-    """简报生成输入。"""
     briefing_date: str
     brief_type: str
     watchlist_snapshot: WatchlistSnapshot
@@ -100,7 +79,6 @@ class BriefingInput:
 
 @dataclass
 class ModuleEnvelope:
-    """简报模块信封。"""
     module_name: str
     content: str
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -109,7 +87,6 @@ class ModuleEnvelope:
 
 @dataclass
 class BriefingResult:
-    """简报生成结果。"""
     title: str
     markdown: str
     sections: dict[str, Any]
@@ -118,3 +95,18 @@ class BriefingResult:
     missing_data: list[str]
     evidence_count: int
     modules: list[ModuleEnvelope]
+
+
+__all__ = [
+    "BriefTypeProfile",
+    "BriefingInput",
+    "BriefingResult",
+    "ChatModel",
+    "EvidenceRecord",
+    "MarketSnapshot",
+    "ModuleEnvelope",
+    "ModuleSection",
+    "StreamableChatModel",
+    "WatchlistSnapshot",
+    "get_brief_type_profile",
+]

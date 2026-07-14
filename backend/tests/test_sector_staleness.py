@@ -2,7 +2,7 @@
 from contextlib import ExitStack
 from unittest.mock import patch
 
-from backend.services import market_intel_service as svc
+from backend.services.market import market_intel_service as svc
 
 
 def _patch_collect(return_values: dict):

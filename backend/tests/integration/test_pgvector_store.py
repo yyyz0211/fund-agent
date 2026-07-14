@@ -8,8 +8,8 @@ from sqlalchemy.orm import Session
 
 from backend.db.init_db import ensure_pgvector_schema, init_db, rebuild_pgvector_schema
 from backend.db.models import KnowledgeDocument
-from backend.services.knowledge_pgvector import PgVectorStore
-from backend.services.knowledge_vector import VectorItem
+from backend.services.knowledge.knowledge_pgvector import PgVectorStore
+from backend.services.knowledge.knowledge_vector import VectorItem
 
 
 DATABASE_URL = os.getenv("TEST_PGVECTOR_DATABASE_URL")

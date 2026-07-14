@@ -15,7 +15,7 @@ import backend.db.models  # noqa: F401  (ensure ORM mapping registered)
 from backend.db import repository as repo
 from backend.db.init_db import init_db
 from backend.db.session import make_engine
-from backend.services import what_if_service as wsvc
+from backend.services.fund import what_if_service as wsvc
 
 
 @pytest.fixture()

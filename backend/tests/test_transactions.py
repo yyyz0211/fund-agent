@@ -19,8 +19,8 @@ from backend.db import repository as repo
 from backend.db import session as db_session
 from backend.db.init_db import init_db
 from backend.db.models import FundNav, FundTransaction, Watchlist
-from backend.services import transaction_service as ts
-from backend.services import watchlist_service as ws
+from backend.services.watchlist import transaction_service as ts
+from backend.services.watchlist import watchlist_service as ws
 
 client = TestClient(app)
 
@@ -634,7 +634,7 @@ class TestPendingBuyApi:
         assert "等待" in body["message"]
 
     def test_create_and_list_pending_buy_without_affecting_pnl(self, session):
-        from backend.services import pnl_service as psvc
+        from backend.services.fund import pnl_service as psvc
 
         repo.add_to_watchlist_full(session, "110011", {"is_holding": True})
         session.add(FundNav(
@@ -764,7 +764,7 @@ class TestPnlCompatibility:
     def test_recalc_watchlist_still_feeds_pnl(self, session):
         """recalc → holding 写入 → PnL 服务直接读出结果,无 schema 冲突。"""
         from backend.db.models import Fund, FundNav
-        from backend.services import pnl_service as psvc
+        from backend.services.fund import pnl_service as psvc
 
         repo.add_to_watchlist_full(
             session, "110011", {"is_holding": True},

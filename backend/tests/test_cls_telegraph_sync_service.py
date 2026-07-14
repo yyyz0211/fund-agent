@@ -33,7 +33,7 @@ def _raw_item(cls_id: int, *, title: str, ctime: int, category: str = "fund") ->
 
 
 def test_normalize_sync_record_preserves_raw_content_and_metadata():
-    from backend.services.cls_telegraph_sync_service import normalize_cls_telegraph_record
+    from backend.services.knowledge.cls_telegraph_sync_service import normalize_cls_telegraph_record
 
     row = normalize_cls_telegraph_record(
         _raw_item(2421001, title="财联社电报：基金市场回暖", ctime=1783564494),
@@ -90,7 +90,7 @@ def test_cls_telegraph_repository_upserts_and_filters_items():
 
 def test_sync_once_writes_telegraph_items_and_derives_market_evidence():
     from backend.db import repository as repo
-    from backend.services.cls_telegraph_sync_service import sync_cls_telegraph_once
+    from backend.services.knowledge.cls_telegraph_sync_service import sync_cls_telegraph_once
 
     session = _new_session()
     pages = [
@@ -128,7 +128,7 @@ def test_sync_once_writes_telegraph_items_and_derives_market_evidence():
 
 def test_sync_once_records_error_without_clearing_existing_state():
     from backend.db import repository as repo
-    from backend.services.cls_telegraph_sync_service import sync_cls_telegraph_once
+    from backend.services.knowledge.cls_telegraph_sync_service import sync_cls_telegraph_once
 
     session = _new_session()
     repo.update_cls_telegraph_sync_state(

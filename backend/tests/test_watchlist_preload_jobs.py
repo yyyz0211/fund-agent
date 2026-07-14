@@ -7,7 +7,7 @@ from backend.db.session import make_engine
 
 
 def test_preload_job_refreshes_data_without_backfilling_peer_category(monkeypatch):
-    from backend.services import watchlist_preload_jobs as jobs
+    from backend.services.watchlist import watchlist_preload_jobs as jobs
 
     engine = make_engine("sqlite:///:memory:")
     init_db(engine)
@@ -48,7 +48,7 @@ def test_preload_job_refreshes_data_without_backfilling_peer_category(monkeypatc
 
 
 def test_preload_job_marks_partial_when_profile_missing_data(monkeypatch):
-    from backend.services import watchlist_preload_jobs as jobs
+    from backend.services.watchlist import watchlist_preload_jobs as jobs
 
     engine = make_engine("sqlite:///:memory:")
     init_db(engine)

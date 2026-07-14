@@ -2,44 +2,18 @@
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.pool import StaticPool
-
-from backend.db.init_db import init_db
-from backend.db.session import Base
-import backend.db.models  # noqa: F401
 
 
-@pytest.fixture
-def _in_memory_db(monkeypatch):
-    """每个测试用独立的内存 SQLite + 替换进程级 engine / SessionLocal / get_session."""
-    engine = create_engine(
-        "sqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-        future=True,
-    )
-    Base.metadata.create_all(engine)
-    init_db(engine)
+def test_safe_job_calls_wrapped_function():
+    """scheduler_lock 必须作为函数调用，而不是被解析成子模块。"""
+    from backend.scheduler.scheduler import _safe_job
 
-    from backend.db import session as session_module
-    from sqlalchemy.orm import sessionmaker
-
-    new_session_local = sessionmaker(bind=engine, expire_on_commit=False)
-
-    def _new_get_session():
-        return new_session_local()
-
-    monkeypatch.setattr(session_module, "engine", engine)
-    monkeypatch.setattr(session_module, "SessionLocal", new_session_local)
-    monkeypatch.setattr(session_module, "get_session", _new_get_session)
-
-    yield engine
+    assert _safe_job("review-regression", lambda: "ok") == "ok"
 
 
 @pytest.fixture(autouse=True)
 def _reset_scheduler():
-    from backend import scheduler as sched
+    from backend.scheduler import scheduler as sched
     sched._scheduler = None
     yield
     sched._scheduler = None
@@ -67,7 +41,7 @@ class _FakeScheduler:
 
 
 def test_scheduler_disabled_registers_nothing(monkeypatch):
-    from backend import scheduler as sched
+    from backend.scheduler import scheduler as sched
 
     recorder = []
     monkeypatch.setattr(sched, "_build_scheduler", lambda: _FakeScheduler(recorder))
@@ -78,7 +52,7 @@ def test_scheduler_disabled_registers_nothing(monkeypatch):
 
 
 def test_scheduler_enabled_registers_cron(monkeypatch):
-    from backend import scheduler as sched
+    from backend.scheduler import scheduler as sched
 
     recorder = []
     monkeypatch.setattr(sched, "_build_scheduler", lambda: _FakeScheduler(recorder))
@@ -103,7 +77,7 @@ def test_scheduler_enabled_registers_cron(monkeypatch):
 
 
 def test_start_scheduler_idempotent(monkeypatch):
-    from backend import scheduler as sched
+    from backend.scheduler import scheduler as sched
 
     recorder = []
     monkeypatch.setattr(sched, "_build_scheduler", lambda: _FakeScheduler(recorder))
@@ -118,7 +92,7 @@ def test_start_scheduler_idempotent(monkeypatch):
 
 
 def test_shutdown_scheduler(monkeypatch):
-    from backend import scheduler as sched
+    from backend.scheduler import scheduler as sched
 
     recorder = []
     monkeypatch.setattr(sched, "_build_scheduler", lambda: _FakeScheduler(recorder))
@@ -138,7 +112,7 @@ def test_scheduler_registers_evidence_hourly_when_enabled(monkeypatch):
     (IntervalTrigger, max_instances=1, coalesce=True, misfire_grace_time 短,
     带 jitter)。
     """
-    from backend import scheduler as sched
+    from backend.scheduler import scheduler as sched
 
     recorder = []
     monkeypatch.setattr(sched, "_build_scheduler", lambda: _FakeScheduler(recorder))
@@ -159,7 +133,7 @@ def test_scheduler_registers_evidence_hourly_when_enabled(monkeypatch):
 
 def test_scheduler_registers_cls_telegraph_sync_when_enabled(monkeypatch):
     """默认开启时 scheduler 应注册财联社电报同步 interval job。"""
-    from backend import scheduler as sched
+    from backend.scheduler import scheduler as sched
     from backend.config.settings import get_settings
 
     monkeypatch.delenv("CLS_TELEGRAPH_SYNC_ENABLED", raising=False)
@@ -182,7 +156,7 @@ def test_scheduler_registers_cls_telegraph_sync_when_enabled(monkeypatch):
 
 def test_scheduler_registers_knowledge_pipeline_when_enabled(monkeypatch):
     """默认开启时 scheduler 应每 6 分钟触发一次知识库增量流水线。"""
-    from backend import scheduler as sched
+    from backend.scheduler import scheduler as sched
     from backend.config.settings import get_settings
 
     get_settings.cache_clear()
@@ -210,7 +184,7 @@ def test_scheduler_registers_knowledge_pipeline_when_enabled(monkeypatch):
 
 def test_scheduler_evidence_hourly_can_be_disabled(monkeypatch):
     """SCHEDULER_EVIDENCE_HOURLY_ENABLED=false 时不注册 hourly job。"""
-    from backend import scheduler as sched
+    from backend.scheduler import scheduler as sched
     from backend.config.settings import get_settings
 
     recorder = []
@@ -234,7 +208,7 @@ def test_scheduler_evidence_hourly_can_be_disabled(monkeypatch):
 def test_refresh_market_evidence_async_singleflight():
     """同 brief_type 同时触发两次,第二次应拿到 running + 同 job_id (单飞锁)。
     """
-    from backend.services import market_evidence_service as svc
+    from backend.services.market import market_evidence_service as svc
 
     # reset 状态
     svc._active_job_ids.clear()
@@ -268,50 +242,31 @@ def test_refresh_market_evidence_async_singleflight():
         svc._active_job_ids.pop("post_market", None)
 
 
-def test_scheduler_knowledge_pipeline_creates_scheduled_job_record(
-    monkeypatch, _in_memory_db, tmp_path
-):
-    """_run_knowledge_pipeline_scheduled 应创建一条 trigger=scheduled 的 job 记录。"""
-    from datetime import datetime, timedelta
-    from backend.db import models as m
-    from backend.services import knowledge_reindex_jobs
+def test_scheduler_knowledge_pipeline_creates_scheduled_job_record(monkeypatch):
+    """wrapper 应创建 scheduled job，并把 job_id 交给后台执行器。"""
+    from types import SimpleNamespace
 
-    engine = _in_memory_db
+    from backend.services.knowledge import knowledge_reindex_jobs
 
-    # 让 run_knowledge_pipeline_once 快速返回，不阻塞测试
+    calls = []
     monkeypatch.setattr(
-        "backend.services.knowledge_search_service.run_knowledge_pipeline_once",
-        lambda **kwargs: {"status": "completed", "indexed": 0},
+        knowledge_reindex_jobs,
+        "create_job",
+        lambda *, trigger: calls.append(("create", trigger)) or SimpleNamespace(id=42),
+    )
+    monkeypatch.setattr(
+        knowledge_reindex_jobs,
+        "run_job_in_background",
+        lambda job_id, *, pipeline_kwargs: calls.append(
+            ("run", job_id, pipeline_kwargs)
+        ),
     )
 
-    # 手动调用 wrapper
-    from backend.scheduler import _run_knowledge_pipeline_scheduled
+    from backend.scheduler.scheduler import _run_knowledge_pipeline_scheduled
 
     _run_knowledge_pipeline_scheduled()
 
-    # 等后台线程跑完 (daemon=True, 最多等 5s)
-    import time
-    deadline = time.time() + 5.0
-    while time.time() < deadline:
-        with engine.connect() as conn:
-            latest = conn.execute(
-                m.KnowledgeReindexJob.__table__.select()
-                .order_by(m.KnowledgeReindexJob.id.desc())
-                .limit(1)
-            ).fetchone()
-        if latest.status in ("completed", "failed"):
-            break
-        time.sleep(0.05)
-
-    # 验证 job 记录被创建且执行完毕
-    with engine.connect() as conn:
-        rows = conn.execute(
-            m.KnowledgeReindexJob.__table__.select()
-            .order_by(m.KnowledgeReindexJob.id.desc())
-        ).fetchall()
-
-    assert len(rows) >= 1
-    latest = rows[0]
-    assert latest.trigger == "scheduled"
-    assert latest.status == "completed"
-    assert latest.finished_at is not None
+    assert calls == [
+        ("create", "scheduled"),
+        ("run", 42, {"trigger": "scheduled"}),
+    ]

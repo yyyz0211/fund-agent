@@ -126,7 +126,7 @@ class TestCollectWatchlistSnapshot:
 
     def test_collect_returns_market_and_watchlist_metrics(self):
         """mock market + watchlist + fund_service,断言返回结构正确。"""
-        from backend.services import briefing_service
+        from backend.services.briefing import briefing_service
 
         market_rows = [
             {"symbol": "000300", "name": "沪深300", "close": 3800.0, "change_pct": 0.5,
@@ -180,11 +180,11 @@ class TestCollectWatchlistSnapshot:
         with patch.object(briefing_service, "_collect_market_snapshot", mock_get_indices), \
              patch.object(briefing_service, "_collect_market_breadth", mock_get_breadth), \
              patch.object(briefing_service, "_collect_sector_snapshot", mock_get_sectors), \
-             patch("backend.services.briefing_service.dc.fetch_industry_flows", mock_industry_flows), \
-             patch("backend.services.briefing_service.dc.fetch_concept_sectors", mock_concept_sectors), \
-             patch("backend.services.briefing_service.dc.fetch_concept_flows", mock_concept_flows), \
-             patch("backend.services.briefing_service.watchlist_service.list_watchlist", mock_list_watchlist), \
-             patch("backend.services.briefing_service.fund_service.get_metrics", mock_get_metrics):
+             patch("backend.services.briefing.dc.fetch_industry_flows", mock_industry_flows), \
+             patch("backend.services.briefing.dc.fetch_concept_sectors", mock_concept_sectors), \
+             patch("backend.services.briefing.dc.fetch_concept_flows", mock_concept_flows), \
+             patch("backend.services.briefing.watchlist_service.list_watchlist", mock_list_watchlist), \
+             patch("backend.services.briefing.fund_service.get_metrics", mock_get_metrics):
 
             result = briefing_service.collect_watchlist_snapshot()
 
@@ -209,7 +209,7 @@ class TestCollectWatchlistSnapshot:
 
     def test_collect_skips_failed_fund_continues_loop(self):
         """单只 fund 抛异常:记 errors,后续继续处理。"""
-        from backend.services import briefing_service
+        from backend.services.briefing import briefing_service
 
         def mock_get_indices():
             return {"indices": [], "source": "akshare", "as_of": "2026-07-07"}
@@ -250,11 +250,11 @@ class TestCollectWatchlistSnapshot:
         with patch.object(briefing_service, "_collect_market_snapshot", mock_get_indices), \
              patch.object(briefing_service, "_collect_market_breadth", mock_get_breadth), \
              patch.object(briefing_service, "_collect_sector_snapshot", mock_get_sectors), \
-             patch("backend.services.briefing_service.dc.fetch_industry_flows", mock_industry_flows), \
-             patch("backend.services.briefing_service.dc.fetch_concept_sectors", mock_concept_sectors), \
-             patch("backend.services.briefing_service.dc.fetch_concept_flows", mock_concept_flows), \
-             patch("backend.services.briefing_service.watchlist_service.list_watchlist", mock_list_watchlist), \
-             patch("backend.services.briefing_service.fund_service.get_metrics", mock_get_metrics):
+             patch("backend.services.briefing.dc.fetch_industry_flows", mock_industry_flows), \
+             patch("backend.services.briefing.dc.fetch_concept_sectors", mock_concept_sectors), \
+             patch("backend.services.briefing.dc.fetch_concept_flows", mock_concept_flows), \
+             patch("backend.services.briefing.watchlist_service.list_watchlist", mock_list_watchlist), \
+             patch("backend.services.briefing.fund_service.get_metrics", mock_get_metrics):
 
             result = briefing_service.collect_watchlist_snapshot()
 
@@ -269,7 +269,7 @@ class TestCollectWatchlistSnapshot:
 
     def test_collect_caps_max_watchlist_funds(self):
         """自选池超出限额时只采集前 N 只,并在 meta 留 warning。"""
-        from backend.services import briefing_service
+        from backend.services.briefing import briefing_service
 
         def mock_get_indices():
             return {"indices": [], "source": "akshare", "as_of": "2026-07-07"}
@@ -303,12 +303,12 @@ class TestCollectWatchlistSnapshot:
         with patch.object(briefing_service, "_collect_market_snapshot", mock_get_indices), \
              patch.object(briefing_service, "_collect_market_breadth", mock_get_breadth), \
              patch.object(briefing_service, "_collect_sector_snapshot", mock_get_sectors), \
-             patch("backend.services.briefing_service.dc.fetch_industry_flows", mock_industry_flows), \
-             patch("backend.services.briefing_service.dc.fetch_concept_sectors", mock_concept_sectors), \
-             patch("backend.services.briefing_service.dc.fetch_concept_flows", mock_concept_flows), \
-             patch("backend.services.briefing_service.watchlist_service.list_watchlist", mock_list_watchlist), \
-             patch("backend.services.briefing_service.fund_service.get_metrics", mock_get_metrics), \
-             patch("backend.services.briefing_service.settings") as mock_settings:
+             patch("backend.services.briefing.dc.fetch_industry_flows", mock_industry_flows), \
+             patch("backend.services.briefing.dc.fetch_concept_sectors", mock_concept_sectors), \
+             patch("backend.services.briefing.dc.fetch_concept_flows", mock_concept_flows), \
+             patch("backend.services.briefing.watchlist_service.list_watchlist", mock_list_watchlist), \
+             patch("backend.services.briefing.fund_service.get_metrics", mock_get_metrics), \
+             patch("backend.services.briefing.briefing_service.settings") as mock_settings:
 
             mock_settings.briefing_max_watchlist_funds = cap
             result = briefing_service.collect_watchlist_snapshot()
@@ -319,7 +319,7 @@ class TestCollectWatchlistSnapshot:
 
     def test_collect_market_breadth_graceful_fallback(self):
         """_collect_market_breadth 抛异常时 snapshot 仍有 market_breadth={}。"""
-        from backend.services import briefing_service
+        from backend.services.briefing import briefing_service
 
         def mock_get_indices():
             return {"indices": [], "source": "akshare", "as_of": "2026-07-07"}
@@ -348,11 +348,11 @@ class TestCollectWatchlistSnapshot:
         with patch.object(briefing_service, "_collect_market_snapshot", mock_get_indices), \
              patch.object(briefing_service, "_collect_market_breadth", mock_get_breadth_fail), \
              patch.object(briefing_service, "_collect_sector_snapshot", mock_get_sectors), \
-             patch("backend.services.briefing_service.dc.fetch_industry_flows", mock_industry_flows), \
-             patch("backend.services.briefing_service.dc.fetch_concept_sectors", mock_concept_sectors), \
-             patch("backend.services.briefing_service.dc.fetch_concept_flows", mock_concept_flows), \
-             patch("backend.services.briefing_service.watchlist_service.list_watchlist", mock_list_watchlist), \
-             patch("backend.services.briefing_service.fund_service.get_metrics", mock_get_metrics):
+             patch("backend.services.briefing.dc.fetch_industry_flows", mock_industry_flows), \
+             patch("backend.services.briefing.dc.fetch_concept_sectors", mock_concept_sectors), \
+             patch("backend.services.briefing.dc.fetch_concept_flows", mock_concept_flows), \
+             patch("backend.services.briefing.watchlist_service.list_watchlist", mock_list_watchlist), \
+             patch("backend.services.briefing.fund_service.get_metrics", mock_get_metrics):
 
             result = briefing_service.collect_watchlist_snapshot()
 
@@ -363,7 +363,7 @@ class TestCollectWatchlistSnapshot:
 
     def test_collect_sector_snapshot_empty_is_valid(self):
         """sector_snapshot 为空时 snapshot 仍成功（当日可能无板块数据）。"""
-        from backend.services import briefing_service
+        from backend.services.briefing import briefing_service
 
         def mock_get_indices():
             return {"indices": [{"symbol": "000001", "name": "上证指数",
@@ -394,10 +394,10 @@ class TestCollectWatchlistSnapshot:
         with patch.object(briefing_service, "_collect_market_snapshot", mock_get_indices), \
              patch.object(briefing_service, "_collect_market_breadth", mock_get_breadth), \
              patch.object(briefing_service, "_collect_sector_snapshot", mock_get_sectors), \
-             patch("backend.services.briefing_service.dc.fetch_industry_flows", mock_industry_flows), \
-             patch("backend.services.briefing_service.dc.fetch_concept_sectors", mock_concept_sectors), \
-             patch("backend.services.briefing_service.dc.fetch_concept_flows", mock_concept_flows), \
-             patch("backend.services.briefing_service.watchlist_service.list_watchlist", mock_list_watchlist):
+             patch("backend.services.briefing.dc.fetch_industry_flows", mock_industry_flows), \
+             patch("backend.services.briefing.dc.fetch_concept_sectors", mock_concept_sectors), \
+             patch("backend.services.briefing.dc.fetch_concept_flows", mock_concept_flows), \
+             patch("backend.services.briefing.watchlist_service.list_watchlist", mock_list_watchlist):
 
             result = briefing_service.collect_watchlist_snapshot()
 
@@ -415,7 +415,7 @@ class TestComposeBriefing:
 
     def test_compose_returns_markdown_and_sections(self):
         """LLM 返回合法 JSON 时正确解析 markdown + sections。"""
-        from backend.services import briefing_service
+        from backend.services.briefing import briefing_service
         from langchain_core.messages import AIMessage
 
         llm_content = '{"markdown": "# 今日简报\\n\\n沪深300+0.5%", "sections": {"market_snapshot": [], "watchlist_changes": []}}'
@@ -437,7 +437,7 @@ class TestComposeBriefing:
 
     def test_compose_handles_invalid_llm_json(self):
         """LLM 返回非 JSON 纯文本时:markdown=原文本,warnings 追加 non_json。"""
-        from backend.services import briefing_service
+        from backend.services.briefing import briefing_service
         from langchain_core.messages import AIMessage
 
         raw_text = "今日沪深300上涨,自选池表现平稳。"
@@ -457,7 +457,7 @@ class TestComposeBriefing:
 
     def test_compose_prompt_excludes_policy_blocks(self):
         """prompt 中出现「不构成投资建议」,不出现 policy 红线词。"""
-        from backend.services import briefing_service
+        from backend.services.briefing import briefing_service
         from langchain_core.messages import AIMessage
 
         prompt_captured = []
@@ -491,7 +491,7 @@ class TestComposeBriefing:
         `{{...}}` JSON, frontend ReactMarkdown 把 outer JSON 当 markdown
         渲染成 `<pre><code class="language-json">`。
         """
-        from backend.services import briefing_service
+        from backend.services.briefing import briefing_service
         from langchain_core.messages import AIMessage
 
         inner_json = (
@@ -527,7 +527,7 @@ class TestComposeBriefing:
 
     def test_compose_briefing_passes_evidence_to_prompt(self):
         """evidence 参数应被拼入 prompt,LLM 可引用财联社快讯内容。"""
-        from backend.services import briefing_service
+        from backend.services.briefing import briefing_service
         from langchain_core.messages import AIMessage
 
         evidence = [
@@ -583,7 +583,7 @@ class TestComposeBriefing:
 class TestBriefingV2Modules:
     def test_pre_market_overnight_module_uses_evidence(self):
         """pre_market 的 overnight 模块应消费 evidence,不能把 snapshot 当 evidence 传入。"""
-        from backend.services import module_briefing
+        from backend.services.briefing import module_briefing
 
         profile, warnings = module_briefing.get_brief_type_profile("pre_market")
         assert warnings == []
@@ -617,7 +617,7 @@ class TestRunDailyBriefing:
     def test_run_writes_briefing_row(self, in_memory_session):
         """mock collect+compose,跑完确认落库一条。"""
         from backend.db.models import Briefing
-        from backend.services import briefing_service
+        from backend.services.briefing import briefing_service
 
         snapshot = {
             "market_snapshot": [{"symbol": "000300", "name": "沪深300", "close": 3800.0, "change_pct": 0.5}],
@@ -662,7 +662,7 @@ class TestRunDailyBriefing:
     def test_run_idempotent_same_day(self, in_memory_session):
         """同日两次 run:总行数仍=1,updated_at 改变。"""
         from backend.db.models import Briefing
-        from backend.services import briefing_service
+        from backend.services.briefing import briefing_service
         import time
 
         def make_snapshot(md_text):
@@ -704,7 +704,7 @@ class TestRunDailyBriefing:
     def test_run_passes_brief_type_profile_to_composer(self, in_memory_session):
         """pre_market 生成时,落库 type 与 sections.brief_type 必须一致。"""
         from backend.db.models import Briefing
-        from backend.services import briefing_service
+        from backend.services.briefing import briefing_service
 
         snapshot = {
             "market_snapshot": [{"symbol": "000300", "market_date": "2026-07-07"}],
@@ -740,7 +740,7 @@ class TestRunDailyBriefing:
 
     def test_run_records_last_run_snapshot(self, in_memory_session):
         """跑完后 get_last_run() 返回正确快照。"""
-        from backend.services import briefing_service
+        from backend.services.briefing import briefing_service
 
         def mock_collect(**_kwargs):
             return {
@@ -769,7 +769,7 @@ class TestRunDailyBriefing:
     def test_run_records_failures_when_collect_errors(self, in_memory_session):
         """collect 失败项进入 failures,failed>0。"""
         from backend.db.models import Briefing
-        from backend.services import briefing_service
+        from backend.services.briefing import briefing_service
 
         def mock_collect(**_kwargs):
             return {
@@ -800,7 +800,7 @@ class TestRunDailyBriefing:
     def test_run_returns_empty_briefing_when_no_watchlist(self, in_memory_session):
         """自选池为空:markdown 为占位符,不抛异常。"""
         from backend.db.models import Briefing
-        from backend.services import briefing_service
+        from backend.services.briefing import briefing_service
 
         def mock_collect(**_kwargs):
             return {
@@ -828,7 +828,7 @@ class TestRunDailyBriefing:
         最终 evidence_count >= 1。
         """
         from backend.db.models import Briefing, MarketEvidence
-        from backend.services import briefing_service
+        from backend.services.briefing import briefing_service
         from backend.services.market_sources import build_default_adapters
         from unittest.mock import MagicMock
 

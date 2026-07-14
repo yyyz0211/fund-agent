@@ -212,7 +212,7 @@ def test_knowledge_reindex_with_local_trigger(monkeypatch, isolated_db_session):
     旧版本会同步阻塞到 pipeline 完成；新版本走异步任务。
     """
     from backend.api.routes import knowledge as route
-    from backend.services import knowledge_reindex_jobs as jobs_module
+    from backend.services.knowledge import knowledge_reindex_jobs as jobs_module
 
     calls: list[dict] = []
 

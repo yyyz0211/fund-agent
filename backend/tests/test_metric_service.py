@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from backend.services import metric_service
+from backend.services.shared import metric_service
 
 
 def test_period_return_supports_1d():

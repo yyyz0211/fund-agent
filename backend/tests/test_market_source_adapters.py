@@ -76,7 +76,7 @@ def test_adapter_network_failure_returns_empty_list():
 
 def test_cls_telegraph_adapter_maps_client_rows_to_news_evidence(monkeypatch):
     from backend.services.market_sources.cls_telegraph import ClsTelegraphAdapter
-    from backend.services import cls_telegraph_client as client_mod
+    from backend.services.knowledge import cls_telegraph_client as client_mod
 
     def fake_fetch_roll_list(**kwargs):
         assert kwargs["category"] == "fund"
@@ -113,7 +113,7 @@ def test_cls_telegraph_adapter_maps_client_rows_to_news_evidence(monkeypatch):
 
 def test_cls_telegraph_adapter_isolates_category_failure(monkeypatch):
     from backend.services.market_sources.cls_telegraph import ClsTelegraphAdapter
-    from backend.services import cls_telegraph_client as client_mod
+    from backend.services.knowledge import cls_telegraph_client as client_mod
 
     def fake_fetch_roll_list(**kwargs):
         if kwargs["category"] == "fund":

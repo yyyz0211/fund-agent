@@ -12,7 +12,7 @@ from backend.db.init_db import init_db
 import backend.db.models  # noqa: F401
 from backend.db.models import Fund, FundNav, MarketData, Watchlist
 from backend.db import repository as repo
-from backend.services import watchlist_service as ws
+from backend.services.watchlist import watchlist_service as ws
 
 client = TestClient(app)
 

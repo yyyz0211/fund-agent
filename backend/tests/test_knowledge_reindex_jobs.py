@@ -55,7 +55,7 @@ def _in_memory_db(monkeypatch):
 
 
 def test_create_job_writes_pending_row(_in_memory_db):
-    from backend.services import knowledge_reindex_jobs
+    from backend.services.knowledge import knowledge_reindex_jobs
 
     job = knowledge_reindex_jobs.create_job(trigger="manual")
 
@@ -65,7 +65,7 @@ def test_create_job_writes_pending_row(_in_memory_db):
 
 
 def test_mark_running_and_completed(_in_memory_db):
-    from backend.services import knowledge_reindex_jobs
+    from backend.services.knowledge import knowledge_reindex_jobs
 
     job = knowledge_reindex_jobs.create_job(trigger="manual")
     jid = int(job.id)
@@ -87,7 +87,7 @@ def test_mark_running_and_completed(_in_memory_db):
 
 
 def test_mark_failed(_in_memory_db):
-    from backend.services import knowledge_reindex_jobs
+    from backend.services.knowledge import knowledge_reindex_jobs
 
     job = knowledge_reindex_jobs.create_job(trigger="manual")
     jid = int(job.id)
@@ -100,13 +100,13 @@ def test_mark_failed(_in_memory_db):
 
 
 def test_get_job_returns_none_for_missing(_in_memory_db):
-    from backend.services import knowledge_reindex_jobs
+    from backend.services.knowledge import knowledge_reindex_jobs
 
     assert knowledge_reindex_jobs.get_job(9999) is None
 
 
 def test_list_jobs_returns_recent_first(_in_memory_db):
-    from backend.services import knowledge_reindex_jobs
+    from backend.services.knowledge import knowledge_reindex_jobs
 
     for i in range(3):
         knowledge_reindex_jobs.create_job(trigger="scheduled")
@@ -119,8 +119,8 @@ def test_list_jobs_returns_recent_first(_in_memory_db):
 
 def test_run_job_in_background_completes(monkeypatch, _in_memory_db):
     """后台线程跑 pipeline, 完成后状态应变成 completed。"""
-    from backend.services import knowledge_reindex_jobs
-    from backend.services import knowledge_search_service
+    from backend.services.knowledge import knowledge_reindex_jobs
+    from backend.services.knowledge import knowledge_search_service
 
     monkeypatch.setattr(
         knowledge_search_service,
@@ -142,8 +142,8 @@ def test_run_job_in_background_completes(monkeypatch, _in_memory_db):
 
 
 def test_run_job_in_background_marks_failed_on_exception(monkeypatch, _in_memory_db):
-    from backend.services import knowledge_reindex_jobs
-    from backend.services import knowledge_search_service
+    from backend.services.knowledge import knowledge_reindex_jobs
+    from backend.services.knowledge import knowledge_search_service
 
     def boom(**kwargs):
         raise RuntimeError("pipeline kaboom")
@@ -169,9 +169,9 @@ def test_run_job_in_background_releases_lock_during_long_pipeline(monkeypatch, _
     关键点:LLM/向量化执行期间, scheduler_lock 必须释放,这样其它 job
     （cls_telegraph_sync / market_evidence 等）能并发抢到锁。
     """
-    from backend.services import knowledge_reindex_jobs
-    from backend.services import knowledge_search_service
-    from backend.services import scheduler_lock as scheduler_lock_module
+    from backend.services.knowledge import knowledge_reindex_jobs
+    from backend.services.knowledge import knowledge_search_service
+    from backend.services.shared import scheduler_lock as scheduler_lock_module
 
     hold_log: list[tuple[str, float, float]] = []  # (label, start, end)
     original_scheduler_lock = scheduler_lock_module.scheduler_lock
@@ -185,7 +185,7 @@ def test_run_job_in_background_releases_lock_during_long_pipeline(monkeypatch, _
             finally:
                 hold_log.append((label, start, time.monotonic()))
 
-    # `_runner` 内部用 `from backend.services.scheduler_lock import scheduler_lock`,
+    # `_runner` 内部用 `from backend.services.shared.scheduler_lock import scheduler_lock`,
     # 每次执行都会重新解析属性,所以 patch module-level 的属性就生效。
     monkeypatch.setattr(scheduler_lock_module, "scheduler_lock", tracking_scheduler_lock)
     monkeypatch.setattr(knowledge_search_service, "run_knowledge_pipeline_once",
@@ -218,7 +218,7 @@ def test_recover_interrupted_jobs_marks_stale_pending(_in_memory_db):
     """超过 stale 阈值的 pending job 应被标记为 interrupted。"""
     from datetime import datetime, timedelta
     from backend.db import models as m
-    from backend.services import knowledge_reindex_jobs
+    from backend.services.knowledge import knowledge_reindex_jobs
 
     # 落一条"旧" pending job (created_at 设为 2 小时前)
     old = m.KnowledgeReindexJob(trigger="scheduled", status="pending")
@@ -249,7 +249,7 @@ def test_recover_interrupted_jobs_marks_stale_pending(_in_memory_db):
 def test_recover_interrupted_jobs_ignores_recent_pending(_in_memory_db):
     """未超过 stale 阈值的 pending job 不应被标记为 interrupted。"""
     from backend.db import models as m
-    from backend.services import knowledge_reindex_jobs
+    from backend.services.knowledge import knowledge_reindex_jobs
 
     # 落一条"新" pending job (刚创建)
     with _in_memory_db.connect() as conn:
@@ -276,7 +276,7 @@ def test_recover_interrupted_jobs_ignores_completed(_in_memory_db):
     """已完成的 job 不应被标记为 interrupted。"""
     from backend.db import models as m
     from backend.db.session import get_session
-    from backend.services import knowledge_reindex_jobs
+    from backend.services.knowledge import knowledge_reindex_jobs
 
     with get_session() as s:
         job = m.KnowledgeReindexJob(trigger="scheduled", status="completed")
@@ -296,7 +296,7 @@ def test_recover_interrupted_jobs_multiple_stale(_in_memory_db):
     """多个 stale pending/running 应全部被恢复。"""
     from datetime import datetime, timedelta
     from backend.db import models as m
-    from backend.services import knowledge_reindex_jobs
+    from backend.services.knowledge import knowledge_reindex_jobs
 
     now = datetime.utcnow()
     with _in_memory_db.connect() as conn:

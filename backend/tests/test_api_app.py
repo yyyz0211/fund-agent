@@ -1,4 +1,6 @@
 """API 启动与 health 端点（不依赖任何业务）。"""
+from types import SimpleNamespace
+
 from fastapi.testclient import TestClient
 
 from backend.api.app import app
@@ -6,7 +8,20 @@ from backend.api.app import app
 client = TestClient(app)
 
 
-def test_health():
+def test_health(monkeypatch):
+    from backend.services.knowledge import knowledge_pgvector
+
+    monkeypatch.setattr(
+        knowledge_pgvector,
+        "database_health_snapshot",
+        lambda _engine: {"status": "ok", "dialect": "postgresql"},
+    )
+    monkeypatch.setattr(
+        knowledge_pgvector,
+        "knowledge_vector_health_snapshot",
+        lambda _engine, _settings: {"status": "structured_fallback"},
+    )
+
     r = client.get("/api/health")
     assert r.status_code == 200
     body = r.json()
@@ -16,8 +31,30 @@ def test_health():
     assert body["scheduler"]["status"] in {"running", "stopped"}
 
 
+def test_health_reads_live_scheduler_state(monkeypatch):
+    """health 必须读取 scheduler 实现模块的当前状态，而非导入时快照。"""
+    from backend.scheduler import scheduler as scheduler_impl
+    from backend.services.knowledge import knowledge_pgvector
+
+    monkeypatch.setattr(scheduler_impl, "_scheduler", SimpleNamespace(running=True))
+    monkeypatch.setattr(
+        knowledge_pgvector,
+        "database_health_snapshot",
+        lambda _engine: {"status": "ok", "dialect": "postgresql"},
+    )
+    monkeypatch.setattr(
+        knowledge_pgvector,
+        "knowledge_vector_health_snapshot",
+        lambda _engine, _settings: {"status": "disabled", "backend": "structured"},
+    )
+
+    body = client.get("/api/health").json()
+
+    assert body["scheduler"] == {"status": "running"}
+
+
 def test_health_preserves_top_level_status_when_database_is_unavailable(monkeypatch):
-    from backend.services import knowledge_pgvector
+    from backend.services.knowledge import knowledge_pgvector
 
     monkeypatch.setattr(
         knowledge_pgvector,
@@ -32,7 +69,7 @@ def test_health_preserves_top_level_status_when_database_is_unavailable(monkeypa
 
 
 def test_health_degrades_top_level_for_explicit_pgvector_failure(monkeypatch):
-    from backend.services import knowledge_pgvector
+    from backend.services.knowledge import knowledge_pgvector
 
     monkeypatch.setattr(
         knowledge_pgvector,
@@ -59,7 +96,7 @@ def test_vector_health_is_local_and_reports_explicit_pgvector_failure():
     from types import SimpleNamespace
     from sqlalchemy import create_engine
 
-    from backend.services.knowledge_pgvector import knowledge_vector_health_snapshot
+    from backend.services.knowledge.knowledge_pgvector import knowledge_vector_health_snapshot
 
     settings = SimpleNamespace(
         knowledge_rag_enabled=True,
@@ -85,7 +122,7 @@ def test_vector_health_is_local_and_reports_explicit_pgvector_failure():
 def test_vector_health_detects_configured_database_dimension_mismatch():
     from types import SimpleNamespace
 
-    from backend.services.knowledge_pgvector import knowledge_vector_health_snapshot
+    from backend.services.knowledge.knowledge_pgvector import knowledge_vector_health_snapshot
 
     class Connection:
         def __enter__(self):
@@ -138,7 +175,7 @@ def test_vector_health_detects_configured_database_dimension_mismatch():
 def test_vector_health_rejects_incomplete_pgvector_schema():
     from types import SimpleNamespace
 
-    from backend.services.knowledge_pgvector import knowledge_vector_health_snapshot
+    from backend.services.knowledge.knowledge_pgvector import knowledge_vector_health_snapshot
 
     class Connection:
         def __enter__(self):

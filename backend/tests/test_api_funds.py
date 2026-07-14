@@ -10,7 +10,7 @@ from backend.db import repository as repo
 from backend.db import session as db_session
 from backend.db.init_db import init_db
 from backend.db.models import Fund, FundNav
-from backend.services import fund_service as fs
+from backend.services.fund import fund_service as fs
 
 client = TestClient(app)
 

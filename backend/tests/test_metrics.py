@@ -1,6 +1,6 @@
 import math
 import pytest
-from backend.services import metric_service as m
+from backend.services.shared import metric_service as m
 
 
 def test_cumulative_return():

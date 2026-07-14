@@ -13,9 +13,9 @@ import os
 import sys
 
 from backend.db.init_db import init_db
-from backend.services import fund_service as fs
-from backend.services import market_service as ms
-from backend.services import watchlist_service as ws
+from backend.services.fund import fund_service as fs
+from backend.services.market import market_service as ms
+from backend.services.watchlist import watchlist_service as ws
 
 
 def main(fund_code: str) -> None:

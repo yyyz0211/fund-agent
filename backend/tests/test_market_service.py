@@ -3,7 +3,7 @@ from backend.db.session import make_engine
 from backend.db.init_db import init_db
 import backend.db.models  # noqa: F401
 from sqlalchemy.orm import sessionmaker
-from backend.services import market_service as ms
+from backend.services.market import market_service as ms
 from backend.db.models import MarketData
 
 

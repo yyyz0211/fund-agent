@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from backend.api.deps import get_db_session
 from backend.db.models import Briefing, BriefingFeedback
-from backend.services import briefing_service
+from backend.services.briefing import briefing_service
 
 
 router = APIRouter(prefix="/api/briefing", tags=["briefing"])

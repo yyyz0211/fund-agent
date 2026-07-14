@@ -4,7 +4,7 @@ import time
 import pandas as pd
 import pytest
 
-from backend.services import data_collector as dc
+from backend.services.market import data_collector as dc
 
 
 class _FakeAkshare:
@@ -356,7 +356,7 @@ def test_fetch_fund_profile_degrades_when_source_fails(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_fetch_concept_sectors_returns_list():
-    from backend.services.data_collector import fetch_concept_sectors
+    from backend.services.market.data_collector import fetch_concept_sectors
     result = fetch_concept_sectors()
     assert isinstance(result, list)
 
@@ -423,13 +423,13 @@ def test_fetch_concept_sectors_falls_back_to_fund_flow_concept(monkeypatch):
 
 
 def test_fetch_industry_flows_returns_list():
-    from backend.services.data_collector import fetch_industry_flows
+    from backend.services.market.data_collector import fetch_industry_flows
     result = fetch_industry_flows()
     assert isinstance(result, list)
 
 
 def test_fetch_concept_flows_returns_list():
-    from backend.services.data_collector import fetch_concept_flows
+    from backend.services.market.data_collector import fetch_concept_flows
     result = fetch_concept_flows()
     assert isinstance(result, list)
 
@@ -461,25 +461,25 @@ def test_fetch_concept_flows_uses_fund_flow_concept(monkeypatch):
 
 
 def test_fetch_theme_boards_returns_list():
-    from backend.services.data_collector import fetch_theme_boards
+    from backend.services.market.data_collector import fetch_theme_boards
     result = fetch_theme_boards()
     assert isinstance(result, list)
 
 
 def test_fetch_breadth_indicators_returns_dict():
-    from backend.services.data_collector import fetch_breadth_indicators
+    from backend.services.market.data_collector import fetch_breadth_indicators
     result = fetch_breadth_indicators()
     assert isinstance(result, dict)
 
 
 def test_fetch_overseas_markets_returns_list():
-    from backend.services.data_collector import fetch_overseas_markets
+    from backend.services.market.data_collector import fetch_overseas_markets
     result = fetch_overseas_markets()
     assert isinstance(result, list)
 
 
 def test_fetch_announcements_returns_list():
-    from backend.services.data_collector import fetch_announcements
+    from backend.services.market.data_collector import fetch_announcements
     result = fetch_announcements(limit=5)
     assert isinstance(result, list)
 

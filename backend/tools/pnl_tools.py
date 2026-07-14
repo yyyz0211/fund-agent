@@ -5,7 +5,7 @@
 """
 from langchain_core.tools import tool
 
-from backend.services import pnl_service as psvc
+from backend.services.fund import pnl_service as psvc
 
 
 @tool

@@ -10,7 +10,7 @@ from sqlalchemy.pool import StaticPool
 
 from backend.db import repository as repo
 from backend.db.init_db import init_db
-from backend.services import pnl_service as psvc
+from backend.services.fund import pnl_service as psvc
 
 
 @pytest.fixture()

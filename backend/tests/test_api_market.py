@@ -8,7 +8,7 @@ from backend.db import session as db_session
 from backend.db.init_db import init_db
 import backend.db.models  # noqa: F401
 from backend.db.models import MarketData
-from backend.services import market_service as ms
+from backend.services.market import market_service as ms
 
 client = TestClient(app)
 

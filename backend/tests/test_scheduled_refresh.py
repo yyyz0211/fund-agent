@@ -5,7 +5,7 @@ from sqlalchemy.orm import sessionmaker
 import backend.db.models  # noqa: F401
 from backend.db.init_db import init_db
 from backend.db.session import make_engine
-from backend.services import watchlist_service as ws
+from backend.services.watchlist import watchlist_service as ws
 
 
 @pytest.fixture()
@@ -19,14 +19,14 @@ def session():
 
 @pytest.fixture(autouse=True)
 def _reset_snapshot():
-    from backend.services import scheduled_refresh as sr
+    from backend.services.market import scheduled_refresh as sr
     sr.reset_for_tests()
     yield
     sr.reset_for_tests()
 
 
 def test_refresh_all_walks_watchlist(monkeypatch, session):
-    from backend.services import scheduled_refresh as sr
+    from backend.services.market import scheduled_refresh as sr
 
     ws.add("110011", session=session)
     ws.add("000001", session=session)
@@ -54,7 +54,7 @@ def test_refresh_all_walks_watchlist(monkeypatch, session):
 
 
 def test_refresh_all_counts_already_up_to_date(monkeypatch, session):
-    from backend.services import scheduled_refresh as sr
+    from backend.services.market import scheduled_refresh as sr
 
     ws.add("110011", session=session)
 
@@ -76,7 +76,7 @@ def test_refresh_all_counts_already_up_to_date(monkeypatch, session):
 
 
 def test_refresh_all_records_failures_but_continues(monkeypatch, session):
-    from backend.services import scheduled_refresh as sr
+    from backend.services.market import scheduled_refresh as sr
 
     ws.add("110011", session=session)
     ws.add("000001", session=session)
@@ -103,7 +103,7 @@ def test_refresh_all_records_failures_but_continues(monkeypatch, session):
 
 
 def test_refresh_all_survives_refresh_exception(monkeypatch, session):
-    from backend.services import scheduled_refresh as sr
+    from backend.services.market import scheduled_refresh as sr
 
     ws.add("110011", session=session)
 
@@ -122,7 +122,7 @@ def test_refresh_all_survives_refresh_exception(monkeypatch, session):
 
 
 def test_profile_failure_is_soft(monkeypatch, session):
-    from backend.services import scheduled_refresh as sr
+    from backend.services.market import scheduled_refresh as sr
 
     ws.add("110011", session=session)
 
@@ -146,7 +146,7 @@ def test_profile_failure_is_soft(monkeypatch, session):
 
 
 def test_get_last_run_empty_default():
-    from backend.services import scheduled_refresh as sr
+    from backend.services.market import scheduled_refresh as sr
 
     sr.reset_for_tests()
     snap = sr.get_last_run()
@@ -156,7 +156,7 @@ def test_get_last_run_empty_default():
 
 
 def test_get_last_run_returns_snapshot(monkeypatch, session):
-    from backend.services import scheduled_refresh as sr
+    from backend.services.market import scheduled_refresh as sr
 
     ws.add("110011", session=session)
     monkeypatch.setattr(
@@ -179,7 +179,7 @@ def test_get_last_run_returns_snapshot(monkeypatch, session):
 
 
 def test_start_refresh_all_async_single_flight(monkeypatch):
-    from backend.services import scheduled_refresh as sr
+    from backend.services.market import scheduled_refresh as sr
 
     monkeypatch.setattr(sr.watchlist_service, "list_watchlist", lambda: [])
 

@@ -1,6 +1,6 @@
 from backend.tools import fund_tools
-from backend.services import fund_service as fs
-from backend.services import diagnosis_service as ds
+from backend.services.fund import fund_service as fs
+from backend.services.shared import diagnosis_service as ds
 
 
 def test_latest_nav_tool_invokes_service(monkeypatch):
@@ -30,9 +30,9 @@ def test_tools_list_exposes_both():
 
 from backend.tools import watchlist_tools as wt
 from backend.tools import market_tools as mt
-from backend.services import watchlist_service as wsvc
-from backend.services import market_service as msvc
-from backend.services import cls_telegraph_client as cls_client
+from backend.services.watchlist import watchlist_service as wsvc
+from backend.services.market import market_service as msvc
+from backend.services.knowledge import cls_telegraph_client as cls_client
 from backend.config.settings import get_settings
 
 
@@ -209,7 +209,7 @@ def test_search_cls_telegraph_tool_respects_disable(monkeypatch):
 
 
 def test_get_market_briefing_passes_brief_type(monkeypatch):
-    from backend.services import briefing_service
+    from backend.services.briefing import briefing_service
 
     captured = {}
 

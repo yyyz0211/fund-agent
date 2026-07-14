@@ -20,7 +20,7 @@ def session():
 
 
 def test_diagnosis_with_core_data_returns_structured_payload(session, monkeypatch):
-    from backend.services import diagnosis_service as ds
+    from backend.services.shared import diagnosis_service as ds
 
     monkeypatch.setattr(ds.fs, "get_summary", lambda code, period="1y", start_date="", session=None: {
         "fund_code": code,
@@ -54,7 +54,7 @@ def test_diagnosis_with_core_data_returns_structured_payload(session, monkeypatc
 
 
 def test_diagnosis_missing_core_data_is_low_confidence_block(session, monkeypatch):
-    from backend.services import diagnosis_service as ds
+    from backend.services.shared import diagnosis_service as ds
 
     monkeypatch.setattr(ds.fs, "get_summary", lambda code, period="1y", start_date="", session=None: {
         "fund_code": code,
@@ -81,7 +81,7 @@ def test_diagnosis_missing_core_data_is_low_confidence_block(session, monkeypatc
 
 
 def test_diagnosis_uses_basic_manager_when_profile_manager_missing(session, monkeypatch):
-    from backend.services import diagnosis_service as ds
+    from backend.services.shared import diagnosis_service as ds
 
     monkeypatch.setattr(ds.fs, "get_summary", lambda code, period="1y", start_date="", session=None: {
         "fund_code": code,
@@ -115,7 +115,7 @@ def test_diagnosis_uses_basic_manager_when_profile_manager_missing(session, monk
 
 
 def test_get_peers_returns_candidates_without_local_nav(session):
-    from backend.services import diagnosis_service as ds
+    from backend.services.shared import diagnosis_service as ds
 
     repo.upsert_fund_profile(session, "110011", {
         "peer_candidates_json": json.dumps([
@@ -148,7 +148,7 @@ def test_get_peers_returns_candidates_without_local_nav(session):
 
 
 def test_diagnosis_marks_peer_metrics_not_peers_when_candidates_exist(session, monkeypatch):
-    from backend.services import diagnosis_service as ds
+    from backend.services.shared import diagnosis_service as ds
 
     monkeypatch.setattr(ds.fs, "get_summary", lambda code, period="1y", start_date="", session=None: {
         "fund_code": code,
@@ -192,8 +192,8 @@ def test_diagnosis_marks_peer_metrics_not_peers_when_candidates_exist(session, m
 
 
 def test_get_peers_does_not_call_akshare(session, monkeypatch):
-    from backend.services import data_collector as dc
-    from backend.services import diagnosis_service as ds
+    from backend.services.market import data_collector as dc
+    from backend.services.shared import diagnosis_service as ds
 
     def fail_if_called(_code):
         raise AssertionError("GET peers must not call AkShare")

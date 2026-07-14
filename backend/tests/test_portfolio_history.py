@@ -42,7 +42,7 @@ def _nav(nav_date, acc):
 
 
 def test_calculate_pnl_series_one_buy(session):
-    from backend.services import portfolio_history as ph
+    from backend.services.fund import portfolio_history as ph
 
     _seed_fund(
         session, "110011",
@@ -64,7 +64,7 @@ def test_calculate_pnl_series_one_buy(session):
 
 
 def test_calculate_pnl_series_forward_fills_nav(session):
-    from backend.services import portfolio_history as ph
+    from backend.services.fund import portfolio_history as ph
 
     # 1/1 有 NAV,1/2 缺失 → 1/2 市值前向填充 1/1 的 NAV,不算缺失。
     _seed_fund(
@@ -81,7 +81,7 @@ def test_calculate_pnl_series_forward_fills_nav(session):
 
 
 def test_calculate_pnl_series_multi_fund_totals(session):
-    from backend.services import portfolio_history as ph
+    from backend.services.fund import portfolio_history as ph
 
     _seed_fund(
         session, "110011",
@@ -106,7 +106,7 @@ def test_calculate_pnl_series_multi_fund_totals(session):
 
 
 def test_calculate_pnl_series_excludes_fund_with_no_nav_at_all(session):
-    from backend.services import portfolio_history as ph
+    from backend.services.fund import portfolio_history as ph
 
     _seed_fund(
         session, "110011", [],
@@ -120,7 +120,7 @@ def test_calculate_pnl_series_excludes_fund_with_no_nav_at_all(session):
 
 
 def test_calculate_pnl_series_empty_watchlist(session):
-    from backend.services import portfolio_history as ph
+    from backend.services.fund import portfolio_history as ph
 
     out = ph.calculate_pnl_series(
         fund_codes=None, start="2026-01-01", end="2026-01-02", session=session,
@@ -133,7 +133,7 @@ def test_calculate_pnl_series_empty_watchlist(session):
 
 
 def test_calculate_pnl_series_pct_zero_not_none(session):
-    from backend.services import portfolio_history as ph
+    from backend.services.fund import portfolio_history as ph
 
     # 投入为 0(无买入)但有 NAV 的关注基金不进 dates(has_position=False)。
     # 这里验证 summary 的 pnl_pct 恒为 0.0 而非 None。
@@ -144,7 +144,7 @@ def test_calculate_pnl_series_pct_zero_not_none(session):
 
 
 def test_calculate_pnl_series_skips_days_before_first_buy(session):
-    from backend.services import portfolio_history as ph
+    from backend.services.fund import portfolio_history as ph
 
     _seed_fund(
         session, "110011",

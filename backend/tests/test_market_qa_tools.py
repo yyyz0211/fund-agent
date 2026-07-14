@@ -5,7 +5,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from backend.db.models import Base, Briefing
-from backend.services import market_intel_service
+from backend.services.market import market_intel_service
 from backend.tools import market_tools as mt
 
 

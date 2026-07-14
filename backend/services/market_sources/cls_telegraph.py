@@ -5,7 +5,7 @@ from typing import Any
 
 import httpx
 
-from backend.services import cls_telegraph_client as cls_client
+from backend.services.knowledge import cls_telegraph_client as cls_client
 
 
 def _parse_categories(value: str | list[str] | tuple[str, ...] | None) -> list[str]:

@@ -2,7 +2,7 @@
 from fastapi.testclient import TestClient
 
 from backend.api.app import app
-from backend.services import scheduled_refresh as sr
+from backend.services.market import scheduled_refresh as sr
 
 client = TestClient(app)
 

@@ -20,7 +20,7 @@ def test_import_graph_module_does_not_circular():
     """
     from backend.graph.qa_graph import graph  # noqa: F401
     from backend.graph.model import build_model  # noqa: F401
-    from backend.services import briefing_service  # noqa: F401
+    from backend.services.briefing import briefing_service  # noqa: F401
     from backend.tools.fund_tools import ALL_TOOLS  # noqa: F401
     assert graph is not None
     assert callable(build_model)
@@ -34,7 +34,7 @@ def test_briefing_service_does_not_module_import_model():
     修复后只允许在函数体内部 lazy import。
     """
     import inspect
-    from backend.services import briefing_service
+    from backend.services.briefing import briefing_service
     src = inspect.getsource(briefing_service)
     # 抽出 module-level 代码 (函数体之外)
     tree = ast.parse(src)
@@ -63,8 +63,8 @@ def test_refresh_market_evidence_async_task_logs_exceptions():
     2) `_task` 内没有 `except Exception:\n        pass` 这种吞错模式。
     """
     import inspect
-    from backend.services.market_intel_service import collect_market_intel  # noqa: F401
-    from backend.services import market_evidence_service as mes
+    from backend.services.market.market_intel_service import collect_market_intel  # noqa: F401
+    from backend.services.market import market_evidence_service as mes
 
     src = inspect.getsource(mes.refresh_market_evidence_async)
     tree = ast.parse(src)
@@ -95,14 +95,14 @@ def test_refresh_market_evidence_async_task_logs_exceptions():
 
 def test_refresh_market_evidence_async_logger_module_level():
     """module 必须有 logger, 否则 log 调用无处发出。"""
-    from backend.services import market_evidence_service as mes
+    from backend.services.market import market_evidence_service as mes
     assert hasattr(mes, "logger"), "缺模块级 logger"
     assert isinstance(mes.logger, logging.Logger)
 
 
 def test_refresh_market_evidence_async_is_single_flight():
     """同 brief_type 二次触发必须返回 running, 不重复跑后台 task。"""
-    from backend.services import market_evidence_service as mes
+    from backend.services.market import market_evidence_service as mes
     from unittest.mock import patch, MagicMock
 
     # 模拟 akshare 慢采集: 让第一次 task 仍在跑
@@ -131,7 +131,7 @@ def test_refresh_market_evidence_async_is_single_flight():
 
 
 def test_refresh_market_evidence_status_records_adapter_errors():
-    from backend.services import market_evidence_service as mes
+    from backend.services.market import market_evidence_service as mes
     from unittest.mock import patch, MagicMock
 
     fake_dc = MagicMock()

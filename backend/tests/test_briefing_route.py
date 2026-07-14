@@ -166,7 +166,7 @@ class TestRouteRun:
         def mock_run(**_kwargs):
             return {"status": "started", "trigger": "manual"}
 
-        from backend.services import briefing_service
+        from backend.services.briefing import briefing_service
         with patch.object(briefing_service, "start_run_async", mock_run):
             resp = client.post("/api/briefing/run", headers={"X-Local-Trigger": "1"})
         assert resp.status_code == 202
@@ -181,7 +181,7 @@ class TestRouteRun:
             captured.update(kwargs)
             return {"status": "started", "trigger": "manual", "brief_type": kwargs["brief_type"]}
 
-        from backend.services import briefing_service
+        from backend.services.briefing import briefing_service
         with patch.object(briefing_service, "start_run_async", mock_run):
             resp = client.post(
                 "/api/briefing/run",

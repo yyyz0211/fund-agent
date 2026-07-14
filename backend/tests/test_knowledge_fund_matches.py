@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from backend.db.init_db import init_db
 from backend.db.models import FundWatchlistProfile, KnowledgeDocument, KnowledgeFundMatch
-from backend.services.knowledge_match_service import (
+from backend.services.knowledge.knowledge_match_service import (
     calculate_match_score,
     refresh_knowledge_fund_matches,
 )

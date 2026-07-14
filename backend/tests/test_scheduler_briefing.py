@@ -16,7 +16,7 @@ def reset_settings_cache():
 @pytest.fixture(autouse=True)
 def reset_scheduler_module():
     """每个测试前后重置 `backend.scheduler._scheduler` 状态。"""
-    import backend.scheduler as sched_module
+    from backend.scheduler import scheduler as sched_module
     sched_module._scheduler = None
     yield
     if sched_module._scheduler is not None:
@@ -29,7 +29,7 @@ def reset_scheduler_module():
 
 class TestSchedulerBriefing:
     def test_scheduler_registers_both_jobs(self):
-        import backend.scheduler as sched_module
+        from backend.scheduler import scheduler as sched_module
 
         sched_module.start_scheduler(enabled=True)
         scheduler = sched_module._scheduler
@@ -38,7 +38,7 @@ class TestSchedulerBriefing:
         assert scheduler.get_job("daily_briefing") is not None
 
     def test_briefing_job_disabled_when_setting_false(self, monkeypatch):
-        import backend.scheduler as sched_module
+        from backend.scheduler import scheduler as sched_module
 
         monkeypatch.setenv("SCHEDULER_BRIEFING_ENABLED", "false")
         from backend.config.settings import get_settings
@@ -51,7 +51,7 @@ class TestSchedulerBriefing:
         assert scheduler.get_job("daily_briefing") is None
 
     def test_briefing_job_uses_configured_hour_minute(self, monkeypatch):
-        import backend.scheduler as sched_module
+        from backend.scheduler import scheduler as sched_module
 
         monkeypatch.setenv("SCHEDULER_BRIEFING_CRON_HOUR", "18")
         monkeypatch.setenv("SCHEDULER_BRIEFING_CRON_MINUTE", "30")

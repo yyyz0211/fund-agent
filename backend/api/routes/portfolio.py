@@ -17,9 +17,9 @@ from sqlalchemy import select
 
 from backend.db.models import Fund, FundNav
 from backend.db.session import get_session
-from backend.services import data_collector as dc
-from backend.services import pnl_service as psvc
-from backend.services import portfolio_history as ph
+from backend.services.market import data_collector as dc
+from backend.services.fund import pnl_service as psvc
+from backend.services.fund import portfolio_history as ph
 
 router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
 

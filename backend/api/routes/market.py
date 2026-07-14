@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from backend.api.deps import get_db_session
-from backend.services import market_intel_service, market_service as ms
+from backend.services.market import market_intel_service, market_service as ms
 
 
 router = APIRouter(prefix="/api/market", tags=["market"])
@@ -55,7 +55,7 @@ def get_sectors(
     limit: int = Query(default=10, ge=1, le=100),
 ):
     """返回行业或概念板块数据（涨跌幅 or 资金流向）。"""
-    from backend.services import data_collector as dc
+    from backend.services.market import data_collector as dc
 
     if kind == "industry":
         if sort == "flow":
@@ -112,7 +112,7 @@ def get_market_evidence(
     session: Session = Depends(get_db_session),
 ):
     """按日期/类别查 market_evidence，按 category 分组返回。无证据返回 {count:0, groups:{}}。"""
-    from backend.services import market_evidence_service
+    from backend.services.market import market_evidence_service
     try:
         rows = market_evidence_service.search_evidence(
             trade_date=date, category=category, limit=limit, session=session,
@@ -133,7 +133,7 @@ def refresh_market_evidence(
     """手动触发 evidence 采集（异步）。"""
     if _trigger is None:
         raise HTTPException(status_code=403, detail="Requires X-Local-Trigger header")
-    from backend.services import market_evidence_service
+    from backend.services.market import market_evidence_service
     return market_evidence_service.refresh_market_evidence_async(
         brief_type=brief_type, trigger="manual",
     )
@@ -144,5 +144,5 @@ def get_market_evidence_refresh_status(
     brief_type: str = Query(default="post_market"),
 ):
     """查询最近一次 evidence 采集状态,用于前端解释空态/失败原因。"""
-    from backend.services import market_evidence_service
+    from backend.services.market import market_evidence_service
     return market_evidence_service.get_last_refresh_status(brief_type=brief_type)

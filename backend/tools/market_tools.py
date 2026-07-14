@@ -15,11 +15,11 @@ from sqlalchemy import select
 from backend.config.settings import get_settings
 from backend.db.models import Briefing
 from backend.db.session import get_session
-from backend.services import cls_telegraph_client
-from backend.services import market_service as msvc
-from backend.services import market_intel_service
-from backend.services import market_evidence_service
-from backend.services import briefing_service
+from backend.services.knowledge import cls_telegraph_client
+from backend.services.market import market_service as msvc
+from backend.services.market import market_intel_service
+from backend.services.market import market_evidence_service
+from backend.services.briefing import briefing_service
 
 
 _CLS_TELEGRAPH_PUBLIC_KEYS = (

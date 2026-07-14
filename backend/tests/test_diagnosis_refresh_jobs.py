@@ -1,6 +1,6 @@
 import pytest
 
-from backend.services import diagnosis_refresh_jobs as jobs
+from backend.services.shared import diagnosis_refresh_jobs as jobs
 
 
 @pytest.fixture(autouse=True)

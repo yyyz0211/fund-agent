@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 
 def test_sign_params_matches_observed_cls_signature():
-    from backend.services.cls_telegraph_client import sign_params
+    from backend.services.knowledge.cls_telegraph_client import sign_params
 
     params = {
         "refresh_type": 1,
@@ -20,7 +20,7 @@ def test_sign_params_matches_observed_cls_signature():
 
 
 def test_clean_html_text_removes_em_tags_and_collapses_space():
-    from backend.services.cls_telegraph_client import clean_html_text
+    from backend.services.knowledge.cls_telegraph_client import clean_html_text
 
     text = "【南方<em>基</em><em>金</em>】\n\n  光通信&nbsp;赛道"
 
@@ -28,7 +28,7 @@ def test_clean_html_text_removes_em_tags_and_collapses_space():
 
 
 def test_parse_cls_time_accepts_seconds_millis_and_iso():
-    from backend.services.cls_telegraph_client import parse_cls_time
+    from backend.services.knowledge.cls_telegraph_client import parse_cls_time
 
     assert parse_cls_time(1783481506) == "2026-07-08 11:31:46"
     assert parse_cls_time(1783481506000) == "2026-07-08 11:31:46"
@@ -36,7 +36,7 @@ def test_parse_cls_time_accepts_seconds_millis_and_iso():
 
 
 def test_parse_cls_time_falls_back_to_now():
-    from backend.services.cls_telegraph_client import parse_cls_time
+    from backend.services.knowledge.cls_telegraph_client import parse_cls_time
 
     fallback = datetime(2026, 7, 8, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -47,7 +47,7 @@ def test_parse_cls_time_is_independent_of_process_timezone(monkeypatch):
     import os
     import time
 
-    from backend.services.cls_telegraph_client import parse_cls_time
+    from backend.services.knowledge.cls_telegraph_client import parse_cls_time
 
     original_tz = os.environ.get("TZ")
     try:
@@ -66,7 +66,7 @@ def test_parse_cls_time_is_independent_of_process_timezone(monkeypatch):
 
 
 def test_normalize_telegraph_item_maps_symbols_and_metrics():
-    from backend.services.cls_telegraph_client import normalize_telegraph_item
+    from backend.services.knowledge.cls_telegraph_client import normalize_telegraph_item
 
     item = {
         "id": 2420082,
@@ -132,7 +132,7 @@ class _Client:
 
 
 def test_fetch_roll_list_signs_and_normalizes_rows():
-    from backend.services.cls_telegraph_client import fetch_roll_list
+    from backend.services.knowledge.cls_telegraph_client import fetch_roll_list
 
     client = _Client(_Response({
         "errno": 0,
@@ -167,7 +167,7 @@ def test_fetch_roll_list_signs_and_normalizes_rows():
 
 
 def test_fetch_roll_list_returns_empty_on_bad_response():
-    from backend.services.cls_telegraph_client import fetch_roll_list
+    from backend.services.knowledge.cls_telegraph_client import fetch_roll_list
 
     client = _Client(_Response({"errno": "10012", "msg": "签名错误"}))
 
@@ -175,8 +175,8 @@ def test_fetch_roll_list_returns_empty_on_bad_response():
 
 
 def test_fetch_roll_list_falls_back_to_curl_and_records_diagnostics(monkeypatch):
-    from backend.services import cls_telegraph_client as client_mod
-    from backend.services.cls_telegraph_client import fetch_roll_list
+    from backend.services.knowledge import cls_telegraph_client as client_mod
+    from backend.services.knowledge.cls_telegraph_client import fetch_roll_list
 
     class _FailingClient:
         def get(self, *args, **kwargs):
@@ -223,8 +223,8 @@ def test_fetch_roll_list_falls_back_to_curl_and_records_diagnostics(monkeypatch)
 
 def test_fetch_roll_list_records_diagnostics_when_all_attempts_fail(monkeypatch):
     """所有重试 + curl 都失败时,diagnostics 应有 'connect failed' 记录。"""
-    from backend.services import cls_telegraph_client as client_mod
-    from backend.services.cls_telegraph_client import fetch_roll_list
+    from backend.services.knowledge import cls_telegraph_client as client_mod
+    from backend.services.knowledge.cls_telegraph_client import fetch_roll_list
 
     class _FailingClient:
         def get(self, *args, **kwargs):
@@ -259,7 +259,7 @@ def test_fetch_roll_list_records_diagnostics_when_all_attempts_fail(monkeypatch)
 
 
 def test_search_telegraph_posts_body_and_normalizes_rows():
-    from backend.services.cls_telegraph_client import search_telegraph
+    from backend.services.knowledge.cls_telegraph_client import search_telegraph
 
     client = _Client(_Response({
         "list": [{

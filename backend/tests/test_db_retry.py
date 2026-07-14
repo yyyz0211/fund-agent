@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 from sqlalchemy.exc import OperationalError
 
-from backend.services.db_retry import call_with_sqlite_retry
+from backend.services.shared.db_retry import call_with_sqlite_retry
 
 
 def _make_locked_error() -> OperationalError:

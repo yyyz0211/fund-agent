@@ -4,8 +4,8 @@ import time
 
 import pytest
 
-import backend.services.scheduler_lock as _scheduler_lock
-from backend.services.scheduler_lock import (
+import backend.services.shared.scheduler_lock as _scheduler_lock
+from backend.services.shared.scheduler_lock import (
     SchedulerLockBusy,
     scheduler_lock,
     try_acquire,

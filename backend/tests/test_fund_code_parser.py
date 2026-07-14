@@ -1,7 +1,7 @@
 """Fund code parser tests."""
 import pytest
 
-from backend.services.fund_code_parser import (
+from backend.services.fund.fund_code_parser import (
     extract_fund_codes,
     extract_primary_fund_code,
 )

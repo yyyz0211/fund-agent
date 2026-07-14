@@ -3,7 +3,7 @@ import signal
 
 import pytest
 
-from backend.services import data_collector as dc
+from backend.services.market import data_collector as dc
 
 
 def _raise_timeout(signum, frame):

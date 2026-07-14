@@ -9,9 +9,9 @@ from backend.db.models import (
     KnowledgeClassificationState,
     KnowledgeDocument,
 )
-from backend.services.knowledge_classifier import ClassificationOutcome
-from backend.services.knowledge_ingestion_service import ingest_candidates
-from backend.services.knowledge_schema import KnowledgeClassificationResult, TopicTag
+from backend.services.knowledge.knowledge_classifier import ClassificationOutcome
+from backend.services.knowledge.knowledge_ingestion_service import ingest_candidates
+from backend.services.knowledge.knowledge_schema import KnowledgeClassificationResult, TopicTag
 
 
 class StaticClassifier:

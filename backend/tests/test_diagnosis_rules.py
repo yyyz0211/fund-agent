@@ -1,4 +1,4 @@
-from backend.services.diagnosis_rules import (
+from backend.services.shared.diagnosis_rules import (
     choose_decision_label,
     confidence_for,
     level_for_drawdown,

@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from backend.db.init_db import init_db
 from backend.db.models import Fund, FundProfile, FundWatchlistProfile, Watchlist
-from backend.services.knowledge_fund_profile_service import (
+from backend.services.knowledge.knowledge_fund_profile_service import (
     infer_theme_tags,
     refresh_fund_watchlist_profiles,
 )

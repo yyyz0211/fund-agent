@@ -2,8 +2,8 @@
 from contextlib import ExitStack
 from unittest.mock import patch, MagicMock
 
-from backend.services import market_intel_service as svc
-from backend.services import market_service as ms
+from backend.services.market import market_intel_service as svc
+from backend.services.market import market_service as ms
 
 
 def _patch_collect(return_values: dict):

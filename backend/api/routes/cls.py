@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from backend.api.deps import get_db_session
-from backend.services import cls_telegraph_sync_service
+from backend.services.knowledge import cls_telegraph_sync_service
 
 
 router = APIRouter(prefix="/api/cls", tags=["cls"])

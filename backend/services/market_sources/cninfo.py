@@ -7,7 +7,7 @@
 """
 from __future__ import annotations
 
-from backend.services.data_collector import fetch_announcements
+from backend.services.market import data_collector
 
 
 class CninfoAnnouncementAdapter:

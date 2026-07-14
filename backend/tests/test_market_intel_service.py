@@ -5,7 +5,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 from backend.db.models import Briefing  # noqa: F401  注册入 Base.metadata
-from backend.services import market_intel_service
+from backend.services.market import market_intel_service
 
 
 @pytest.fixture
@@ -73,7 +73,7 @@ def test_upsert_market_snapshot_idempotent(in_memory_session):
 
 
 def test_collect_market_intel_returns_all_keys():
-    from backend.services import market_intel_service
+    from backend.services.market import market_intel_service
     mocks = _mock_all_dc_calls()
     with patch.object(market_intel_service.dc, "fetch_market_breadth", mocks["fetch_market_breadth"]), \
          patch.object(market_intel_service.dc, "fetch_sector_snapshot", mocks["fetch_sector_snapshot"]), \
@@ -98,7 +98,7 @@ def test_collect_market_intel_returns_all_keys():
 
 def test_collect_market_intel_partial_failure_continues():
     """单项 akshare 失败时其他字段仍返回，不抛整体异常。"""
-    from backend.services import market_intel_service
+    from backend.services.market import market_intel_service
     mocks = _mock_all_dc_calls()
     mocks["fetch_concept_sectors"] = MagicMock(side_effect=RuntimeError("network"))
     with patch.object(market_intel_service.dc, "fetch_market_breadth", mocks["fetch_market_breadth"]), \
@@ -121,7 +121,7 @@ def test_refresh_async_uses_target_date():
     """refresh_market_intel_async(target_date='2026-07-07') 后,任务用该日采集,
     而不是默认的今天。防止 UI 选"昨日"+刷新仍抓今天导致的"刷了看不到"bug。
     """
-    from backend.services import market_intel_service
+    from backend.services.market import market_intel_service
     import time
 
     captured = {}
@@ -146,7 +146,7 @@ def test_refresh_async_uses_target_date():
 
 def test_refresh_async_invalid_date_falls_back_to_today():
     """target_date 解析失败时,降级为今天(向后兼容 + 防爆)。"""
-    from backend.services import market_intel_service
+    from backend.services.market import market_intel_service
 
     def fake_collect(trade_date, snapshot_type, session=None):
         return {}
@@ -171,7 +171,7 @@ def test_collect_market_intel_uses_serial_executor():
     """
     import ast
     import inspect
-    from backend.services.market_intel_service import collect_market_intel
+    from backend.services.market.market_intel_service import collect_market_intel
     src = inspect.getsource(collect_market_intel)
     tree = ast.parse(src)
     found_workers: list[int] = []

@@ -6,7 +6,7 @@ from sqlalchemy.orm import sessionmaker
 import backend.db.models  # noqa: F401
 from backend.db.init_db import init_db
 from backend.db.session import make_engine
-from backend.services import fund_profile_service as fps
+from backend.services.fund import fund_profile_service as fps
 
 
 @pytest.fixture()

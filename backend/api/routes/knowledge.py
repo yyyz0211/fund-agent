@@ -10,7 +10,7 @@ from backend.api.deps import get_db_session
 from backend.config.settings import get_settings
 from backend.db.init_db import rebuild_pgvector_schema
 from backend.db.session import engine as default_engine
-from backend.services import knowledge_reindex_jobs, knowledge_search_service
+from backend.services.knowledge import knowledge_reindex_jobs, knowledge_search_service
 
 
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])

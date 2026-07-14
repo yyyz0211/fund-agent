@@ -46,13 +46,13 @@ def _settings(**overrides):
 
 
 def test_vector_store_factory_degrades_for_sqlite():
-    from backend.services.knowledge_pgvector import build_vector_store
+    from backend.services.knowledge.knowledge_pgvector import build_vector_store
 
     assert build_vector_store(RecordingSession(dialect="sqlite"), _settings()) is None
 
 
 def test_vector_store_factory_builds_pgvector_for_postgres():
-    from backend.services.knowledge_pgvector import PgVectorStore, build_vector_store
+    from backend.services.knowledge.knowledge_pgvector import PgVectorStore, build_vector_store
 
     store = build_vector_store(RecordingSession(), _settings())
 
@@ -60,8 +60,8 @@ def test_vector_store_factory_builds_pgvector_for_postgres():
 
 
 def test_pgvector_store_uses_parameterized_upsert_search_and_delete():
-    from backend.services.knowledge_pgvector import PgVectorStore
-    from backend.services.knowledge_vector import VectorItem
+    from backend.services.knowledge.knowledge_pgvector import PgVectorStore
+    from backend.services.knowledge.knowledge_vector import VectorItem
 
     session = RecordingSession(rows=[{
         "document_id": 7,
@@ -98,8 +98,8 @@ def test_pgvector_store_uses_parameterized_upsert_search_and_delete():
 
 def test_pgvector_store_rejects_wrong_vector_dimension():
     import pytest
-    from backend.services.knowledge_pgvector import PgVectorStore
-    from backend.services.knowledge_vector import VectorItem
+    from backend.services.knowledge.knowledge_pgvector import PgVectorStore
+    from backend.services.knowledge.knowledge_vector import VectorItem
 
     store = PgVectorStore(RecordingSession(), model="embed-model", version="v1", dimensions=3)
 

@@ -6,10 +6,11 @@ from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Query, status
 
-from backend.services import diagnosis_refresh_jobs as refresh_jobs
-from backend.services import diagnosis_service as ds
-from backend.services import fund_service as fs
-from backend.services.metric_service import _PERIOD_ROWS  # noqa: PLC2701
+from backend.services.shared import diagnosis_refresh_jobs as refresh_jobs
+from backend.services.shared import diagnosis_service as ds
+from backend.services.fund import fund_service as fs
+from backend.services.shared import metric_service
+from backend.services.shared.metric_service import _PERIOD_ROWS  # noqa: PLC2701
 
 router = APIRouter(prefix="/api/funds", tags=["funds"])
 

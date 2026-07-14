@@ -11,7 +11,7 @@
 from langchain_core.tools import tool
 
 from backend.db.session import get_session
-from backend.services import what_if_service as wsvc
+from backend.services.fund import what_if_service as wsvc
 
 
 @tool

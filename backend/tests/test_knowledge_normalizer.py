@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from backend.services.knowledge_normalizer import (
+from backend.services.knowledge.knowledge_normalizer import (
     build_normalized_text,
     canonical_content_hash,
     effective_until,
     topic_names,
 )
-from backend.services.knowledge_schema import KnowledgeClassificationResult, TopicTag
+from backend.services.knowledge.knowledge_schema import KnowledgeClassificationResult, TopicTag
 
 
 def test_canonical_content_hash_is_source_independent():

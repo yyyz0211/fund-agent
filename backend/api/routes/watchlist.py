@@ -16,8 +16,8 @@ from typing import Literal, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from backend.services import watchlist_preload_jobs as preload_jobs
-from backend.services import watchlist_service as ws
+from backend.services.watchlist import watchlist_preload_jobs as preload_jobs
+from backend.services.watchlist import watchlist_service as ws
 
 router = APIRouter(prefix="/api/watchlist", tags=["watchlist"])
 

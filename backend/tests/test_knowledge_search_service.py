@@ -7,8 +7,8 @@ from sqlalchemy.orm import Session
 
 from backend.db.init_db import init_db
 from backend.db.models import KnowledgeDocument
-from backend.services import knowledge_search_service as service
-from backend.services.knowledge_vector import (
+from backend.services.knowledge import knowledge_search_service as service
+from backend.services.knowledge.knowledge_vector import (
     DeterministicEmbeddingProvider,
     InMemoryVectorStore,
     VectorItem,

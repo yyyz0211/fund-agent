@@ -50,7 +50,7 @@ def _ensure_schema() -> None:
     from backend import scheduler as app_scheduler
     from backend.config.settings import get_settings
     from backend.db.init_db import init_db, MigrationError
-    from backend.services import knowledge_reindex_jobs
+    from backend.services.knowledge import knowledge_reindex_jobs
 
     logger = logging.getLogger(__name__)
 
@@ -103,14 +103,14 @@ def health() -> dict:
     from backend import scheduler as app_scheduler
     from backend.config.settings import get_settings
     from backend.db.session import engine
-    from backend.services.knowledge_pgvector import (
+    from backend.services.knowledge.knowledge_pgvector import (
         database_health_snapshot,
         knowledge_vector_health_snapshot,
     )
 
     database = database_health_snapshot(engine)
     knowledge_vector = knowledge_vector_health_snapshot(engine, get_settings())
-    active_scheduler = app_scheduler._scheduler
+    active_scheduler = app_scheduler.get_scheduler()
     scheduler = {
         "status": "running"
         if active_scheduler is not None and bool(getattr(active_scheduler, "running", True))

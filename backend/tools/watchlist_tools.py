@@ -1,7 +1,7 @@
 """自选池 LangChain 工具。薄包装 watchlist_service。"""
 from langchain_core.tools import tool
 
-from backend.services import watchlist_service as wsvc
+from backend.services.watchlist import watchlist_service as wsvc
 
 
 @tool

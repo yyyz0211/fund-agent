@@ -18,13 +18,13 @@ def _settings(**overrides):
 
 
 def test_embedding_factory_returns_none_when_configuration_is_incomplete():
-    from backend.services.knowledge_embedding import build_embedding_provider
+    from backend.services.knowledge.knowledge_embedding import build_embedding_provider
 
     assert build_embedding_provider(_settings()) is None
 
 
 def test_embedding_factory_never_reuses_chat_configuration(monkeypatch):
-    from backend.services import knowledge_embedding
+    from backend.services.knowledge import knowledge_embedding
 
     settings = _settings(
         deepseek_api_key="chat-key",
@@ -38,7 +38,7 @@ def test_embedding_factory_never_reuses_chat_configuration(monkeypatch):
 
 
 def test_embedding_factory_builds_provider_from_complete_configuration(monkeypatch):
-    from backend.services import knowledge_embedding
+    from backend.services.knowledge import knowledge_embedding
 
     captured = {}
     sentinel = object()

@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pandas as pd
 import pytest
 
-from backend.services import data_collector as dc
+from backend.services.market import data_collector as dc
 
 
 def _fake_daily_df():

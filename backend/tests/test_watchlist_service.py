@@ -3,7 +3,7 @@ from backend.db.session import make_engine
 from backend.db.init_db import init_db
 import backend.db.models  # noqa: F401
 from sqlalchemy.orm import sessionmaker
-from backend.services import watchlist_service as ws
+from backend.services.watchlist import watchlist_service as ws
 
 
 @pytest.fixture()

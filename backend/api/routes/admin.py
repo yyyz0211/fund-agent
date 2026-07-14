@@ -5,7 +5,7 @@
 """
 from fastapi import APIRouter
 
-from backend.services import scheduled_refresh as sr
+from backend.services.market import scheduled_refresh as sr
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
