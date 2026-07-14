@@ -7,11 +7,13 @@
 - 包含回答格式规范(数字 + source/as_of + 表格)
 - 包含风险边界(不确定预测、不强制交易、不掩饰缺失)
 - 包含 few-shot 至少一个示例
-"""
-from string import Template
 
+注: BRIEFING 专属 prompt(`BRIEFING_PROMPT_TEMPLATE`)在 Phase 1.1 时
+已经搬到 `backend.services.briefing.prompts`。Briefing 的回归测试
+(`test_briefing_prompt_does_not_use_doubled_braces_for_json`)也一并
+搬到了对应的 `test_briefing_prompts.py`。
+"""
 from backend.graph.prompts import (
-    BRIEFING_PROMPT_TEMPLATE,
     FEW_SHOT_EXAMPLES,
     get_system_prompt,
 )
@@ -114,29 +116,3 @@ def test_few_shot_examples_contain_source_and_date():
         assert "source" in assistant.lower() or "来源" in assistant, (
             f"含数据 few-shot 未示范引用数据来源: {assistant!r}"
         )
-
-
-def test_briefing_prompt_does_not_use_doubled_braces_for_json():
-    """Regression: BRIEFING_PROMPT_TEMPLATE 末尾 JSON 模板必须用单 { ... },
-    不能用 {{ ... }}。Template.substitute() 不解析 { }, 所以 {{ 会 literal
-    传给 LLM,导致 LLM 返回 `{{...}}` 形式, json.loads 解析失败落到 raw_content
-    分支, briefing_service.compose_briefing 把整串 outer doubled braces 当
-    markdown 返回, 前端 ReactMarkdown 渲染成 `<pre><code class="language-json">`。
-
-    历史 bug: 用户截图看到简报内容被包成 JSON 字符串输出, 而不是 markdown。
-    """
-    # substitute 后才能还原 fed-to-LLM 的字符串
-    rendered = Template(BRIEFING_PROMPT_TEMPLATE).substitute(
-        snapshot_json='{"market_snapshot": []}',
-        evidence_json='[]',
-    )
-    # 不应在末段出现 `{{` (literal double braces)
-    assert "{{" not in rendered, (
-        "BRIEFING_PROMPT_TEMPLATE substitute 后含 `{{` —— "
-        "会原样传给 LLM, 导致返回 markdown 字段包成 JSON 字符串。"
-    )
-    # 应该出现合法的 JSON 模板 (单 braces)
-    assert '"markdown"' in rendered
-    assert '"sections"' in rendered
-    # 模板里"{" + "markdown" 之间距离不远 (LLM 能识别为 JSON 模板)
-    assert rendered.index("{") < rendered.index('"markdown"')
