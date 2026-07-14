@@ -3,6 +3,11 @@
 只做最小骨架：注册 CORS、五个业务 router、健康检查端点。
 业务由 `routes/` 拆分，本文件不应承载任何业务函数。
 """
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -50,12 +55,14 @@ def _ensure_schema() -> None:
     logger = logging.getLogger(__name__)
 
     # 运行 Alembic 迁移
+    # 项目根路径基于本文件位置解析
+    project_root = Path(__file__).resolve().parent.parent.parent
     try:
         result = subprocess.run(
             [sys.executable, "-m", "alembic", "-c", "backend/alembic.ini", "upgrade", "head"],
             capture_output=True,
             text=True,
-            cwd="/Users/leon/fund-agent",
+            cwd=str(project_root),
         )
         if result.returncode == 0:
             logger.info("[startup] Alembic migrations applied successfully")

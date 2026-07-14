@@ -5,7 +5,7 @@ Phase 3 新增:basic_info / nav_history (全量+区间) / indices / watchlist CR
 Phase 4 新增:LangGraph QA flow
 
 用法:
-    cd /Users/leon/fund-agent
+    cd /path/to/fund-agent
     .venv/bin/python -m backend.scripts.smoke_fetch 110011
 需要 backend/.env 里有 DEEPSEEK_API_KEY(可选,无 key 时跳过 agent 步骤)。
 """
