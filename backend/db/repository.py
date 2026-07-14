@@ -1,15 +1,7 @@
-"""`backend.services` 用到的持久化帮助函数。
+"""数据访问层 repository。
 
-每个函数都把 `Session` 作为第一个参数,由调用方控制事务边界 —
-service 既可以传入测试用的内存 Session,也可以传通过
-`get_session()` 拿到的真连接。
-
-约定:
-- "upsert" 指 insert-if-missing, update-if-present,一次事务搞定。
-- 凡是返回行的函数,返回的都是纯 `dict`(而不是 ORM 实例),
-  这样调用方可以直接 JSON 序列化。
-- 写路径默认在内部自己 `session.commit()`,调用方不要重复提交;少数需要
-  原子组合的 service 会显式传 `commit=False` 并自行控制事务。
+按 spec §4.2 重构后,所有写函数仅 `session.flush()`;
+事务边界(commit/rollback/close)由 caller 决定。
 """
 from sqlalchemy import Integer, and_, cast, delete, func, or_, select, update
 
@@ -144,7 +136,7 @@ def add_to_watchlist(session, fund_code: str, note: str | None = None) -> dict:
         return _watchlist_to_dict(existing)
     w = Watchlist(fund_code=fund_code, note=note)
     session.add(w)
-    session.commit()
+    session.flush()
     return _watchlist_to_dict(w)
 
 
@@ -161,7 +153,7 @@ def add_to_watchlist_full(session, fund_code: str, attrs: dict) -> dict:
     init = {k: v for k, v in (attrs or {}).items() if k in _WATCHLIST_PATCH_FIELDS}
     w = Watchlist(fund_code=fund_code, **init)
     session.add(w)
-    session.commit()
+    session.flush()
     return _watchlist_to_dict(w)
 
 
@@ -181,7 +173,7 @@ def remove_from_watchlist(session, fund_code: str) -> bool:
     w = session.scalar(select(Watchlist).where(Watchlist.fund_code == fund_code))
     if not w:
         return False
-    # 顺序:交易明细 → FundNav(行最多) → Fund/Profile → Watchlist,统一一次 commit。
+    # 顺序:交易明细 → FundNav(行最多) → Fund/Profile → Watchlist,统一一次 flush。
     # delete 一条 SQL 不读 ORM,大表更快。
     session.execute(delete(FundTransaction).where(FundTransaction.fund_code == fund_code))
     session.execute(delete(FundInvestmentPlan).where(FundInvestmentPlan.fund_code == fund_code))
@@ -190,7 +182,7 @@ def remove_from_watchlist(session, fund_code: str) -> bool:
     session.execute(delete(FundProfile).where(FundProfile.fund_code == fund_code))
     session.execute(delete(Fund).where(Fund.fund_code == fund_code))
     session.delete(w)
-    session.commit()
+    session.flush()
     return True
 
 
@@ -200,7 +192,7 @@ def update_watchlist_note(session, fund_code: str, note: str) -> dict | None:
     if not w:
         return None
     w.note = note
-    session.commit()
+    session.flush()
     return _watchlist_to_dict(w)
 
 
@@ -227,13 +219,12 @@ def update_watchlist(session, fund_code: str, patch: dict) -> dict | None:
         return None
     for k, v in _patch_to_set(patch).items():
         setattr(w, k, v)
-    session.commit()
+    session.flush()
     return _watchlist_to_dict(w)
 
 
 def update_watchlist_preload(session, fund_code: str, *,
-                             status: str | None = None,
-                             commit: bool = True) -> dict | None:
+                             status: str | None = None) -> dict | None:
     """后台预热任务专用更新入口。
     """
     w = session.scalar(select(Watchlist).where(Watchlist.fund_code == fund_code))
@@ -241,8 +232,7 @@ def update_watchlist_preload(session, fund_code: str, *,
         return None
     if status is not None:
         w.preload_status = status
-    if commit:
-        session.commit()
+    session.flush()
     return _watchlist_to_dict(w)
 
 
@@ -269,7 +259,7 @@ def backfill_watchlist_fund_names(session) -> int:
         .returning(Watchlist.fund_code)
     ).all()
     if rows:
-        session.commit()
+        session.flush()
     return len(rows)
 
 
@@ -286,7 +276,7 @@ def upsert_fund(session, fund: dict) -> None:
         for k, v in fund.items():
             if k != "fund_code":
                 setattr(obj, k, v)
-    session.commit()
+    session.flush()
 
 
 _FUND_PROFILE_FIELDS = {
@@ -315,7 +305,7 @@ def upsert_fund_profile(session, fund_code: str, attrs: dict) -> dict:
     else:
         for k, v in data.items():
             setattr(obj, k, v)
-    session.commit()
+    session.flush()
     return _profile_to_dict(obj)
 
 
@@ -340,7 +330,7 @@ def upsert_navs(session, fund_code: str, rows: list[dict]) -> int:
             continue
         session.add(FundNav(fund_code=fund_code, **r))
         inserted += 1
-    session.commit()
+    session.flush()
     return inserted
 
 
@@ -485,7 +475,7 @@ def next_tx_seq(session, fund_code: str, tx_date: str) -> int:
     return int(current) + 1
 
 
-def add_transaction(session, fund_code: str, attrs: dict, *, commit: bool = True) -> dict:
+def add_transaction(session, fund_code: str, attrs: dict) -> dict:
     """插入一笔交易并返回序列化结果。
 
     `attrs` 允许的字段:`tx_date`、`amount`、`nav`、`fee`、`note`、
@@ -508,11 +498,8 @@ def add_transaction(session, fund_code: str, attrs: dict, *, commit: bool = True
         note=attrs.get("note"),
     )
     session.add(tx)
-    if commit:
-        session.commit()
-    else:
-        session.flush()
-        session.refresh(tx)
+    session.flush()
+    session.refresh(tx)
     return _tx_to_dict(tx)
 
 
@@ -523,7 +510,7 @@ def delete_transaction(session, tx_id: int) -> dict | None:
         return None
     snap = _tx_to_dict(tx)
     session.delete(tx)
-    session.commit()
+    session.flush()
     return snap
 
 
@@ -542,8 +529,7 @@ def list_investment_plans(session, fund_code: str) -> list[dict]:
     return [_investment_plan_to_dict(plan) for plan in rows]
 
 
-def add_investment_plan(session, fund_code: str, attrs: dict, *,
-                        commit: bool = True) -> dict:
+def add_investment_plan(session, fund_code: str, attrs: dict) -> dict:
     """新增一条定投计划规则。"""
     plan = FundInvestmentPlan(
         fund_code=fund_code,
@@ -556,10 +542,7 @@ def add_investment_plan(session, fund_code: str, attrs: dict, *,
         note=attrs.get("note"),
     )
     session.add(plan)
-    if commit:
-        session.commit()
-    else:
-        session.flush()
+    session.flush()
     session.refresh(plan)
     return _investment_plan_to_dict(plan)
 
@@ -577,7 +560,7 @@ def update_investment_plan(session, fund_code: str, plan_id: int,
     for key, value in (patch or {}).items():
         if key in _INVESTMENT_PLAN_PATCH_FIELDS:
             setattr(plan, key, value)
-    session.commit()
+    session.flush()
     return _investment_plan_to_dict(plan)
 
 
@@ -592,7 +575,7 @@ def delete_investment_plan(session, fund_code: str, plan_id: int) -> dict | None
         return None
     snap = _investment_plan_to_dict(plan)
     session.delete(plan)
-    session.commit()
+    session.flush()
     return snap
 
 
@@ -616,8 +599,7 @@ def get_pending_buy(session, fund_code: str, pending_id: int) -> dict | None:
     return _pending_buy_to_dict(row) if row else None
 
 
-def add_pending_buy(session, fund_code: str, attrs: dict, *,
-                    commit: bool = True) -> dict:
+def add_pending_buy(session, fund_code: str, attrs: dict) -> dict:
     """新增一条待确认申购记录。"""
     row = FundPendingBuy(
         fund_code=fund_code,
@@ -628,16 +610,13 @@ def add_pending_buy(session, fund_code: str, attrs: dict, *,
         status="pending",
     )
     session.add(row)
-    if commit:
-        session.commit()
-    else:
-        session.flush()
+    session.flush()
     session.refresh(row)
     return _pending_buy_to_dict(row)
 
 
 def update_pending_buy(session, fund_code: str, pending_id: int,
-                       patch: dict, *, commit: bool = True) -> dict | None:
+                       patch: dict) -> dict | None:
     """更新待确认申购;fund_code 不匹配时视为不存在。"""
     row = session.scalar(
         select(FundPendingBuy)
@@ -649,11 +628,8 @@ def update_pending_buy(session, fund_code: str, pending_id: int,
     for key in ("status", "nav_date", "nav", "share", "transaction_id"):
         if key in patch:
             setattr(row, key, patch[key])
-    if commit:
-        session.commit()
-    else:
-        session.flush()
-        session.refresh(row)
+    session.flush()
+    session.refresh(row)
     return _pending_buy_to_dict(row)
 
 
