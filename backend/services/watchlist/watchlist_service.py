@@ -2,10 +2,16 @@
 
 对 repository 的自选池 CRUD 做一层 session 管理封装，使 watchlist 工具
 保持薄包装。自选池是本地用户数据，返回不带 source/as_of。
+
+Session 管理约定：
+- 公开 API 函数接受可选 session 参数
+- 内部实现函数只接收 session 参数，不管理事务
+- 调用方提供 session 时，调用方负责 commit/rollback/close
+- 调用方不提供 session 时，函数内部使用 session_scope 包装
 """
 from sqlalchemy import func, select
 
-from backend.db.session import get_session
+from backend.db.session_scope import session_scope
 from backend.db import repository as repo
 from backend.db.models import FundTransaction, Watchlist
 
@@ -52,19 +58,17 @@ class PendingBuyNavMissing(Exception):
         self.tx_date = tx_date
 
 
-def _with_session(session):
-    return session or get_session()
-
-
 def list_watchlist(session=None) -> list[dict]:
     """返回自选池全部行，空时返回 []。"""
-    s = _with_session(session)
-    owns = session is None
-    try:
-        return repo.get_watchlist(s)
-    finally:
-        if owns:
-            s.close()
+    if session is None:
+        with session_scope() as s:
+            return _list_watchlist_impl(s)
+    return _list_watchlist_impl(session)
+
+
+def _list_watchlist_impl(s) -> list[dict]:
+    """纯业务,只 flush。事务由调用方决定。"""
+    return repo.get_watchlist(s)
 
 
 def add(fund_code: str, note: str = "", session=None) -> dict:
@@ -73,13 +77,15 @@ def add(fund_code: str, note: str = "", session=None) -> dict:
     只接受 `note` —— 这是 LangChain `add_fund_to_watchlist` 工具的
     入参形状,不动它。
     """
-    s = _with_session(session)
-    owns = session is None
-    try:
-        return repo.add_to_watchlist(s, fund_code, note=note or None)
-    finally:
-        if owns:
-            s.close()
+    if session is None:
+        with session_scope() as s:
+            return _add_impl(s, fund_code, note)
+    return _add_impl(session, fund_code, note)
+
+
+def _add_impl(s, fund_code: str, note: str) -> dict:
+    """纯业务,只 flush。事务由调用方决定。"""
+    return repo.add_to_watchlist(s, fund_code, note=note or None)
 
 
 def add_full(fund_code: str, attrs: dict, session=None) -> dict:
@@ -89,50 +95,58 @@ def add_full(fund_code: str, attrs: dict, session=None) -> dict:
     holding_share / cost_nav / buy_date。重复 fund_code 直接返回现有行,
     不会用 attrs 去覆盖已有数据 —— 想改请用 PATCH。
     """
-    s = _with_session(session)
-    owns = session is None
-    try:
-        return repo.add_to_watchlist_full(s, fund_code, attrs or {})
-    finally:
-        if owns:
-            s.close()
+    if session is None:
+        with session_scope() as s:
+            return _add_full_impl(s, fund_code, attrs)
+    return _add_full_impl(session, fund_code, attrs)
+
+
+def _add_full_impl(s, fund_code: str, attrs: dict) -> dict:
+    """纯业务,只 flush。事务由调用方决定。"""
+    return repo.add_to_watchlist_full(s, fund_code, attrs or {})
 
 
 def remove(fund_code: str, session=None) -> dict:
     """从自选池移除，返回 {fund_code, removed: bool}。"""
-    s = _with_session(session)
-    owns = session is None
-    try:
-        removed = repo.remove_from_watchlist(s, fund_code)
-        return {"fund_code": fund_code, "removed": removed}
-    finally:
-        if owns:
-            s.close()
+    if session is None:
+        with session_scope() as s:
+            return _remove_impl(s, fund_code)
+    return _remove_impl(session, fund_code)
+
+
+def _remove_impl(s, fund_code: str) -> dict:
+    """纯业务,只 flush。事务由调用方决定。"""
+    removed = repo.remove_from_watchlist(s, fund_code)
+    return {"fund_code": fund_code, "removed": removed}
 
 
 def update_note(fund_code: str, note: str, session=None) -> dict:
     """更新备注，返回更新后的行；不在池中返回可读 error dict。"""
-    s = _with_session(session)
-    owns = session is None
-    try:
-        row = repo.update_watchlist_note(s, fund_code, note)
-        if row is None:
-            return {"error": f"{fund_code} 不在自选池中"}
-        return row
-    finally:
-        if owns:
-            s.close()
+    if session is None:
+        with session_scope() as s:
+            return _update_note_impl(s, fund_code, note)
+    return _update_note_impl(session, fund_code, note)
+
+
+def _update_note_impl(s, fund_code: str, note: str) -> dict:
+    """纯业务,只 flush。事务由调用方决定。"""
+    row = repo.update_watchlist_note(s, fund_code, note)
+    if row is None:
+        return {"error": f"{fund_code} 不在自选池中"}
+    return row
 
 
 def get_one(fund_code: str, session=None) -> dict | None:
     """按 `fund_code` 查单条,不在池中返回 None。"""
-    s = _with_session(session)
-    owns = session is None
-    try:
-        return repo.get_watchlist_row(s, fund_code)
-    finally:
-        if owns:
-            s.close()
+    if session is None:
+        with session_scope() as s:
+            return _get_one_impl(s, fund_code)
+    return _get_one_impl(session, fund_code)
+
+
+def _get_one_impl(s, fund_code: str) -> dict | None:
+    """纯业务,只 flush。事务由调用方决定。"""
+    return repo.get_watchlist_row(s, fund_code)
 
 
 def update(fund_code: str, patch: dict, session=None) -> dict | None:
@@ -142,24 +156,28 @@ def update(fund_code: str, patch: dict, session=None) -> dict | None:
     清空",本服务不做 None 解释 —— 调用方需要清空某字段请用其它入口
     (或后续加 `clear_*` 工具)。返回更新后的行 dict,或 None。
     """
-    s = _with_session(session)
-    owns = session is None
-    try:
-        return repo.update_watchlist(s, fund_code, patch or {})
-    finally:
-        if owns:
-            s.close()
+    if session is None:
+        with session_scope() as s:
+            return _update_impl(s, fund_code, patch)
+    return _update_impl(session, fund_code, patch)
+
+
+def _update_impl(s, fund_code: str, patch: dict) -> dict | None:
+    """纯业务,只 flush。事务由调用方决定。"""
+    return repo.update_watchlist(s, fund_code, patch or {})
 
 
 def list_transactions(fund_code: str, session=None) -> list[dict]:
     """列出一只基金的全部买入/加仓记录(按日期+seq 升序)。"""
-    s = _with_session(session)
-    owns = session is None
-    try:
-        return repo.list_transactions(s, fund_code)
-    finally:
-        if owns:
-            s.close()
+    if session is None:
+        with session_scope() as s:
+            return _list_transactions_impl(s, fund_code)
+    return _list_transactions_impl(session, fund_code)
+
+
+def _list_transactions_impl(s, fund_code: str) -> list[dict]:
+    """纯业务,只 flush。事务由调用方决定。"""
+    return repo.list_transactions(s, fund_code)
 
 
 def add_transaction(fund_code: str, attrs: dict, session=None) -> dict | None:
@@ -168,18 +186,20 @@ def add_transaction(fund_code: str, attrs: dict, session=None) -> dict | None:
     返回 {"transaction": <新交易 dict>, "watchlist": <重算后的行>};
     基金不在自选池中返回 None —— 调用方发 404。
     """
-    s = _with_session(session)
-    owns = session is None
-    try:
-        if repo.get_watchlist_row(s, fund_code) is None:
-            return None
-        _validate_transaction_nav(s, fund_code, attrs or {})
-        tx = repo.add_transaction(s, fund_code, attrs or {})
-        wl = _recalc(s, fund_code)
-        return {"transaction": tx, "watchlist": wl}
-    finally:
-        if owns:
-            s.close()
+    if session is None:
+        with session_scope() as s:
+            return _add_transaction_impl(s, fund_code, attrs)
+    return _add_transaction_impl(session, fund_code, attrs)
+
+
+def _add_transaction_impl(s, fund_code: str, attrs: dict) -> dict | None:
+    """纯业务,只 flush。事务由调用方决定。"""
+    if repo.get_watchlist_row(s, fund_code) is None:
+        return None
+    _validate_transaction_nav(s, fund_code, attrs or {})
+    tx = repo.add_transaction(s, fund_code, attrs or {})
+    wl = _recalc(s, fund_code)
+    return {"transaction": tx, "watchlist": wl}
 
 
 def set_initial_holding(fund_code: str, attrs: dict, session=None) -> dict:
@@ -193,53 +213,50 @@ def set_initial_holding(fund_code: str, attrs: dict, session=None) -> dict:
         InitialHoldingConflict: 目标基金已有交易历史(避免把首笔"initial"
             buy 静默合并到现有持仓,导致平均成本被错算)。
     """
-    s = _with_session(session)
-    owns = session is None
+    if session is None:
+        with session_scope() as s:
+            return _set_initial_holding_impl(s, fund_code, attrs)
+    return _set_initial_holding_impl(session, fund_code, attrs)
+
+
+def _set_initial_holding_impl(s, fund_code: str, attrs: dict) -> dict:
+    """纯业务,只 flush。事务由调用方决定。"""
     data = attrs or {}
-    try:
-        _validate_transaction_nav(s, fund_code, data)
-        w = s.scalar(select(Watchlist).where(Watchlist.fund_code == fund_code))
-        if w is None:
-            w = Watchlist(fund_code=fund_code)
-            s.add(w)
-            s.flush()
-            existing_tx_count = 0
-        else:
-            existing_tx_count = s.scalar(
-                select(func.count())
-                .select_from(FundTransaction)
-                .where(FundTransaction.fund_code == fund_code)
-            ) or 0
-            if existing_tx_count > 0:
-                # 早期抛错,事务还没写任何东西,不需要回滚;
-                # 但走 finally → close 一致性
-                raise InitialHoldingConflict(fund_code, existing_tx_count)
+    _validate_transaction_nav(s, fund_code, data)
+    w = s.scalar(select(Watchlist).where(Watchlist.fund_code == fund_code))
+    if w is None:
+        w = Watchlist(fund_code=fund_code)
+        s.add(w)
+        s.flush()
+        existing_tx_count = 0
+    else:
+        existing_tx_count = s.scalar(
+            select(func.count())
+            .select_from(FundTransaction)
+            .where(FundTransaction.fund_code == fund_code)
+        ) or 0
+        if existing_tx_count > 0:
+            raise InitialHoldingConflict(fund_code, existing_tx_count)
 
-        w.is_holding = True
-        if data.get("is_focus") is not None:
-            w.is_focus = bool(data["is_focus"])
-        if data.get("watchlist_note") is not None:
-            w.note = data["watchlist_note"]
-        if data.get("amount") is not None:
-            w.holding_amount = float(data["amount"])
+    w.is_holding = True
+    if data.get("is_focus") is not None:
+        w.is_focus = bool(data["is_focus"])
+    if data.get("watchlist_note") is not None:
+        w.note = data["watchlist_note"]
+    if data.get("amount") is not None:
+        w.holding_amount = float(data["amount"])
 
-        tx = repo.add_transaction(s, fund_code, {
-            "tx_date": data["tx_date"],
-            "amount": data["amount"],
-            "nav": data["nav"],
-            "fee": data.get("fee"),
-            "note": data.get("note"),
-            "kind": data.get("kind", "buy"),
-        }, commit=False)
-        wl = _recalc(s, fund_code, commit=False)
-        s.commit()
-        return {"transaction": tx, "watchlist": wl}
-    except Exception:
-        s.rollback()
-        raise
-    finally:
-        if owns:
-            s.close()
+    tx = repo.add_transaction(s, fund_code, {
+        "tx_date": data["tx_date"],
+        "amount": data["amount"],
+        "nav": data["nav"],
+        "fee": data.get("fee"),
+        "note": data.get("note"),
+        "kind": data.get("kind", "buy"),
+    })
+    wl = _recalc(s, fund_code)
+    s.commit()
+    return {"transaction": tx, "watchlist": wl}
 
 
 def remove_transaction(fund_code: str, tx_id: int, session=None) -> dict | None:
@@ -249,20 +266,22 @@ def remove_transaction(fund_code: str, tx_id: int, session=None) -> dict | None:
     或 None(交易不存在)。如果路径 fund_code 与交易所属基金不一致,
     返回带 error 的 dict,调用方应转 400,且不会删除任何数据。
     """
-    s = _with_session(session)
-    owns = session is None
-    try:
-        existing = repo.get_transaction(s, tx_id)
-        if existing is None:
-            return None
-        if existing["fund_code"] != fund_code:
-            return {"error": "fund_mismatch", "transaction": existing}
-        snapshot = repo.delete_transaction(s, tx_id)
-        wl = _recalc(s, fund_code)
-        return {"removed": True, "transaction": snapshot, "watchlist": wl}
-    finally:
-        if owns:
-            s.close()
+    if session is None:
+        with session_scope() as s:
+            return _remove_transaction_impl(s, fund_code, tx_id)
+    return _remove_transaction_impl(session, fund_code, tx_id)
+
+
+def _remove_transaction_impl(s, fund_code: str, tx_id: int) -> dict | None:
+    """纯业务,只 flush。事务由调用方决定。"""
+    existing = repo.get_transaction(s, tx_id)
+    if existing is None:
+        return None
+    if existing["fund_code"] != fund_code:
+        return {"error": "fund_mismatch", "transaction": existing}
+    snapshot = repo.delete_transaction(s, tx_id)
+    wl = _recalc(s, fund_code)
+    return {"removed": True, "transaction": snapshot, "watchlist": wl}
 
 
 def _recalc(s, fund_code: str, *, commit: bool = True) -> dict | None:
@@ -291,102 +310,116 @@ def _validate_transaction_nav(s, fund_code: str, attrs: dict) -> None:
 
 def list_investment_plans(fund_code: str, session=None) -> list[dict] | None:
     """列出基金的定投计划;基金不在自选池中返回 None。"""
-    s = _with_session(session)
-    owns = session is None
-    try:
-        if repo.get_watchlist_row(s, fund_code) is None:
-            return None
-        return repo.list_investment_plans(s, fund_code)
-    finally:
-        if owns:
-            s.close()
+    if session is None:
+        with session_scope() as s:
+            return _list_investment_plans_impl(s, fund_code)
+    return _list_investment_plans_impl(session, fund_code)
+
+
+def _list_investment_plans_impl(s, fund_code: str) -> list[dict] | None:
+    """纯业务,只 flush。事务由调用方决定。"""
+    if repo.get_watchlist_row(s, fund_code) is None:
+        return None
+    return repo.list_investment_plans(s, fund_code)
 
 
 def add_investment_plan(fund_code: str, attrs: dict, session=None) -> dict | None:
     """新增定投计划;基金不在自选池中返回 None。"""
-    s = _with_session(session)
-    owns = session is None
-    try:
-        if repo.get_watchlist_row(s, fund_code) is None:
-            return None
-        return repo.add_investment_plan(s, fund_code, attrs or {})
-    finally:
-        if owns:
-            s.close()
+    if session is None:
+        with session_scope() as s:
+            return _add_investment_plan_impl(s, fund_code, attrs)
+    return _add_investment_plan_impl(session, fund_code, attrs)
+
+
+def _add_investment_plan_impl(s, fund_code: str, attrs: dict) -> dict | None:
+    """纯业务,只 flush。事务由调用方决定。"""
+    if repo.get_watchlist_row(s, fund_code) is None:
+        return None
+    return repo.add_investment_plan(s, fund_code, attrs or {})
 
 
 def update_investment_plan(fund_code: str, plan_id: int, patch: dict,
                            session=None) -> dict | None:
     """更新定投计划;不存在或 fund_code 不匹配返回 None。"""
-    s = _with_session(session)
-    owns = session is None
-    try:
-        if repo.get_watchlist_row(s, fund_code) is None:
-            return None
-        return repo.update_investment_plan(s, fund_code, plan_id, patch or {})
-    finally:
-        if owns:
-            s.close()
+    if session is None:
+        with session_scope() as s:
+            return _update_investment_plan_impl(s, fund_code, plan_id, patch)
+    return _update_investment_plan_impl(session, fund_code, plan_id, patch)
+
+
+def _update_investment_plan_impl(s, fund_code: str, plan_id: int, patch: dict) -> dict | None:
+    """纯业务,只 flush。事务由调用方决定。"""
+    if repo.get_watchlist_row(s, fund_code) is None:
+        return None
+    return repo.update_investment_plan(s, fund_code, plan_id, patch or {})
 
 
 def remove_investment_plan(fund_code: str, plan_id: int, session=None) -> dict | None:
     """删除定投计划;不存在或 fund_code 不匹配返回 None。"""
-    s = _with_session(session)
-    owns = session is None
-    try:
-        if repo.get_watchlist_row(s, fund_code) is None:
-            return None
-        plan = repo.delete_investment_plan(s, fund_code, plan_id)
-        if plan is None:
-            return None
-        return {"removed": True, "plan": plan}
-    finally:
-        if owns:
-            s.close()
+    if session is None:
+        with session_scope() as s:
+            return _remove_investment_plan_impl(s, fund_code, plan_id)
+    return _remove_investment_plan_impl(session, fund_code, plan_id)
+
+
+def _remove_investment_plan_impl(s, fund_code: str, plan_id: int) -> dict | None:
+    """纯业务,只 flush。事务由调用方决定。"""
+    if repo.get_watchlist_row(s, fund_code) is None:
+        return None
+    plan = repo.delete_investment_plan(s, fund_code, plan_id)
+    if plan is None:
+        return None
+    return {"removed": True, "plan": plan}
 
 
 def list_pending_buys(fund_code: str, session=None) -> list[dict] | None:
     """列出待确认申购记录;基金不在自选池中返回 None。"""
-    s = _with_session(session)
-    owns = session is None
-    try:
-        if repo.get_watchlist_row(s, fund_code) is None:
-            return None
-        return [_with_pending_buy_stage(s, row) for row in repo.list_pending_buys(s, fund_code)]
-    finally:
-        if owns:
-            s.close()
+    if session is None:
+        with session_scope() as s:
+            return _list_pending_buys_impl(s, fund_code)
+    return _list_pending_buys_impl(session, fund_code)
+
+
+def _list_pending_buys_impl(s, fund_code: str) -> list[dict] | None:
+    """纯业务,只 flush。事务由调用方决定。"""
+    if repo.get_watchlist_row(s, fund_code) is None:
+        return None
+    return [_with_pending_buy_stage(s, row) for row in repo.list_pending_buys(s, fund_code)]
 
 
 def add_pending_buy(fund_code: str, attrs: dict, session=None) -> dict | None:
     """新增待确认申购;它不影响持仓份额和 PnL。"""
-    s = _with_session(session)
-    owns = session is None
-    try:
-        if repo.get_watchlist_row(s, fund_code) is None:
-            return None
-        row = repo.add_pending_buy(s, fund_code, attrs or {})
-        return _with_pending_buy_stage(s, row)
-    finally:
-        if owns:
-            s.close()
+    if session is None:
+        with session_scope() as s:
+            return _add_pending_buy_impl(s, fund_code, attrs)
+    return _add_pending_buy_impl(session, fund_code, attrs)
+
+
+def _add_pending_buy_impl(s, fund_code: str, attrs: dict) -> dict | None:
+    """纯业务,只 flush。事务由调用方决定。"""
+    if repo.get_watchlist_row(s, fund_code) is None:
+        return None
+    row = repo.add_pending_buy(s, fund_code, attrs or {})
+    return _with_pending_buy_stage(s, row)
 
 
 def cancel_pending_buy(fund_code: str, pending_id: int, session=None) -> dict | None:
     """把待确认申购标记为 cancelled。"""
-    s = _with_session(session)
-    owns = session is None
-    try:
-        if repo.get_watchlist_row(s, fund_code) is None:
-            return None
-        current = repo.get_pending_buy(s, fund_code, pending_id)
-        if current is None:
-            return None
-        row = repo.update_pending_buy(s, fund_code, pending_id, {"status": "cancelled"})
-        return _with_pending_buy_stage(s, row) if row else None
-    finally:
-        if owns:
-            s.close()
+    if session is None:
+        with session_scope() as s:
+            return _cancel_pending_buy_impl(s, fund_code, pending_id)
+    return _cancel_pending_buy_impl(session, fund_code, pending_id)
+
+
+def _cancel_pending_buy_impl(s, fund_code: str, pending_id: int) -> dict | None:
+    """纯业务,只 flush。事务由调用方决定。"""
+    if repo.get_watchlist_row(s, fund_code) is None:
+        return None
+    current = repo.get_pending_buy(s, fund_code, pending_id)
+    if current is None:
+        return None
+    row = repo.update_pending_buy(s, fund_code, pending_id, {"status": "cancelled"})
+    return _with_pending_buy_stage(s, row) if row else None
 
 
 def confirm_pending_buy(fund_code: str, pending_id: int, tx_date: str,
@@ -396,51 +429,51 @@ def confirm_pending_buy(fund_code: str, pending_id: int, tx_date: str,
     确认日 NAV 必须已经存在于本地库;确认后该笔才进入
     `FundTransaction` 和 PnL。
     """
-    s = _with_session(session)
-    owns = session is None
-    try:
-        if repo.get_watchlist_row(s, fund_code) is None:
-            return None
-        pending = repo.get_pending_buy(s, fund_code, pending_id)
-        if pending is None:
-            return None
-        if pending["status"] != "pending":
-            raise PendingBuyConflict(fund_code, pending_id, pending["status"])
-        nav = repo.get_nav_by_date(s, fund_code, tx_date)
-        if nav is None or nav.get("accumulated_nav") is None:
-            raise PendingBuyNavMissing(fund_code, tx_date)
-        nav_value = float(nav["accumulated_nav"])
-        if nav_value <= 0:
-            raise PendingBuyNavMissing(fund_code, tx_date)
-        try:
-            tx = repo.add_transaction(s, fund_code, {
-                "tx_date": tx_date,
-                "amount": pending["amount"],
-                "nav": nav_value,
-                "fee": pending.get("fee"),
-                "note": pending.get("note"),
-                "kind": "buy",
-            }, commit=False)
-            confirmed = repo.update_pending_buy(s, fund_code, pending_id, {
-                "status": "confirmed",
-                "nav_date": tx_date,
-                "nav": nav_value,
-                "share": tx.get("share"),
-                "transaction_id": tx.get("id"),
-            }, commit=False)
-            wl = _recalc(s, fund_code, commit=False)
-            s.commit()
-            return {
-                "pending_buy": _with_pending_buy_stage(s, confirmed),
-                "transaction": tx,
-                "watchlist": wl,
-            }
-        except Exception:
-            s.rollback()
-            raise
-    finally:
-        if owns:
-            s.close()
+    if session is None:
+        with session_scope() as s:
+            return _confirm_pending_buy_impl(s, fund_code, pending_id, tx_date)
+    return _confirm_pending_buy_impl(session, fund_code, pending_id, tx_date)
+
+
+def _confirm_pending_buy_impl(s, fund_code: str, pending_id: int,
+                               tx_date: str) -> dict | None:
+    """纯业务,只 flush。事务由调用方决定。"""
+    if repo.get_watchlist_row(s, fund_code) is None:
+        return None
+    pending = repo.get_pending_buy(s, fund_code, pending_id)
+    if pending is None:
+        return None
+    if pending["status"] != "pending":
+        raise PendingBuyConflict(fund_code, pending_id, pending["status"])
+    nav = repo.get_nav_by_date(s, fund_code, tx_date)
+    if nav is None or nav.get("accumulated_nav") is None:
+        raise PendingBuyNavMissing(fund_code, tx_date)
+    nav_value = float(nav["accumulated_nav"])
+    if nav_value <= 0:
+        raise PendingBuyNavMissing(fund_code, tx_date)
+
+    tx = repo.add_transaction(s, fund_code, {
+        "tx_date": tx_date,
+        "amount": pending["amount"],
+        "nav": nav_value,
+        "fee": pending.get("fee"),
+        "note": pending.get("note"),
+        "kind": "buy",
+    })
+    confirmed = repo.update_pending_buy(s, fund_code, pending_id, {
+        "status": "confirmed",
+        "nav_date": tx_date,
+        "nav": nav_value,
+        "share": tx.get("share"),
+        "transaction_id": tx.get("id"),
+    })
+    wl = _recalc(s, fund_code)
+    s.commit()
+    return {
+        "pending_buy": _with_pending_buy_stage(s, confirmed),
+        "transaction": tx,
+        "watchlist": wl,
+    }
 
 
 def _with_pending_buy_stage(s, row: dict) -> dict:
