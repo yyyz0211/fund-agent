@@ -330,12 +330,24 @@ Phase 0 至少覆盖以下位置：
 将模型能力定义为稳定端口，由组合层注入：
 
 ```python
-from typing import Protocol
+from typing import Protocol, Any, TypeVar
 
-class ChatModel(Protocol):
-    def invoke(self, input, **kwargs): ...
+InputT = TypeVar("InputT")
+OutputT = TypeVar("OutputT")
 
-def compose_briefing(snapshot, *, model: ChatModel):
+
+class ChatModel(Protocol[InputT, OutputT]):
+    """聊天模型的最小接口定义"""
+
+    def invoke(self, input: InputT, **kwargs: Any) -> OutputT: ...
+
+
+def compose_briefing(
+    snapshot: Snapshot,
+    *,
+    model: ChatModel[str, str],
+) -> BriefingResult:
+    """briefing 组装函数，模型由调用方注入"""
     ...
 ```
 
@@ -361,8 +373,26 @@ def compose_briefing(snapshot, *, model: ChatModel):
 - LLM、embedding 和网络请求原则上不应在长事务内执行；需要持久化状态时拆成短事务阶段。
 
 ```python
+from contextlib import contextmanager
+from typing import Generator
+
+from sqlalchemy.orm import Session
+
+
 @contextmanager
-def session_scope():
+def session_scope() -> Generator[Session, None, None]:
+    """
+    顶层事务上下文管理器。
+
+    用途：
+    - CLI/维护脚本的顶层入口
+    - Scheduler job 的事务边界
+    - 后台线程的事务边界
+
+    注意：
+    - service 接收外部 Session 时不得调用此函数
+    - service 只允许 flush()，不得 commit/rollback/close
+    """
     session = SessionLocal()
     try:
         yield session
@@ -502,15 +532,24 @@ backend/integrations/
 ### 5.5 Scheduler 解耦
 
 ```python
-@dataclass(frozen=True)
+from dataclasses import dataclass, field
+from typing import Callable, Literal, Mapping
+
+from typing_extensions import NotRequired
+
+
+@dataclass(frozen=True, slots=True)
 class JobSpec:
-    id: str
-    callable: Callable[[], object]
-    trigger: Literal["cron", "interval"]
-    trigger_kwargs: Mapping[str, object]
-    max_instances: int = 1
-    coalesce: bool = True
-    misfire_grace_time: int | None = None
+    """Job 定义规范"""
+
+    id: str  # 唯一标识，用于单飞和日志
+    callable: Callable[[], object]  # 执行逻辑
+    trigger: Literal["cron", "interval"]  # 触发类型
+    trigger_kwargs: Mapping[str, object]  # 触发参数
+    max_instances: int = 1  # 最大并发实例数
+    coalesce: bool = True  # 是否合并错过触发
+    misfire_grace_time: NotRequired[int | None] = None  # 错过触发宽限期
+    jitter: NotRequired[int | None] = None  # 随机延迟（秒）
 ```
 
 Scheduler 只注册和触发 job，但必须保留：
@@ -855,6 +894,10 @@ Phase 3–4：前端治理与性能优化
 | Compatibility Re-export | 旧模块临时从新模块重新导出符号的迁移方式 |
 | Structured Fallback | 向量能力不可用时使用结构化过滤和关键词召回的降级模式 |
 | Expand/Migrate/Contract | 先扩展兼容 schema，再迁移数据，最后删除旧结构的发布策略 |
+| Protocol | Python typing.Protocol，定义结构化子类型接口 |
+| Advisory Lock | PostgreSQL 命名锁，用于跨连接互斥 |
+| Worker Schema | pytest-xdist 并行测试中每个 worker 的独立 schema |
+| slots=True | dataclass 内存优化，禁用 `__dict__` |
 
 ## 附录 B：参考资料
 
