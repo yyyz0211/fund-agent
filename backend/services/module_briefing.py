@@ -1048,11 +1048,16 @@ def compose_briefing_v2(
     data_statement_mod: ModuleSection,
     snapshot: dict,
     evidence: list[dict],
+    *,
+    model: Any = None,
 ) -> dict:
     """V2 final composer：把 module sections 组织成最终 markdown。
 
     LLM 负责压缩和语言组织，不重新生成结构化数据。
     返回 dict: {markdown, sections, warnings, markdown_warnings}
+
+    Args:
+        model: 聊天模型实例。为 None 时使用默认 build_model()。
     """
     from string import Template
 
@@ -1082,8 +1087,10 @@ def compose_briefing_v2(
         module_sections_json=module_json,
     )
 
-    from backend.graph import model as _model_module
-    model = _model_module.build_model()
+    # 使用注入的 model 或 lazy import
+    if model is None:
+        from backend.graph import model as _model_module
+        model = _model_module.build_model()
     response = model.invoke(prompt)
     raw_content = response.content if hasattr(response, "content") else str(response)
 

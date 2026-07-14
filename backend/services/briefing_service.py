@@ -327,6 +327,7 @@ def compose_briefing(
     snapshot: dict,
     evidence: list[dict] | None = None,
     *,
+    model: Any = None,
     profile: BriefTypeProfile | None = None,
 ) -> dict:
     """调用 DeepSeek 把 snapshot + evidence 合成 markdown + sections。
@@ -337,6 +338,7 @@ def compose_briefing(
     Args:
         snapshot: 市场快照数据
         evidence: 当日证据列表，将被拼入 prompt 供 LLM 引用
+        model: 聊天模型实例。为 None 时使用默认 build_model()。
         profile: V2 profile；None 时默认走 post_market（向后兼容）
     """
     from string import Template
@@ -420,9 +422,10 @@ def compose_briefing(
         module_sections_json=module_json,
     )
 
-    # 内部 lazy import 避免循环
-    from backend.graph import model as _model_module
-    model = _model_module.build_model()
+    # 使用注入的 model 或 lazy import
+    if model is None:
+        from backend.graph import model as _model_module
+        model = _model_module.build_model()
     response = model.invoke(prompt)
     raw_content = response.content if hasattr(response, "content") else str(response)
 
