@@ -45,12 +45,11 @@ def search_knowledge(
     date_to: date | None = Query(default=None),
     limit: int = Query(default=10, ge=1, le=50),
     include_pending: bool = Query(default=False),
-    session: Session = Depends(get_db_session),
 ):
     if date_from and date_to and date_from > date_to:
         raise HTTPException(status_code=400, detail="date_from must not be later than date_to")
     try:
-        result = knowledge_search_service.search_knowledge(
+        return knowledge_search_service.search_knowledge(
             query=query,
             fund_code=fund_code,
             topic=topic,
@@ -59,10 +58,7 @@ def search_knowledge(
             date_to=date_to.isoformat() if date_to else None,
             limit=limit,
             include_pending=include_pending,
-            session=session,
         )
-        session.commit()
-        return result
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -91,7 +87,6 @@ def reindex_knowledge(
     response: Response,
     _trigger: str | None = Header(default=None, alias="X-Local-Trigger"),
     limit: int | None = Query(default=None, ge=1, le=200),
-    session: Session = Depends(get_db_session),
 ):
     """异步触发一次知识库增量准入、索引和基金匹配。
 
@@ -107,9 +102,8 @@ def reindex_knowledge(
     if not _trigger or _trigger.lower() not in ("1", "true"):
         raise HTTPException(status_code=403, detail="missing X-Local-Trigger header")
 
-    job = knowledge_reindex_jobs.create_job(trigger="manual", session=session)
+    job = knowledge_reindex_jobs.create_job(trigger="manual")
     job_id = int(job.id)
-    session.commit()
     pipeline_kwargs = {"trigger": "manual"}
     if limit is not None:
         pipeline_kwargs["limit"] = int(limit)

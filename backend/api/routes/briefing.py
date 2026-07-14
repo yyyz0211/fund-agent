@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from backend.api.deps import get_db_session
 from backend.db.models import Briefing, BriefingFeedback
+from backend.db.session_scope import session_scope
 from backend.services.briefing import briefing_service
 
 
@@ -164,40 +165,41 @@ class FeedbackPayload(BaseModel):
 
 
 @router.post("/feedback", status_code=201)
-def submit_feedback(payload: FeedbackPayload, session: Session = Depends(get_db_session)) -> dict:
+def submit_feedback(payload: FeedbackPayload) -> dict:
     """提交简报反馈。同一 (briefing_id, user_id) 重复提交时更新现有记录。"""
-    briefing = session.get(Briefing, payload.briefing_id)
-    if briefing is None:
-        raise HTTPException(status_code=404, detail=f"briefing {payload.briefing_id} not found")
+    with session_scope() as s:
+        briefing = s.get(Briefing, payload.briefing_id)
+        if briefing is None:
+            raise HTTPException(status_code=404, detail=f"briefing {payload.briefing_id} not found")
 
-    existing = session.scalar(
-        select(BriefingFeedback).where(
-            BriefingFeedback.briefing_id == payload.briefing_id,
-            BriefingFeedback.user_id == payload.user_id,
+        existing = s.scalar(
+            select(BriefingFeedback).where(
+                BriefingFeedback.briefing_id == payload.briefing_id,
+                BriefingFeedback.user_id == payload.user_id,
+            )
         )
-    )
-    if existing is None:
-        existing = BriefingFeedback(
-            briefing_id=payload.briefing_id,
-            user_id=payload.user_id,
-        )
-        session.add(existing)
+        if existing is None:
+            existing = BriefingFeedback(
+                briefing_id=payload.briefing_id,
+                user_id=payload.user_id,
+            )
+            s.add(existing)
 
-    existing.risk_accuracy = payload.risk_accuracy
-    existing.theme_accuracy = payload.theme_accuracy
-    existing.evidence_quality = payload.evidence_quality
-    existing.overall_satisfaction = payload.overall_satisfaction
-    existing.comment = payload.comment
-    existing.feedback_meta_json = json.dumps(payload.feedback_meta, ensure_ascii=False)
-    session.commit()
-    session.refresh(existing)
+        existing.risk_accuracy = payload.risk_accuracy
+        existing.theme_accuracy = payload.theme_accuracy
+        existing.evidence_quality = payload.evidence_quality
+        existing.overall_satisfaction = payload.overall_satisfaction
+        existing.comment = payload.comment
+        existing.feedback_meta_json = json.dumps(payload.feedback_meta, ensure_ascii=False)
+        s.flush()
+        s.refresh(existing)
 
-    return {
-        "id": existing.id,
-        "briefing_id": existing.briefing_id,
-        "user_id": existing.user_id,
-        "created_at": existing.created_at.isoformat() if existing.created_at else None,
-    }
+        return {
+            "id": existing.id,
+            "briefing_id": existing.briefing_id,
+            "user_id": existing.user_id,
+            "created_at": existing.created_at.isoformat() if existing.created_at else None,
+        }
 
 
 @router.get("/feedback/{briefing_id}")

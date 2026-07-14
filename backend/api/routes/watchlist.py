@@ -13,9 +13,12 @@
 from datetime import date
 from typing import Literal, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
+from backend.api.deps import get_db_session
 from backend.services.watchlist import watchlist_preload_jobs as preload_jobs
 from backend.services.watchlist import watchlist_service as ws
 
@@ -442,25 +445,19 @@ def _patch_payload(payload: WatchlistPatch) -> dict:
 
 
 @router.get("")
-def list_watchlist() -> list[dict]:
+def list_watchlist(session: Session = Depends(get_db_session)) -> list[dict]:
     """列出全部自选行,批量附带展示字段,避免前端逐行补数据。"""
     from backend.db import repository as repo
     from backend.db.models import Fund
-    from backend.db.session import get_session
-    from sqlalchemy import select
 
-    rows = ws.list_watchlist()
+    rows = ws.list_watchlist(session=session)
     if not rows:
         return rows
     codes = [r["fund_code"] for r in rows]
-    s = get_session()
-    try:
-        counts = repo.count_transactions_for_funds(s, codes)
-        latest_navs = repo.get_latest_navs_for_funds(s, codes)
-        fund_rows = s.scalars(select(Fund).where(Fund.fund_code.in_(codes))).all()
-        fund_names = {fund.fund_code: fund.fund_name for fund in fund_rows}
-    finally:
-        s.close()
+    counts = repo.count_transactions_for_funds(session, codes)
+    latest_navs = repo.get_latest_navs_for_funds(session, codes)
+    fund_rows = session.scalars(select(Fund).where(Fund.fund_code.in_(codes))).all()
+    fund_names = {fund.fund_code: fund.fund_name for fund in fund_rows}
     for r in rows:
         code = r["fund_code"]
         latest_nav = latest_navs.get(code) or {}

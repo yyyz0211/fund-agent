@@ -74,7 +74,6 @@ def get_sectors(
 def refresh_market(
     _trigger: str | None = Header(default=None, alias="X-Local-Trigger"),
     date: str | None = Query(default=None, description="采集目标交易日 YYYY-MM-DD；缺省=今天"),
-    session: Session = Depends(get_db_session),
 ):
     """手动触发市场情报采集（异步）。
 

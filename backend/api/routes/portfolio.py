@@ -12,11 +12,12 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
+from backend.api.deps import get_db_session
 from backend.db.models import Fund, FundNav
-from backend.db.session import get_session
 from backend.services.market import data_collector as dc
 from backend.services.fund import pnl_service as psvc
 from backend.services.fund import portfolio_history as ph
@@ -73,6 +74,7 @@ def get_compare_series(
     codes: str = Query(..., description="逗号分隔的 fund_code 列表;至少 1 个"),
     start: str = Query(default="", description="ISO YYYY-MM-DD,空=默认 1 年前"),
     end: str = Query(default="", description="ISO YYYY-MM-DD,空=今天"),
+    session: Session = Depends(get_db_session),
 ):
     """拉多只基金的同期 NAV 历史,给 `/compare` 页面画图用。
 
@@ -84,58 +86,54 @@ def get_compare_series(
     if not raw:
         raise HTTPException(status_code=400, detail="codes 不能为空")
 
-    s = get_session()
-    try:
-        # 一次性取基金名
-        name_map: dict[str, str | None] = {
-            f.fund_code: f.fund_name
-            for f in s.scalars(select(Fund).where(Fund.fund_code.in_(raw))).all()
-        }
+    # 一次性取基金名
+    name_map: dict[str, str | None] = {
+        f.fund_code: f.fund_name
+        for f in session.scalars(select(Fund).where(Fund.fund_code.in_(raw))).all()
+    }
 
-        # 起止日期默认:start=今天-365 天, end=今天
-        if not end:
-            end = dc.today_str()
-        if not start:
-            try:
-                start = (datetime.strptime(end, "%Y-%m-%d") - timedelta(days=365)).strftime("%Y-%m-%d")
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=f"invalid end date: {end}") from exc
+    # 起止日期默认:start=今天-365 天, end=今天
+    if not end:
+        end = dc.today_str()
+    if not start:
+        try:
+            start = (datetime.strptime(end, "%Y-%m-%d") - timedelta(days=365)).strftime("%Y-%m-%d")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"invalid end date: {end}") from exc
 
-        series: list[dict] = []
-        any_data = False
-        for code in raw:
-            stmt = (
-                select(FundNav)
-                .where(FundNav.fund_code == code)
-                .where(FundNav.nav_date >= start)
-                .where(FundNav.nav_date <= end)
-                .order_by(FundNav.nav_date)
-            )
-            rows = s.scalars(stmt).all()
-            points = [
-                {"nav_date": str(r.nav_date), "accumulated_nav": r.accumulated_nav}
-                for r in rows
-            ]
-            if points:
-                any_data = True
-            series.append({
-                "code": code,
-                "fund_name": name_map.get(code),
-                "points": points,
-            })
+    series: list[dict] = []
+    any_data = False
+    for code in raw:
+        stmt = (
+            select(FundNav)
+            .where(FundNav.fund_code == code)
+            .where(FundNav.nav_date >= start)
+            .where(FundNav.nav_date <= end)
+            .order_by(FundNav.nav_date)
+        )
+        rows = session.scalars(stmt).all()
+        points = [
+            {"nav_date": str(r.nav_date), "accumulated_nav": r.accumulated_nav}
+            for r in rows
+        ]
+        if points:
+            any_data = True
+        series.append({
+            "code": code,
+            "fund_name": name_map.get(code),
+            "points": points,
+        })
 
-        if not any_data:
-            raise HTTPException(
-                status_code=404,
-                detail=f"区间 [{start}, {end}] 内 {codes} 无任何 NAV 数据,请先 refresh_fund",
-            )
+    if not any_data:
+        raise HTTPException(
+            status_code=404,
+            detail=f"区间 [{start}, {end}] 内 {codes} 无任何 NAV 数据,请先 refresh_fund",
+        )
 
-        return {
-            "as_of": end,
-            "start": start,
-            "end": end,
-            "series": series,
-            "source": dc.SOURCE,
-        }
-    finally:
-        s.close()
+    return {
+        "as_of": end,
+        "start": start,
+        "end": end,
+        "series": series,
+        "source": dc.SOURCE,
+    }
