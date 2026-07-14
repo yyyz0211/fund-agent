@@ -31,47 +31,50 @@ def get_peers(fund_code: str, limit: int = 5, period: str = "1y", session=None) 
     候选基金即使没有本地 NAV 也返回,指标字段置为 None;这样前端不会
     因本地未刷新候选 NAV 而把同类候选整块隐藏。
     """
-    s = _with_session(session)
-    owns = session is None
-    try:
-        profile = profile_service.get_profile(fund_code, session=s)
-        candidates = _json_list(profile.get("peer_candidates_json") if profile else None)
-        peers = []
-        for candidate in candidates:
-            code = str(candidate.get("fund_code") or "")
-            if not code:
-                continue
-            navs = repo.get_accumulated_navs(s, code)
-            has_local_nav = len(navs) >= 2
-            period_return = None
-            max_drawdown = None
-            volatility = None
-            if has_local_nav:
-                try:
-                    period_return = metrics.period_return(navs, period)
-                except ValueError:
-                    period_return = None
-                max_drawdown = metrics.max_drawdown(navs)
-                volatility = metrics.volatility(navs)
-            if len(navs) < 2:
-                has_local_nav = False
-            peer_profile = profile_service.get_profile(code, session=s) or {}
-            peers.append({
-                "fund_code": code,
-                "fund_name": candidate.get("fund_name"),
-                "fund_type": candidate.get("fund_type"),
-                "period_return": period_return,
-                "max_drawdown": max_drawdown,
-                "volatility": volatility,
-                "scale": peer_profile.get("scale"),
-                "has_local_nav": has_local_nav,
-            })
-            if len(peers) >= limit:
-                break
-        return peers
-    finally:
-        if owns:
-            s.close()
+    from backend.db.session_scope import session_scope
+
+    if session is None:
+        with session_scope() as s:
+            return _get_peers_impl(fund_code, period, limit, s)
+    return _get_peers_impl(fund_code, period, limit, session)
+
+
+def _get_peers_impl(fund_code, period, limit, s):
+    profile = profile_service.get_profile(fund_code, session=s)
+    candidates = _json_list(profile.get("peer_candidates_json") if profile else None)
+    peers = []
+    for candidate in candidates:
+        code = str(candidate.get("fund_code") or "")
+        if not code:
+            continue
+        navs = repo.get_accumulated_navs(s, code)
+        has_local_nav = len(navs) >= 2
+        period_return = None
+        max_drawdown = None
+        volatility = None
+        if has_local_nav:
+            try:
+                period_return = metrics.period_return(navs, period)
+            except ValueError:
+                period_return = None
+            max_drawdown = metrics.max_drawdown(navs)
+            volatility = metrics.volatility(navs)
+        if len(navs) < 2:
+            has_local_nav = False
+        peer_profile = profile_service.get_profile(code, session=s) or {}
+        peers.append({
+            "fund_code": code,
+            "fund_name": candidate.get("fund_name"),
+            "fund_type": candidate.get("fund_type"),
+            "period_return": period_return,
+            "max_drawdown": max_drawdown,
+            "volatility": volatility,
+            "scale": peer_profile.get("scale"),
+            "has_local_nav": has_local_nav,
+        })
+        if len(peers) >= limit:
+            break
+    return peers
 
 
 def _light(
@@ -199,130 +202,133 @@ def _summary_sentence(label: str, confidence: str, missing_data: list[str]) -> s
 
 def diagnose_fund(fund_code: str, period: str = "1y", session=None) -> dict:
     """Build a deterministic local fund diagnosis payload."""
-    s = _with_session(session)
-    owns = session is None
-    try:
-        summary = fs.get_summary(fund_code, period=period, session=s)
-        profile = profile_service.get_profile(fund_code, session=s)
-        peers = get_peers(fund_code, limit=5, period=period, session=s)
+    from backend.db.session_scope import session_scope
 
-        source = summary.get("source") or "akshare"
-        as_of = summary.get("as_of")
-        metrics_payload = summary.get("metrics") or {}
-        fund_payload = summary.get("fund") or {}
-        errors = summary.get("errors") or {}
-        missing_data = list(errors.keys())
-        missing_data.extend(_profile_missing(profile, fund_payload))
-        if not peers:
-            missing_data.append("peers")
-        elif any(
-            not peer.get("has_local_nav")
-            or peer.get("period_return") is None
-            or peer.get("max_drawdown") is None
-            or peer.get("volatility") is None
-            for peer in peers
-        ):
-            missing_data.append("peer_metrics")
-        missing_data = list(dict.fromkeys(missing_data))
-        category = (
-            (profile or {}).get("peer_category")
-            or fund_payload.get("fund_type")
-            or "偏股混合"
-        )
+    if session is None:
+        with session_scope() as s:
+            return _diagnose_fund_impl(fund_code, period, s)
+    return _diagnose_fund_impl(fund_code, period, session)
 
-        lights = [
-            _light(
-                "period_return",
-                f"{period}区间收益",
-                rules.level_for_period_return(metrics_payload.get("period_return"), category=category),
-                metrics_payload.get("period_return"),
-                _reason_for(f"{period}区间收益", rules.level_for_period_return(metrics_payload.get("period_return"), category=category)),
-                metrics_payload.get("source") or source,
-                metrics_payload.get("as_of") or as_of,
-                core=True,
-            ),
-            _light(
-                "max_drawdown",
-                "最大回撤",
-                rules.level_for_drawdown(metrics_payload.get("max_drawdown"), category=category),
-                metrics_payload.get("max_drawdown"),
-                _reason_for("最大回撤", rules.level_for_drawdown(metrics_payload.get("max_drawdown"), category=category)),
-                metrics_payload.get("source") or source,
-                metrics_payload.get("as_of") or as_of,
-                core=True,
-            ),
-            _light(
-                "volatility",
-                "波动率",
-                rules.level_for_volatility(metrics_payload.get("volatility"), category=category),
-                metrics_payload.get("volatility"),
-                _reason_for("波动率", rules.level_for_volatility(metrics_payload.get("volatility"), category=category)),
-                metrics_payload.get("source") or source,
-                metrics_payload.get("as_of") or as_of,
-                core=True,
-            ),
-            _light(
-                "scale",
-                "基金规模",
-                rules.level_for_scale((profile or {}).get("scale")),
-                (profile or {}).get("scale"),
-                _reason_for("基金规模", rules.level_for_scale((profile or {}).get("scale"))),
-                (profile or {}).get("source") or source,
-                (profile or {}).get("as_of") or as_of,
-            ),
-            _light(
-                "top10_holding_pct",
-                "前十大持仓集中度",
-                rules.level_for_concentration((profile or {}).get("top10_holding_pct")),
-                (profile or {}).get("top10_holding_pct"),
-                _reason_for("前十大持仓集中度", rules.level_for_concentration((profile or {}).get("top10_holding_pct"))),
-                (profile or {}).get("source") or source,
-                (profile or {}).get("as_of") or as_of,
-            ),
-            _light(
-                "top_industry_pct",
-                "第一大行业集中度",
-                rules.level_for_concentration((profile or {}).get("top_industry_pct")),
-                (profile or {}).get("top_industry_pct"),
-                _reason_for("第一大行业集中度", rules.level_for_concentration((profile or {}).get("top_industry_pct"))),
-                (profile or {}).get("source") or source,
-                (profile or {}).get("as_of") or as_of,
-            ),
-        ]
 
-        core_complete = bool(summary.get("latest_nav")) and bool(summary.get("metrics"))
-        profile_complete = not _profile_missing(profile, fund_payload)
-        label = rules.choose_decision_label(lights, missing_data)
-        metric_peer_count = sum(
-            1
-            for peer in peers
-            if peer.get("has_local_nav")
-            and peer.get("period_return") is not None
-            and peer.get("max_drawdown") is not None
-            and peer.get("volatility") is not None
-        )
-        confidence = rules.confidence_for(core_complete, profile_complete, metric_peer_count)
-        if not core_complete:
-            label = "暂不碰"
-            confidence = "low"
+def _diagnose_fund_impl(fund_code, period, s):
+    summary = fs.get_summary(fund_code, period=period, session=s)
+    profile = profile_service.get_profile(fund_code, session=s)
+    peers = get_peers(fund_code, limit=5, period=period, session=s)
 
-        return {
-            "fund_code": fund_code,
-            "period": period,
-            "decision_label": label,
-            "confidence": confidence,
-            "summary": _summary_sentence(label, confidence, missing_data),
-            "reasons": _reasons(lights, missing_data),
-            "risk_lights": lights,
-            "pitfalls": _pitfalls(lights, missing_data, source, as_of),
-            "suitable_for": _suitable_for(label),
-            "peers": peers,
-            "missing_data": missing_data,
-            "fund": summary.get("fund"),
-            "latest_nav": summary.get("latest_nav"),
-            "source": source,
-            "as_of": as_of,
+    source = summary.get("source") or "akshare"
+    as_of = summary.get("as_of")
+    metrics_payload = summary.get("metrics") or {}
+    fund_payload = summary.get("fund") or {}
+    errors = summary.get("errors") or {}
+    missing_data = list(errors.keys())
+    missing_data.extend(_profile_missing(profile, fund_payload))
+    if not peers:
+        missing_data.append("peers")
+    elif any(
+        not peer.get("has_local_nav")
+        or peer.get("period_return") is None
+        or peer.get("max_drawdown") is None
+        or peer.get("volatility") is None
+        for peer in peers
+    ):
+        missing_data.append("peer_metrics")
+    missing_data = list(dict.fromkeys(missing_data))
+    category = (
+        (profile or {}).get("peer_category")
+        or fund_payload.get("fund_type")
+        or "偏股混合"
+    )
+
+    lights = [
+        _light(
+            "period_return",
+            f"{period}区间收益",
+            rules.level_for_period_return(metrics_payload.get("period_return"), category=category),
+            metrics_payload.get("period_return"),
+            _reason_for(f"{period}区间收益", rules.level_for_period_return(metrics_payload.get("period_return"), category=category)),
+            metrics_payload.get("source") or source,
+            metrics_payload.get("as_of") or as_of,
+            core=True,
+        ),
+        _light(
+            "max_drawdown",
+            "最大回撤",
+            rules.level_for_drawdown(metrics_payload.get("max_drawdown"), category=category),
+            metrics_payload.get("max_drawdown"),
+            _reason_for("最大回撤", rules.level_for_drawdown(metrics_payload.get("max_drawdown"), category=category)),
+            metrics_payload.get("source") or source,
+            metrics_payload.get("as_of") or as_of,
+            core=True,
+        ),
+        _light(
+            "volatility",
+            "波动率",
+            rules.level_for_volatility(metrics_payload.get("volatility"), category=category),
+            metrics_payload.get("volatility"),
+            _reason_for("波动率", rules.level_for_volatility(metrics_payload.get("volatility"), category=category)),
+            metrics_payload.get("source") or source,
+            metrics_payload.get("as_of") or as_of,
+            core=True,
+        ),
+        _light(
+            "scale",
+            "基金规模",
+            rules.level_for_scale((profile or {}).get("scale")),
+            (profile or {}).get("scale"),
+            _reason_for("基金规模", rules.level_for_scale((profile or {}).get("scale"))),
+            (profile or {}).get("source") or source,
+            (profile or {}).get("as_of") or as_of,
+        ),
+        _light(
+            "top10_holding_pct",
+            "前十大持仓集中度",
+            rules.level_for_concentration((profile or {}).get("top10_holding_pct")),
+            (profile or {}).get("top10_holding_pct"),
+            _reason_for("前十大持仓集中度", rules.level_for_concentration((profile or {}).get("top10_holding_pct"))),
+            (profile or {}).get("source") or source,
+            (profile or {}).get("as_of") or as_of,
+        ),
+        _light(
+            "top_industry_pct",
+            "第一大行业集中度",
+            rules.level_for_concentration((profile or {}).get("top_industry_pct")),
+            (profile or {}).get("top_industry_pct"),
+            _reason_for("第一大行业集中度", rules.level_for_concentration((profile or {}).get("top_industry_pct"))),
+            (profile or {}).get("source") or source,
+            (profile or {}).get("as_of") or as_of,
+        ),
+    ]
+
+    core_complete = bool(summary.get("latest_nav")) and bool(summary.get("metrics"))
+    profile_complete = not _profile_missing(profile, fund_payload)
+    label = rules.choose_decision_label(lights, missing_data)
+    metric_peer_count = sum(
+        1
+        for peer in peers
+        if peer.get("has_local_nav")
+        and peer.get("period_return") is not None
+        and peer.get("max_drawdown") is not None
+        and peer.get("volatility") is not None
+    )
+    confidence = rules.confidence_for(core_complete, profile_complete, metric_peer_count)
+    if not core_complete:
+        label = "暂不碰"
+        confidence = "low"
+
+    return {
+        "fund_code": fund_code,
+        "period": period,
+        "decision_label": label,
+        "confidence": confidence,
+        "summary": _summary_sentence(label, confidence, missing_data),
+        "reasons": _reasons(lights, missing_data),
+        "risk_lights": lights,
+        "pitfalls": _pitfalls(lights, missing_data, source, as_of),
+        "suitable_for": _suitable_for(label),
+        "peers": peers,
+        "missing_data": missing_data,
+        "fund": summary.get("fund"),
+        "latest_nav": summary.get("latest_nav"),
+        "source": source,
+        "as_of": as_of,
         }
-    finally:
-        if owns:
-            s.close()

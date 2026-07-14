@@ -1138,14 +1138,11 @@ def fetch_overseas_markets() -> list[dict]:
 def fetch_announcements(limit: int = 50) -> list[dict]:
     """拉取近 N 天基金重要公告。akshare: fund_announcement_dividend_em(symbol=fund_code)"""
     try:
-        from backend.db.session import get_session
+        from backend.db.session_scope import session_scope
         from backend.db.models import Watchlist
         from sqlalchemy import select
-        s = get_session()
-        try:
+        with session_scope() as s:
             codes = [r.fund_code for r in s.scalars(select(Watchlist.fund_code)).all()]
-        finally:
-            s.close()
         rows = []
         for code in codes[:20]:
             try:

@@ -33,15 +33,14 @@ def _snapshot(job: dict) -> dict:
 
 def _set_watchlist_preload(fund_code: str, *,
                            status: str | None = None) -> None:
-    s = get_session()
-    try:
+    from backend.db.session_scope import session_scope
+
+    with session_scope() as s:
         repo.update_watchlist_preload(
             s,
             fund_code,
             status=status,
         )
-    finally:
-        s.close()
 
 
 def start_preload_job(fund_code: str, *, run_inline: bool = False) -> dict:

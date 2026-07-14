@@ -96,92 +96,93 @@ def calculate_pnl(
 
     一只基金没有 NAV 数据时,也会被跳进 `skipped` 列表(reason: "no nav data")。
     """
-    from backend.db.session import get_session
+    from backend.db.session_scope import session_scope
 
-    s = session or get_session()
-    owns = session is None
-    try:
-        stmt = select(Watchlist).where(Watchlist.is_holding.is_(True))
-        if fund_codes:
-            stmt = stmt.where(Watchlist.fund_code.in_(list(fund_codes)))
-        rows = list(s.scalars(stmt).all())
+    if session is None:
+        with session_scope() as s:
+            return _calculate_pnl_impl(fund_codes, s)
+    return _calculate_pnl_impl(fund_codes, session)
 
-        items: list[dict] = []
-        skipped: list[dict] = []
 
-        # 一次性把当前会用到 fund_name / 最新 NAV / 交易笔数 拉出来,避免 N+1。
-        codes = [r.fund_code for r in rows]
-        names: dict[str, str | None] = {}
-        latest: dict[str, dict] = {}
-        tx_counts: dict[str, int] = {}
-        if codes:
-            name_rows = s.scalars(select(Fund).where(Fund.fund_code.in_(codes))).all()
-            names = {f.fund_code: f.fund_name for f in name_rows}
+def _calculate_pnl_impl(fund_codes, s):
+    stmt = select(Watchlist).where(Watchlist.is_holding.is_(True))
+    if fund_codes:
+        stmt = stmt.where(Watchlist.fund_code.in_(list(fund_codes)))
+    rows = list(s.scalars(stmt).all())
 
-            latest = repo.get_latest_navs_for_funds(s, codes)
-            tx_counts = repo.count_transactions_for_funds(s, codes)
+    items: list[dict] = []
+    skipped: list[dict] = []
 
-        for r in rows:
-            if r.holding_share is None or r.cost_nav is None:
-                missing = [
-                    name for name, val in zip(_REQUIRED_FIELDS,
-                                              (r.holding_share, r.cost_nav))
-                    if val is None
-                ]
-                skipped.append({
-                    "fund_code": r.fund_code,
-                    "reason": f"missing fields: {','.join(missing)}",
-                })
-                continue
-            if float(r.holding_share) <= 0 or float(r.cost_nav) <= 0:
-                skipped.append({
-                    "fund_code": r.fund_code,
-                    "reason": "non-positive holding_share or cost_nav",
-                })
-                continue
-            latest_nav = latest.get(r.fund_code)
-            if (
-                latest_nav is None
-                or latest_nav.get("accumulated_nav") is None
-            ):
-                skipped.append({
-                    "fund_code": r.fund_code,
-                    "reason": "no nav data; call refresh_fund first",
-                })
-                continue
-            current_nav = float(latest_nav["accumulated_nav"])
-            nav_date = str(latest_nav["nav_date"])
-            daily_return = latest_nav.get("daily_return")
-            items.append(_row_to_pnl_item(
-                r, names.get(r.fund_code), current_nav, nav_date,
-                tx_counts.get(r.fund_code, 0),
-                float(daily_return) if daily_return is not None else None,
-            ))
+    # 一次性把当前会用到 fund_name / 最新 NAV / 交易笔数 拉出来,避免 N+1。
+    codes = [r.fund_code for r in rows]
+    names: dict[str, str | None] = {}
+    latest: dict[str, dict] = {}
+    tx_counts: dict[str, int] = {}
+    if codes:
+        name_rows = s.scalars(select(Fund).where(Fund.fund_code.in_(codes))).all()
+        names = {f.fund_code: f.fund_name for f in name_rows}
 
-        # 聚合
-        invested_total = round(sum(i["invested"] for i in items), 4)
-        market_total = round(sum(i["market_value"] for i in items), 4)
-        pnl_total = round(market_total - invested_total, 4)
-        pnl_pct_total = (pnl_total / invested_total) if invested_total > 0 else None
+        latest = repo.get_latest_navs_for_funds(s, codes)
+        tx_counts = repo.count_transactions_for_funds(s, codes)
 
-        as_of = max(
-            (i["nav_date"] for i in items),
-            default=dc.today_str(),
-        )
+    for r in rows:
+        if r.holding_share is None or r.cost_nav is None:
+            missing = [
+                name for name, val in zip(_REQUIRED_FIELDS,
+                                          (r.holding_share, r.cost_nav))
+                if val is None
+            ]
+            skipped.append({
+                "fund_code": r.fund_code,
+                "reason": f"missing fields: {','.join(missing)}",
+            })
+            continue
+        if float(r.holding_share) <= 0 or float(r.cost_nav) <= 0:
+            skipped.append({
+                "fund_code": r.fund_code,
+                "reason": "non-positive holding_share or cost_nav",
+            })
+            continue
+        latest_nav = latest.get(r.fund_code)
+        if (
+            latest_nav is None
+            or latest_nav.get("accumulated_nav") is None
+        ):
+            skipped.append({
+                "fund_code": r.fund_code,
+                "reason": "no nav data; call refresh_fund first",
+            })
+            continue
+        current_nav = float(latest_nav["accumulated_nav"])
+        nav_date = str(latest_nav["nav_date"])
+        daily_return = latest_nav.get("daily_return")
+        items.append(_row_to_pnl_item(
+            r, names.get(r.fund_code), current_nav, nav_date,
+            tx_counts.get(r.fund_code, 0),
+            float(daily_return) if daily_return is not None else None,
+        ))
 
-        return {
-            "as_of": as_of,
-            "source": dc.SOURCE,
-            "items": items,
-            "totals": {
-                "invested": invested_total,
-                "market_value": market_total,
-                "pnl_abs": pnl_total,
-                "pnl_pct": round(pnl_pct_total, 6) if pnl_pct_total is not None else None,
-                "count": len(items),
+    # 聚合
+    invested_total = round(sum(i["invested"] for i in items), 4)
+    market_total = round(sum(i["market_value"] for i in items), 4)
+    pnl_total = round(market_total - invested_total, 4)
+    pnl_pct_total = (pnl_total / invested_total) if invested_total > 0 else None
+
+    as_of = max(
+        (i["nav_date"] for i in items),
+        default=dc.today_str(),
+    )
+
+    return {
+        "as_of": as_of,
+        "source": dc.SOURCE,
+        "items": items,
+        "totals": {
+            "invested": invested_total,
+            "market_value": market_total,
+            "pnl_abs": pnl_total,
+            "pnl_pct": round(pnl_pct_total, 6) if pnl_pct_total is not None else None,
+            "count": len(items),
             },
             "skipped": skipped,
         }
-    finally:
-        if owns:
-            s.close()

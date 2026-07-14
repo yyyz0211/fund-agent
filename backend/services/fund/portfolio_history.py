@@ -118,115 +118,116 @@ def calculate_pnl_series(
 
     返回可直接 JSON 序列化的 dict(不含 ORM 实例)。
     """
-    from backend.db.session import get_session
+    from backend.db.session_scope import session_scope
 
-    s = session or get_session()
-    owns = session is None
-    try:
-        end_str = end or dc.today_str()
-        if start:
-            start_str = start
+    if session is None:
+        with session_scope() as s:
+            return _calculate_pnl_series_impl(start, end, fund_codes, s)
+    return _calculate_pnl_series_impl(start, end, fund_codes, session)
+
+
+def _calculate_pnl_series_impl(start, end, fund_codes, s):
+    end_str = end or dc.today_str()
+    if start:
+        start_str = start
+    else:
+        start_str = (datetime.strptime(end_str, "%Y-%m-%d") - timedelta(days=365)).strftime("%Y-%m-%d")
+    start_d = _to_date(start_str)
+    end_d = _to_date(end_str)
+
+    codes = _resolve_fund_codes(s, fund_codes)
+    data = _load_fund_data(s, codes, start_d, end_d)
+
+    # 每只基金的最终明细(当前份额 / 市值 / 投入),用最后一个已知 NAV 估值。
+    per_fund: list[dict] = []
+    for code, payload in data.items():
+        txs = payload["txs"]
+        nav_by_date = payload["nav_by_date"]
+        share, invested = _cumulative_share_and_invested(txs, end_d)
+        if nav_by_date:
+            last_nav = nav_by_date[max(nav_by_date.keys())]
+            market = share * last_nav
         else:
-            start_str = (datetime.strptime(end_str, "%Y-%m-%d") - timedelta(days=365)).strftime("%Y-%m-%d")
-        start_d = _to_date(start_str)
-        end_d = _to_date(end_str)
+            market = 0.0
+        per_fund.append({
+            "fund_code": code,
+            "fund_name": payload["name"],
+            "current_share": round(share, 6),
+            "current_invested": round(invested, 4),
+            "current_market_value": round(market, 4),
+        })
 
-        codes = _resolve_fund_codes(s, fund_codes)
-        data = _load_fund_data(s, codes, start_d, end_d)
+    # 完全没有本地 NAV、却有买入记录的基金:无法估值,单列出来给前端提示,
+    # 并从逐日游走中整体剔除(否则一只没数据的基金会把整段曲线拖成缺失)。
+    uncovered_funds = [
+        code for code, payload in data.items()
+        if not payload["nav_by_date"] and payload["txs"]
+    ]
+    uncovered_set = set(uncovered_funds)
 
-        # 每只基金的最终明细(当前份额 / 市值 / 投入),用最后一个已知 NAV 估值。
-        per_fund: list[dict] = []
+    # 按天游走 [start_d, end_d]:每天求各基金份额 * 前向填充 NAV 之和。
+    dates_out: list[dict] = []
+    cur = start_d
+    while cur <= end_d:
+        invested_total = 0.0
+        market_total = 0.0
+        missing_funds: list[str] = []
+        has_position = False
         for code, payload in data.items():
-            txs = payload["txs"]
-            nav_by_date = payload["nav_by_date"]
-            share, invested = _cumulative_share_and_invested(txs, end_d)
-            if nav_by_date:
-                last_nav = nav_by_date[max(nav_by_date.keys())]
-                market = share * last_nav
-            else:
-                market = 0.0
-            per_fund.append({
-                "fund_code": code,
-                "fund_name": payload["name"],
-                "current_share": round(share, 6),
-                "current_invested": round(invested, 4),
-                "current_market_value": round(market, 4),
-            })
-
-        # 完全没有本地 NAV、却有买入记录的基金:无法估值,单列出来给前端提示,
-        # 并从逐日游走中整体剔除(否则一只没数据的基金会把整段曲线拖成缺失)。
-        uncovered_funds = [
-            code for code, payload in data.items()
-            if not payload["nav_by_date"] and payload["txs"]
-        ]
-        uncovered_set = set(uncovered_funds)
-
-        # 按天游走 [start_d, end_d]:每天求各基金份额 * 前向填充 NAV 之和。
-        dates_out: list[dict] = []
-        cur = start_d
-        while cur <= end_d:
-            invested_total = 0.0
-            market_total = 0.0
-            missing_funds: list[str] = []
-            has_position = False
-            for code, payload in data.items():
-                if code in uncovered_set:
-                    continue
-                txs = payload["txs"]
-                first_tx = min((tx["tx_date"] for tx in txs), default=None)
-                if first_tx is None or cur < first_tx:
-                    continue  # 该基金当天还没买入
-                has_position = True
-                share, invested = _cumulative_share_and_invested(txs, cur)
-                if share <= 0:
-                    continue
-                nav = _nav_on_or_before(payload["nav_by_date"], cur)
-                if nav is None:
-                    # 当天(及之前)完全没有 NAV,无法估值,标记缺失。
-                    missing_funds.append(code)
-                    invested_total += invested
-                    continue
-                invested_total += invested
-                market_total += share * nav
-            # 尚未有任何基金买入的日期不产生数据点,避免图表前段全是 0。
-            if not has_position:
-                cur += timedelta(days=1)
+            if code in uncovered_set:
                 continue
-            pnl = market_total - invested_total
-            pnl_pct = (pnl / invested_total) if invested_total > 0 else 0.0
-            dates_out.append({
-                "date": cur.isoformat(),
-                "invested": round(invested_total, 4),
-                "market_value": round(market_total, 4),
-                "pnl": round(pnl, 4),
-                "pnl_pct": round(pnl_pct, 6),
-                "missing_funds": missing_funds,
-            })
+            txs = payload["txs"]
+            first_tx = min((tx["tx_date"] for tx in txs), default=None)
+            if first_tx is None or cur < first_tx:
+                continue  # 该基金当天还没买入
+            has_position = True
+            share, invested = _cumulative_share_and_invested(txs, cur)
+            if share <= 0:
+                continue
+            nav = _nav_on_or_before(payload["nav_by_date"], cur)
+            if nav is None:
+                # 当天(及之前)完全没有 NAV,无法估值,标记缺失。
+                missing_funds.append(code)
+                invested_total += invested
+                continue
+            invested_total += invested
+            market_total += share * nav
+        # 尚未有任何基金买入的日期不产生数据点,避免图表前段全是 0。
+        if not has_position:
             cur += timedelta(days=1)
+            continue
+        pnl = market_total - invested_total
+        pnl_pct = (pnl / invested_total) if invested_total > 0 else 0.0
+        dates_out.append({
+            "date": cur.isoformat(),
+            "invested": round(invested_total, 4),
+            "market_value": round(market_total, 4),
+            "pnl": round(pnl, 4),
+            "pnl_pct": round(pnl_pct, 6),
+            "missing_funds": missing_funds,
+        })
+        cur += timedelta(days=1)
 
-        summary_invested = round(sum(f["current_invested"] for f in per_fund), 4)
-        summary_market = round(sum(f["current_market_value"] for f in per_fund), 4)
-        summary = {
-            "invested": summary_invested,
-            "market_value": summary_market,
-            "pnl_abs": 0.0,
-            "pnl_pct": 0.0,
-            "daily_points": len(dates_out),
-        }
-        if summary_invested > 0:
-            summary["pnl_abs"] = round(summary_market - summary_invested, 4)
-            summary["pnl_pct"] = round(summary["pnl_abs"] / summary_invested, 6)
+    summary_invested = round(sum(f["current_invested"] for f in per_fund), 4)
+    summary_market = round(sum(f["current_market_value"] for f in per_fund), 4)
+    summary = {
+        "invested": summary_invested,
+        "market_value": summary_market,
+        "pnl_abs": 0.0,
+        "pnl_pct": 0.0,
+        "daily_points": len(dates_out),
+    }
+    if summary_invested > 0:
+        summary["pnl_abs"] = round(summary_market - summary_invested, 4)
+        summary["pnl_pct"] = round(summary["pnl_abs"] / summary_invested, 6)
 
-        return {
-            "start": start_str,
-            "end": end_str,
-            "as_of": dc.today_str(),
-            "source": dc.SOURCE,
-            "dates": dates_out,
+    return {
+        "start": start_str,
+        "end": end_str,
+        "as_of": dc.today_str(),
+        "source": dc.SOURCE,
+        "dates": dates_out,
             "per_fund": per_fund,
             "summary": summary,
             "uncovered_funds": uncovered_funds,
         }
-    finally:
-        if owns:
-            s.close()
