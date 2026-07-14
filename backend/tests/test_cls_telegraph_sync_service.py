@@ -113,15 +113,11 @@ def test_sync_once_writes_telegraph_items_and_derives_market_evidence():
     assert result["status"] == "completed"
     assert result["fetched"] == 2
     assert result["inserted"] == 2
-    assert result["evidence_inserted"] == 2
+    # 已移除双写，evidence 由 ClsTelegraphAdapter 独立采集
+    assert result["evidence_inserted"] == 0
 
     rows = repo.search_cls_telegraph_items(session, limit=10)
     assert [row["cls_id"] for row in rows] == ["2421002", "2421001"]
-
-    evidence_count = session.execute(
-        text("SELECT COUNT(*) FROM market_evidence WHERE source = '财联社'")
-    ).scalar_one()
-    assert evidence_count == 2
 
     status = repo.get_cls_telegraph_sync_state(session)
     assert status["last_seen_cls_id"] == "2421002"

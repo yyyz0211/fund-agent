@@ -114,47 +114,6 @@ def fetch_cls_roll_page_raw(
     return [row for row in rows if isinstance(row, dict)]
 
 
-def _is_market_relevant(row: dict) -> bool:
-    text = " ".join([
-        str(row.get("title") or ""),
-        str(row.get("brief") or ""),
-        str(row.get("content") or ""),
-        " ".join(row.get("subjects") or []),
-        " ".join(row.get("symbols") or []),
-    ]).lower()
-    return any(keyword in text for keyword in _MARKET_KEYWORDS)
-
-
-def _trade_date(row: dict) -> str:
-    published_at = row.get("published_at") or ""
-    if len(published_at) >= 10:
-        return published_at[:10]
-    return datetime.now(cls_client.CLS_TIMEZONE).strftime("%Y-%m-%d")
-
-
-def _to_market_evidence(row: dict) -> dict | None:
-    if not _is_market_relevant(row):
-        return None
-    summary = row.get("brief") or row.get("content") or row.get("title")
-    return {
-        "trade_date": _trade_date(row),
-        "brief_type": "post_market",
-        "category": "news",
-        "title": row["title"],
-        "summary": summary,
-        "symbols": row.get("symbols") or [],
-        "metrics": {
-            "cls_id": row.get("cls_id"),
-            "cls_category": row.get("category") or "",
-            "ctime": row.get("ctime"),
-        },
-        "source": "财联社",
-        "source_url": row["source_url"],
-        "published_at": row.get("published_at"),
-        "reliability": "wire",
-    }
-
-
 def sync_cls_telegraph_once(
     *,
     session=None,
@@ -165,7 +124,12 @@ def sync_cls_telegraph_once(
     timeout_seconds: float | None = None,
     app_version: str | None = None,
 ) -> dict:
-    """执行一轮 CLS 电报同步。失败时保留旧状态并记录 `last_error`。"""
+    """执行一轮 CLS 电报同步。失败时保留旧状态并记录 `last_error`。
+
+    注意：只写入 `cls_telegraph_items` 表。`market_evidence` 表由
+    `market_evidence_service` 中的 `ClsTelegraphAdapter` 独立采集，
+    避免同一来源被双重写入。
+    """
     settings = get_settings()
     page_size = page_size or int(settings.cls_telegraph_sync_page_size)
     max_pages = max_pages or int(settings.cls_telegraph_sync_max_pages)
@@ -184,7 +148,6 @@ def sync_cls_telegraph_once(
 
     fetched = 0
     inserted = 0
-    evidence_inserted = 0
     newest_ctime: int | None = None
     newest_cls_id: str | None = None
     last_time = int(datetime.now(timezone.utc).timestamp())
@@ -212,9 +175,6 @@ def sync_cls_telegraph_once(
                 fetched += 1
                 if repo.upsert_cls_telegraph_item(s, row):
                     inserted += 1
-                evidence = _to_market_evidence(row)
-                if evidence is not None and repo.upsert_market_evidence(s, evidence):
-                    evidence_inserted += 1
                 ctime = row.get("ctime")
                 if ctime is not None:
                     if newest_ctime is None or ctime > newest_ctime:
@@ -238,7 +198,7 @@ def sync_cls_telegraph_once(
             "status": "completed",
             "fetched": fetched,
             "inserted": inserted,
-            "evidence_inserted": evidence_inserted,
+            "evidence_inserted": 0,  # 已移除双写，evidence 由 ClsTelegraphAdapter 独立采集
             "latest_cls_id": newest_cls_id,
         }
     except Exception as exc:  # noqa: BLE001
@@ -247,7 +207,6 @@ def sync_cls_telegraph_once(
         except Exception as rollback_exc:  # noqa: BLE001
             logger.warning("[cls-sync] rollback failed: %s", rollback_exc)
         error = f"{type(exc).__name__}: {exc}"
-        # `previous_state` 可能为 None（首跑 / 行被外部删）；用 .get 兼容。
         prev = previous_state or {}
         try:
             repo.update_cls_telegraph_sync_state(
@@ -259,9 +218,6 @@ def sync_cls_telegraph_once(
             )
             s.commit()
         except Exception as state_exc:  # noqa: BLE001
-            # 写 `last_error` 又失败（典型场景：SQLite database is locked）。
-            # 不能让"记错误"这一步把整个 scheduler 触发器搞崩；
-            # 降级为 logger.warning，下一轮 tick 再试。
             try:
                 s.rollback()
             except Exception:
@@ -276,7 +232,7 @@ def sync_cls_telegraph_once(
             "status": "failed",
             "fetched": fetched,
             "inserted": inserted,
-            "evidence_inserted": evidence_inserted,
+            "evidence_inserted": 0,
             "last_error": error,
         }
     finally:

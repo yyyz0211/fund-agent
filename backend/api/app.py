@@ -3,7 +3,6 @@
 只做最小骨架：注册 CORS、五个业务 router、健康检查端点。
 业务由 `routes/` 拆分，本文件不应承载任何业务函数。
 """
-import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -16,18 +15,15 @@ from backend.api.routes import admin as admin_routes
 from backend.api.routes import briefing as briefing_routes
 from backend.api.routes import cls as cls_routes
 from backend.api.routes import knowledge as knowledge_routes
+from backend.config.settings import get_settings
 
 app = FastAPI(title="Fund Agent API", version="0.1.0")
 
-# CORS 白名单从环境变量 ALLOWED_ORIGINS 读,逗号分隔。
-# 本地开发默认 http://localhost:3000;部署时通过 .env / docker-compose 注入 Tailscale IP。
-# 空字符串 / 没设 → fallback 到 localhost,保证本地启动可用。
-_allowed = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000")
-allow_origins = [o.strip() for o in _allowed.split(",") if o.strip()]
-
+# CORS 白名单从 Settings.allowed_origins 读取，支持逗号分隔的字符串或列表
+settings = get_settings()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allow_origins,
+    allow_origins=settings.allowed_origins,
     allow_credentials=False,
     # 自选池的 POST/PATCH/DELETE 走浏览器预检,必须显式放行;
     # OPTIONS 留给浏览器自动处理(不在这里列出,FastAPI 也能响应)。
@@ -38,16 +34,10 @@ app.add_middleware(
 
 @app.on_event("startup")
 def _ensure_schema() -> None:
-    """进程启动时把 ORM 表建齐 + 给老表补列,并启动定时刷新调度器。
+    """进程启动时运行 Alembic 迁移 + 启动定时刷新调度器。
 
-    生产级项目会用 alembic,本项目当前没引入迁移工具,这里
-    `init_db` 自带"反射 → 缺列 ALTER"逻辑,幂等可重复跑。
-
-    调度器随进程启动;`SCHEDULER_ENABLED=false`(测试/CI)时 `start_scheduler`
-    直接返回 None,不起后台线程。
-
-    启动时先恢复中断的 jobs,避免上次进程 crash 遗留的 stale 任务
-    一直卡在 pending/running 状态。
+    Alembic 负责所有 schema 变更（表、列、约束、索引）。如果 Alembic
+    不可用（如首次安装），init_db 会用 create_all 确保表存在。
     """
     import logging
 
@@ -58,7 +48,25 @@ def _ensure_schema() -> None:
 
     logger = logging.getLogger(__name__)
 
-    init_db()
+    # 尝试运行 Alembic 迁移
+    try:
+        import subprocess
+        import sys
+        result = subprocess.run(
+            [sys.executable, "-m", "alembic", "-c", "backend/alembic.ini", "upgrade", "head"],
+            capture_output=True,
+            text=True,
+            cwd="/Users/leon/fund-agent",
+        )
+        if result.returncode == 0:
+            logger.info("[startup] Alembic migrations applied successfully")
+        else:
+            logger.warning("[startup] Alembic failed: %s", result.stderr)
+            # Alembic 失败时降级到 create_all
+            init_db()
+    except Exception as alembic_exc:
+        logger.warning("[startup] Alembic unavailable, falling back to create_all: %s", alembic_exc)
+        init_db()
 
     # 恢复中断的 jobs
     settings = get_settings()

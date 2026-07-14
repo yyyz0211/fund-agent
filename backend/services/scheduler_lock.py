@@ -2,25 +2,26 @@
 
 背景：
 - APScheduler 每个 job 自身的 `max_instances=1, coalesce=True` 只能防止
-  同一个 job 重复触发,但 **多个不同 job**（例如 `cls_telegraph_sync`
+  同一个 job 重复触发，但 **多个不同 job**（例如 `cls_telegraph_sync`
   和 `knowledge_ingest_index`）仍会同时进入执行队列。
 - 在 SQLite 单文件场景下，多个会写库的 scheduler job 并发时容易撞到
   全局写锁；再加上 uvicorn 同步工作线程也在读写，连锁时容易触发
   `QueuePool limit of size ... reached` 进一步放大故障面。
-- 本模块提供 **进程级 `threading.Lock`**，所有写入 SQLite 的
-  scheduler job 都应通过 `with scheduler_lock(...)` 包住，保证
-  同进程内任意时刻只有一个写入型 job 在跑。
+- 本模块提供 **进程级 `threading.Lock`**（SQLite）或 **no-op**（PostgreSQL），
+  所有写入 scheduler job 都应通过 `with scheduler_lock(...)` 包住。
 
 用法：
 
 ```python
 from backend.services.scheduler_lock import scheduler_lock
 
-@scheduler_job(trigger="interval", minutes=6)
-def run_knowledge_pipeline():
-    with scheduler_lock("knowledge_ingest_index"):
-        knowledge_search_service.run_knowledge_pipeline_once()
+with scheduler_lock("knowledge_ingest_index"):
+    knowledge_search_service.run_knowledge_pipeline_once()
 ```
+
+**PostgreSQL 兼容性**：PostgreSQL 的 MVCC + 行级锁天然支持并发写入，
+本模块在检测到 `database_url` 以 `postgresql` 开头时会创建一个 no-op
+上下文管理器，不再使用 threading.Lock。
 """
 from __future__ import annotations
 
@@ -30,38 +31,57 @@ import time
 from contextlib import contextmanager
 from typing import Iterator, Optional
 
+from backend.config.settings import get_settings
+
 logger = logging.getLogger(__name__)
 
 
-# 进程内唯一锁。所有调度器写入型 job 共享。
-_LOCK = threading.Lock()
+def _is_postgresql() -> bool:
+    """检测当前 database_url 是否为 PostgreSQL。"""
+    try:
+        settings = get_settings()
+        return settings.database_url.startswith("postgresql")
+    except Exception:
+        return False
 
-# 标识当前持有者（label/job_id），用于诊断和 fast-fail。
+
+# PostgreSQL 下不需要 scheduler_lock
+_IS_PG = _is_postgresql()
+
+# SQLite 下使用进程级锁
+_LOCK = threading.Lock() if not _IS_PG else None
+
+# 标识当前持有者（label/job_id），用于诊断和 fast-fail
 _OWNER: dict[str, object] = {"label": None, "since": None}
 
 
 @contextmanager
 def scheduler_lock(label: str, *, timeout_seconds: float | None = None):
-    """获取 scheduler 进程级单飞锁。
+    """获取 scheduler 单飞锁。
+
+    - **PostgreSQL**：no-op，直接 yield（数据库行锁保证并发安全）。
+    - **SQLite**：使用 threading.Lock，防止并发写入。
 
     Args:
         label: 持有者标识（例如 `cls_telegraph_sync`、`knowledge_ingest_index`）。
-            出现在日志中便于排障。
-        timeout_seconds: 最长等待秒数。默认 `None` 保持旧行为——非阻塞立即
-            抢锁，失败立即抛 `SchedulerLockBusy`。传入正数后改为阻塞模式，
-            最多等 `timeout_seconds` 秒；超时抛 `SchedulerLockBusy`。负数
-            视为 `None`（立即失败）。
+        timeout_seconds: 仅 SQLite 模式生效。最长等待秒数。默认 `None`
+            保持旧行为——非阻塞立即抢锁，失败立即抛 `SchedulerLockBusy`。
+            传入正数后改为阻塞模式，最多等 `timeout_seconds` 秒。
 
     Raises:
-        SchedulerLockBusy: 锁被占且超过 `timeout_seconds`（或默认立即失败）。
+        SchedulerLockBusy: 仅 SQLite 模式。锁被占且超过 `timeout_seconds`（或默认立即失败）。
             调用方应放弃本次触发，由 APScheduler 在下一轮 interval 自然重试。
     """
+    if _IS_PG:
+        # PostgreSQL: 数据库行锁天然安全，scheduler_lock 是 no-op
+        yield
+        return
+
+    # SQLite: 使用 threading.Lock
     blocking = timeout_seconds is not None and timeout_seconds > 0
     deadline = (time.monotonic() + float(timeout_seconds)) if blocking else None
 
     if blocking:
-        # 循环 + 短 sleep：避免 _LOCK.acquire 超长阻塞（它本身能接受 timeout），
-        # 同时方便定期检查 deadline。
         while True:
             if _LOCK.acquire(timeout=min(0.05, float(timeout_seconds))):
                 break
@@ -98,6 +118,8 @@ def try_acquire(label: str) -> Optional[_LockGuard]:
 
     用 `with` 时释放；不需要用则调 `release()`。
 
+    **PostgreSQL 模式**：直接返回 no-op guard。
+
     ```python
     guard = try_acquire("knowledge_reindex")
     if guard is None:
@@ -108,6 +130,9 @@ def try_acquire(label: str) -> Optional[_LockGuard]:
         guard.release()
     ```
     """
+    if _IS_PG:
+        return _NoOpLockGuard(label)
+
     if not _LOCK.acquire(blocking=False):
         return None
     _OWNER["label"] = label
@@ -128,6 +153,16 @@ class _LockGuard:
             _OWNER["label"] = None
             _OWNER["since"] = None
         _LOCK.release()
+
+
+class _NoOpLockGuard:
+    """PostgreSQL 模式下的 no-op guard。"""
+
+    def __init__(self, label: str) -> None:
+        self._label = label
+
+    def release(self) -> None:
+        pass
 
 
 class SchedulerLockBusy(RuntimeError):

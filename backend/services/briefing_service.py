@@ -301,8 +301,6 @@ def collect_watchlist_snapshot(*, fund_codes: list[str] | None = None,
 def _collect_market_snapshot():
     """拉最新交易日指数，返回 {indices, source, as_of} 或 {error}。"""
     return market_service.get_indices()
-    """拉最新交易日指数，返回 {indices, source, as_of} 或 {error}。"""
-    return market_service.get_indices()
 
 
 def _collect_market_breadth() -> dict:

@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     # 把 uvicorn 请求线程卡死。
     db_pool_timeout_seconds: float = 10.0
 
+    # CORS 白名单，JSON 格式数组的环境变量会自动解析为 list
+    allowed_origins: Optional[list[str]] = None
+
     # 定时刷新调度(APScheduler,进程内)。测试 / CI 里把 SCHEDULER_ENABLED
     # 设为 false 可避免起后台线程。cron 时间按 scheduler_timezone 解释。
     scheduler_enabled: bool = True
@@ -125,4 +128,8 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     """返回进程内唯一的 Settings 实例。"""
-    return Settings()
+    settings = Settings()
+    # CORS origins 为 None 时使用默认值
+    if settings.allowed_origins is None:
+        settings.allowed_origins = ["http://localhost:3000"]
+    return settings
