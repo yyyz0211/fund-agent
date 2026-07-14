@@ -2,6 +2,13 @@
 
 编排: 采集全量市场情报 → upsert MarketSnapshot → 返回 dict。
 单项失败不影响整体，降级展示。
+
+写入路径拆 fetch + write:
+- `_fetch_snapshot_payload` 完成所有 akshare 网络拉取(含各 index / sector
+  history 注入),无 DB 调用,可在事务外执行,避免 akshare 慢响应时长事务
+  持有锁。
+- `collect_market_intel` 在 `_fetch_snapshot_payload` 之后开短事务完成
+  upsert;外部传入 session 时沿用其事务,不再 commit/close。
 """
 from __future__ import annotations
 
@@ -11,9 +18,11 @@ from datetime import datetime
 from threading import Lock
 from typing import Any
 
+from sqlalchemy import select
+
 from backend.db.models import MarketSnapshot
-from backend.db.session import get_session
 from backend.db.repository import upsert_market_snapshot
+from backend.db.session_scope import session_scope
 from backend.services.market import data_collector as dc
 from backend.services.market import market_service
 
@@ -61,17 +70,26 @@ def _compute_stale_fields(
     return {k: not (isinstance(v, list) and v) for k, v in values.items()}
 
 
-def collect_market_intel(
-    trade_date: str | None = None,
-    snapshot_type: str = "post_market",
-    session=None,
+def _enrich_and_build_payload(
+    trade_date: str,
+    snapshot_type: str,
+    *,
+    indices,
+    breadth,
+    industry_sectors,
+    industry_flows,
+    concept_sectors,
+    concept_flows,
+    themes,
+    breadth_indicators,
+    overseas,
+    announcements,
+    errors: list[dict],
 ) -> dict:
-    """采集全量市场情报，upsert MarketSnapshot，返回 dict。
+    """给已 fetch 的字段注入 history,组装 payload(不含 stale_fields/errors)。
 
-    单项失败记录到 errors 列表，整体继续。
+    `errors` 累计由 `_collect_field` 内部 append。无 DB 调用。
     """
-    td = trade_date or _today()
-    errors: list[dict] = []
 
     def _collect_field(name: str, fn, *args, **kwargs) -> Any:
         try:
@@ -79,35 +97,6 @@ def collect_market_intel(
         except Exception as exc:  # noqa: BLE001
             errors.append({"field": name, "error": str(exc)})
             return None
-
-    # 串行采集 (max_workers=1)
-    # 历史原因: 之前用 max_workers=6 并行, 在 akshare 1.18 + libmini_racer 0.14 下
-    #   触发 `FATAL:address_pool_manager.cc(67) Check failed: !pool->IsInitialized()`,
-    #   uvicorn worker 进程崩, Next.js proxy 收到 ECONNRESET。
-    # 现在 `data_collector.AKSHARE_LOCK` 已经在 fetch_* 入口全局串行化 akshare,
-    #   外层再并行没意义, 反而让 race 风险窗口变大。统一改成 1 路串行。
-    with ThreadPoolExecutor(max_workers=1) as ex:
-        f_indices = ex.submit(market_service.get_indices)
-        f_breadth = ex.submit(dc.fetch_market_breadth)
-        f_industry = ex.submit(dc.fetch_sector_snapshot)
-        f_industry_flows = ex.submit(dc.fetch_industry_flows)
-        f_concept = ex.submit(dc.fetch_concept_sectors)
-        f_concept_flows = ex.submit(dc.fetch_concept_flows)
-        f_themes = ex.submit(dc.fetch_theme_boards)
-        f_breadth_indicators = ex.submit(dc.fetch_breadth_indicators)
-        f_overseas = ex.submit(dc.fetch_overseas_markets)
-        f_announcements = ex.submit(dc.fetch_announcements)
-
-        indices = _collect_field("indices", lambda: f_indices.result())
-        breadth = _collect_field("breadth", lambda: f_breadth.result())
-        industry_sectors = _collect_field("industry_sectors", lambda: f_industry.result())
-        industry_flows = _collect_field("industry_flows", lambda: f_industry_flows.result())
-        concept_sectors = _collect_field("concept_sectors", lambda: f_concept.result())
-        concept_flows = _collect_field("concept_flows", lambda: f_concept_flows.result())
-        themes = _collect_field("themes", lambda: f_themes.result())
-        breadth_indicators = _collect_field("breadth_indicators", lambda: f_breadth_indicators.result())
-        overseas = _collect_field("overseas", lambda: f_overseas.result())
-        announcements = _collect_field("announcements", lambda: f_announcements.result())
 
     # 给指数注入近 30 日收盘价序列(history)。失败记录到 errors,不影响整体。
     indices_list = (indices or {}).get("indices", []) if isinstance(indices, dict) else (indices or [])
@@ -148,8 +137,8 @@ def collect_market_intel(
             if isinstance(hist, dict) and "error" in hist:
                 errors.append({"field": f"concept_history:{nm}", "error": hist["error"]})
 
-    payload = {
-        "trade_date": td,
+    return {
+        "trade_date": trade_date,
         "snapshot_type": snapshot_type,
         "indices": _safe(indices, "indices", []) if indices else [],
         "breadth": breadth if isinstance(breadth, dict) else {},
@@ -161,26 +150,119 @@ def collect_market_intel(
         "breadth_indicators": breadth_indicators if isinstance(breadth_indicators, dict) else {},
         "overseas": overseas if isinstance(overseas, list) else [],
         "announcements": announcements if isinstance(announcements, list) else [],
-        # 字段级 staleness 标记:外网接口拉取失败 / 返回空时,标 True。
-        # 前端应根据此字段决定是否显示"网络问题"提示,而不是"暂无数据"。
-        "stale_fields": _compute_stale_fields(
-            industry_sectors, concept_sectors, industry_flows, concept_flows,
-            themes, overseas, announcements,
-        ),
-        "as_of": td,
-        "errors": errors,
+        "as_of": trade_date,
     }
 
-    # 写 DB（upsert）
+
+def _build_payload_with_stale(
+    trade_date: str,
+    snapshot_type: str,
+    errors: list[dict],
+    *,
+    indices,
+    breadth,
+    industry_sectors,
+    industry_flows,
+    concept_sectors,
+    concept_flows,
+    themes,
+    breadth_indicators,
+    overseas,
+    announcements,
+) -> dict:
+    """组装 payload 并补全 stale_fields/errors。"""
+    payload = _enrich_and_build_payload(
+        trade_date, snapshot_type,
+        indices=indices, breadth=breadth,
+        industry_sectors=industry_sectors, industry_flows=industry_flows,
+        concept_sectors=concept_sectors, concept_flows=concept_flows,
+        themes=themes, breadth_indicators=breadth_indicators,
+        overseas=overseas, announcements=announcements,
+        errors=errors,
+    )
+    payload["stale_fields"] = _compute_stale_fields(
+        payload["industry_sectors"], payload["concept_sectors"],
+        payload["industry_flows"], payload["concept_flows"],
+        payload["themes"], payload["overseas"], payload["announcements"],
+    )
+    payload["errors"] = errors
+    return payload
+
+
+def collect_market_intel(
+    trade_date: str | None = None,
+    snapshot_type: str = "post_market",
+    session=None,
+) -> dict:
+    """采集全量市场情报,upsert MarketSnapshot,返回 dict。
+
+    单项失败记录到 errors 列表,整体继续。
+
+    事务边界:
+    - 网络拉取(akshare)全部在事务外执行,见函数体内的
+      `ThreadPoolExecutor(max_workers=1)` 块及后续 `_enrich_and_build_payload`。
+    - upsert 在调用方传入 session 时沿用其事务,只在 session=None 时
+      开 `session_scope()` 短事务(自动 commit/close)。
+    - 任何 DB 错误不抛 — 记入 `payload["db_error"]`,网络 payload
+      已收集的内容仍返回给调用方。
+    """
+    td = trade_date or _today()
+    errors: list[dict] = []
+
+    # 阶段 1:网络拉取,无事务、无 DB 调用。
+    # 串行采集 (max_workers=1)
+    # 历史原因: 之前用 max_workers=6 并行, 在 akshare 1.18 + libmini_racer 0.14 下
+    #   触发 `FATAL:address_pool_manager.cc(67) Check failed: !pool->IsInitialized()`,
+    #   uvicorn worker 进程崩, Next.js proxy 收到 ECONNRESET。
+    # 现在 `data_collector.AKSHARE_LOCK` 已经在 fetch_* 入口全局串行化 akshare,
+    #   外层再并行没意义, 反而让 race 风险窗口变大。统一改成 1 路串行。
+    with ThreadPoolExecutor(max_workers=1) as ex:
+        f_indices = ex.submit(market_service.get_indices)
+        f_breadth = ex.submit(dc.fetch_market_breadth)
+        f_industry = ex.submit(dc.fetch_sector_snapshot)
+        f_industry_flows = ex.submit(dc.fetch_industry_flows)
+        f_concept = ex.submit(dc.fetch_concept_sectors)
+        f_concept_flows = ex.submit(dc.fetch_concept_flows)
+        f_themes = ex.submit(dc.fetch_theme_boards)
+        f_breadth_indicators = ex.submit(dc.fetch_breadth_indicators)
+        f_overseas = ex.submit(dc.fetch_overseas_markets)
+        f_announcements = ex.submit(dc.fetch_announcements)
+
+        def _gather(name: str, fut) -> Any:
+            try:
+                return fut.result()
+            except Exception as exc:  # noqa: BLE001
+                errors.append({"field": name, "error": str(exc)})
+                return None
+
+        indices = _gather("indices", f_indices)
+        breadth = _gather("breadth", f_breadth)
+        industry_sectors = _gather("industry_sectors", f_industry)
+        industry_flows = _gather("industry_flows", f_industry_flows)
+        concept_sectors = _gather("concept_sectors", f_concept)
+        concept_flows = _gather("concept_flows", f_concept_flows)
+        themes = _gather("themes", f_themes)
+        breadth_indicators = _gather("breadth_indicators", f_breadth_indicators)
+        overseas = _gather("overseas", f_overseas)
+        announcements = _gather("announcements", f_announcements)
+
+    # 阶段 1b:补 history + 组 payload(无 DB 调用)
+    payload = _build_payload_with_stale(
+        td, snapshot_type, errors,
+        indices=indices, breadth=breadth,
+        industry_sectors=industry_sectors, industry_flows=industry_flows,
+        concept_sectors=concept_sectors, concept_flows=concept_flows,
+        themes=themes, breadth_indicators=breadth_indicators,
+        overseas=overseas, announcements=announcements,
+    )
+
+    # 阶段 2:写 DB(upsert),短事务;传入 session 时只 flush,不开新事务。
     try:
-        owns = session is None
-        s = session or get_session()
-        try:
-            upsert_market_snapshot(s, td, snapshot_type, payload)
-            s.commit()
-        finally:
-            if owns:
-                s.close()
+        if session is None:
+            with session_scope() as s:
+                upsert_market_snapshot(s, td, snapshot_type, payload)
+        else:
+            upsert_market_snapshot(session, td, snapshot_type, payload)
     except Exception as exc:  # noqa: BLE001
         payload["db_error"] = str(exc)
 
@@ -192,53 +274,54 @@ def get_market_snapshot(
     snapshot_type: str = "post_market",
     session=None,
 ) -> dict:
-    """从 DB 读取 MarketSnapshot；不存在则触发采集。"""
+    """从 DB 读取 MarketSnapshot;不存在则触发采集。
+
+    session=None 时自行 `session_scope()` 管理事务边界;
+    传入 session 时只读 + flush,不 commit/close。
+    """
     td = trade_date or _today()
-    owns = session is None
-    s = session or get_session()
-    try:
-        from sqlalchemy import select
-        row = s.scalar(
-            select(MarketSnapshot).where(
-                MarketSnapshot.trade_date == td,
-                MarketSnapshot.snapshot_type == snapshot_type,
-            )
+    if session is None:
+        with session_scope() as s:
+            return get_market_snapshot(td, snapshot_type, session=s)
+
+    row = session.scalar(
+        select(MarketSnapshot).where(
+            MarketSnapshot.trade_date == td,
+            MarketSnapshot.snapshot_type == snapshot_type,
         )
-        if row is None:
-            # 不存在则触发采集
-            return collect_market_intel(td, snapshot_type, session=s)
-        # 从 DB 读出 path 不存 stale_fields — 在读出时基于 list 字段是否非空实时重算。
-        # 这样即使写 path 是 1 周前的、当时 industry 没拉到,DB 命中时 UI 仍能提示"网络问题"。
-        industry = json.loads(row.industry_sectors_json or "[]")
-        concept = json.loads(row.concept_sectors_json or "[]")
-        industry_flows = json.loads(row.industry_flows_json or "[]")
-        concept_flows = json.loads(row.concept_flows_json or "[]")
-        themes = json.loads(row.themes_json or "[]")
-        overseas = json.loads(row.overseas_json or "[]")
-        announcements = json.loads(row.announcements_json or "[]")
-        return {
-            "trade_date": row.trade_date,
-            "snapshot_type": row.snapshot_type,
-            "indices": json.loads(row.indices_json or "[]"),
-            "breadth": json.loads(row.breadth_json or "{}"),
-            "industry_sectors": industry,
-            "concept_sectors": concept,
-            "industry_flows": industry_flows,
-            "concept_flows": concept_flows,
-            "themes": themes,
-            "breadth_indicators": json.loads(row.breadth_indicators_json or "{}"),
-            "overseas": overseas,
-            "announcements": announcements,
-            "stale_fields": _compute_stale_fields(
-                industry, concept, industry_flows, concept_flows,
-                themes, overseas, announcements,
-            ),
-            "source": row.source,
-            "as_of": row.as_of,
-        }
-    finally:
-        if owns:
-            s.close()
+    )
+    if row is None:
+        # 不存在则触发采集,沿用本 session
+        return collect_market_intel(td, snapshot_type, session=session)
+    # 从 DB 读出 path 不存 stale_fields — 在读出时基于 list 字段是否非空实时重算。
+    # 这样即使写 path 是 1 周前的、当时 industry 没拉到,DB 命中时 UI 仍能提示"网络问题"。
+    industry = json.loads(row.industry_sectors_json or "[]")
+    concept = json.loads(row.concept_sectors_json or "[]")
+    industry_flows = json.loads(row.industry_flows_json or "[]")
+    concept_flows = json.loads(row.concept_flows_json or "[]")
+    themes = json.loads(row.themes_json or "[]")
+    overseas = json.loads(row.overseas_json or "[]")
+    announcements = json.loads(row.announcements_json or "[]")
+    return {
+        "trade_date": row.trade_date,
+        "snapshot_type": row.snapshot_type,
+        "indices": json.loads(row.indices_json or "[]"),
+        "breadth": json.loads(row.breadth_json or "{}"),
+        "industry_sectors": industry,
+        "concept_sectors": concept,
+        "industry_flows": industry_flows,
+        "concept_flows": concept_flows,
+        "themes": themes,
+        "breadth_indicators": json.loads(row.breadth_indicators_json or "{}"),
+        "overseas": overseas,
+        "announcements": announcements,
+        "stale_fields": _compute_stale_fields(
+            industry, concept, industry_flows, concept_flows,
+            themes, overseas, announcements,
+        ),
+        "source": row.source,
+        "as_of": row.as_of,
+    }
 
 
 def refresh_market_intel_async(*, trigger: str = "manual", target_date: str | None = None) -> dict:
