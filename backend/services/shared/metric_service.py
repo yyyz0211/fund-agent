@@ -11,6 +11,8 @@
 """
 import math
 
+from backend.exceptions import InputValidationError
+
 _PERIOD_ROWS = {"1d": 1, "1w": 5, "1m": 21, "3m": 63, "6m": 126, "1y": 252, "all": None}
 
 
@@ -68,7 +70,11 @@ def period_return(navs: list[float], period: str) -> float | None:
     不支持的 period 抛 `ValueError`,因为那是调用方 bug。
     """
     if period not in _PERIOD_ROWS:
-        raise ValueError(f"unsupported period: {period}")
+        raise InputValidationError(
+            f"unsupported period: {period}",
+            field="period",
+            details={"allowed": sorted(k for k in _PERIOD_ROWS if _PERIOD_ROWS[k] is not None)},
+        )
     n = _PERIOD_ROWS[period]
     if n is None:
         return cumulative_return(navs)

@@ -13,6 +13,7 @@ from datetime import datetime
 from threading import Lock
 from typing import Any
 
+from backend.config.settings import get_settings
 from backend.db.repository import search_market_evidence
 from backend.db.session import get_session
 from backend.services.market import market_evidence_ingestion as ing
@@ -105,9 +106,13 @@ def collect_and_run_for_brief_type(
         session: 可选 session
     """
     td = trade_date or _today()
+    settings = get_settings()
     try:
-        client = __import__("httpx").Client(timeout=10.0, follow_redirects=True)
-    except Exception:
+        client = __import__("httpx").Client(
+            timeout=settings.cls_timeout_seconds, follow_redirects=True,
+        )
+    except Exception as exc:  # noqa: BLE001  # httpx 缺失时降级到无 client 模式
+        logger.warning("httpx unavailable, falling back to no-client adapters: %s", exc)
         client = None
     adapters = build_default_adapters(
         client=client, brief_type=brief_type, sector_snapshot=sector_snapshot

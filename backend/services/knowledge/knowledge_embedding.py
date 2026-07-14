@@ -4,6 +4,8 @@ from typing import Any
 
 from langchain_openai import OpenAIEmbeddings
 
+from backend.exceptions import DataSourceError
+
 
 class OpenAICompatibleEmbeddingProvider:
     """使用独立 OpenAI-compatible endpoint 的真实 embedding provider。"""
@@ -32,14 +34,18 @@ class OpenAICompatibleEmbeddingProvider:
             return []
         vectors = self._client.embed_documents(texts)
         if len(vectors) != len(texts):
-            raise ValueError(
+            raise DataSourceError(
                 "embedding response count mismatch: "
-                f"expected={len(texts)}, actual={len(vectors)}"
+                f"expected={len(texts)}, actual={len(vectors)}",
+                source="embedding",
+                details={"expected": len(texts), "actual": len(vectors)},
             )
         if any(len(vector) != self.dimensions for vector in vectors):
-            raise ValueError(
+            raise DataSourceError(
                 "embedding response dimension mismatch: "
-                f"expected={self.dimensions}"
+                f"expected={self.dimensions}",
+                source="embedding",
+                details={"expected": self.dimensions},
             )
         return [[float(value) for value in vector] for vector in vectors]
 

@@ -13,6 +13,7 @@ from html.parser import HTMLParser
 from typing import Iterable
 from urllib.parse import urljoin
 
+from backend.config.settings import get_settings
 from backend.services.market_sources._utils import (
     absolute_url,
     is_plausible_title,
@@ -108,7 +109,10 @@ class PolicyPageAdapter:
     def fetch(self, *, client, trade_date: str, brief_type: str = "post_market") -> list[dict]:
         """拉取并解析页面, 返回 evidence 列表。失败返回 []。"""
         try:
-            resp = client.get(self.url, timeout=10.0)
+            resp = client.get(
+                self.url,
+                timeout=get_settings().market_policy_page_timeout_seconds,
+            )
             status = getattr(resp, "status_code", 200)
             if status and status >= 400:
                 return []

@@ -8,8 +8,9 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from backend.api.routes import funds as funds_routes
 from backend.api.routes import market as market_routes
@@ -21,8 +22,18 @@ from backend.api.routes import briefing as briefing_routes
 from backend.api.routes import cls as cls_routes
 from backend.api.routes import knowledge as knowledge_routes
 from backend.config.settings import get_settings
+from backend.exceptions import (
+    DependencyUnavailableError,
+    FundAgentError,
+    InputValidationError,
+    ResourceNotFoundError,
+    http_status_for,
+    redact_dict,
+)
 
 app = FastAPI(title="Fund Agent API", version="0.1.0")
+
+logger = logging.getLogger(__name__)
 
 # CORS 白名单从 Settings.allowed_origins 读取，支持逗号分隔的字符串或列表
 settings = get_settings()
@@ -35,6 +46,92 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["*"],
 )
+
+
+def _register_exception_handlers(app: FastAPI) -> None:
+    """把业务异常统一映射到 HTTP 响应(spec 4.3 错误处理矩阵)。
+
+    - ResourceNotFoundError → 404
+    - InputValidationError → 422
+    - DataSourceError / DataSourceTimeoutError → 502/504
+    - DatabaseConflictError → 409
+    - DependencyUnavailableError → 503(caller 决定是否降级到 200)
+    - 其它 FundAgentError → 500
+    - 未分类 Exception → 500,不泄露 stack trace
+    """
+
+    @app.exception_handler(ResourceNotFoundError)
+    async def _resource_not_found(_: Request, exc: ResourceNotFoundError) -> JSONResponse:
+        return JSONResponse(
+            status_code=404,
+            content=_payload(exc, code="resource_not_found"),
+        )
+
+    @app.exception_handler(InputValidationError)
+    async def _input_validation(_: Request, exc: InputValidationError) -> JSONResponse:
+        return JSONResponse(
+            status_code=422,
+            content=_payload(exc, code="input_validation", extra={"field": exc.field}),
+        )
+
+    @app.exception_handler(FundAgentError)
+    async def _generic_business(_: Request, exc: FundAgentError) -> JSONResponse:
+        return JSONResponse(
+            status_code=http_status_for(exc),
+            content=_payload(exc, code=_code_for(exc)),
+        )
+
+    @app.exception_handler(Exception)
+    async def _unhandled(_: Request, exc: Exception) -> JSONResponse:
+        # 未分类异常：仅暴露 message,避免泄露内部栈
+        logger.exception("unhandled API exception")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": {
+                    "code": "internal_error",
+                    "message": str(exc) or exc.__class__.__name__,
+                }
+            },
+        )
+
+
+def _payload(exc: FundAgentError, *, code: str, extra: dict | None = None) -> dict:
+    payload: dict = {
+        "error": {
+            "code": code,
+            "message": str(exc),
+            "details": redact_dict(exc.details or {}),
+        }
+    }
+    if extra:
+        payload["error"].update(extra)
+    return payload
+
+
+def _code_for(exc: FundAgentError) -> str:
+    from backend.exceptions import (
+        DatabaseConflictError,
+        DataSourceError,
+        DataSourceTimeoutError,
+    )
+
+    if isinstance(exc, ResourceNotFoundError):
+        return "resource_not_found"
+    if isinstance(exc, InputValidationError):
+        return "input_validation"
+    if isinstance(exc, DataSourceTimeoutError):
+        return "data_source_timeout"
+    if isinstance(exc, DataSourceError):
+        return "data_source_error"
+    if isinstance(exc, DatabaseConflictError):
+        return "database_conflict"
+    if isinstance(exc, DependencyUnavailableError):
+        return "dependency_unavailable"
+    return "internal_error"
+
+
+_register_exception_handlers(app)
 
 
 @app.on_event("startup")

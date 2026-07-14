@@ -96,6 +96,11 @@ class Settings(BaseSettings):
     cls_telegraph_sync_page_size: int = 50
     cls_telegraph_sync_max_pages: int = 3
 
+    # akshare index history 单次超时(spec 4.4 清理硬编码)
+    market_index_history_timeout_seconds: float = 5.0
+    # policy_page 抓取超时
+    market_policy_page_timeout_seconds: float = 10.0
+
     # 基金自选池驱动的市场知识库 / RAG 检索。默认开启本地管线,
     # 具体 LLM / embedding 调用由 service 层按可用配置降级。
     knowledge_rag_enabled: bool = True

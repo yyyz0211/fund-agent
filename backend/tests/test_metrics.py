@@ -40,5 +40,8 @@ def test_period_return():
     assert m.period_return(navs, "1w") == pytest.approx(navs[-1] / navs[-6] - 1)
     assert m.period_return(navs, "all") == pytest.approx(navs[-1] / navs[0] - 1)
     assert m.period_return(navs, "1y") is None  # needs 252+1
-    with pytest.raises(ValueError):
+    from backend.exceptions import InputValidationError
+
+    with pytest.raises(InputValidationError) as exc_info:
         m.period_return(navs, "2y")
+    assert exc_info.value.field == "period"

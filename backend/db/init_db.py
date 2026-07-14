@@ -159,8 +159,12 @@ def init_db(engine: Optional[Engine] = None, skip_migration_check: bool = False)
                 logger.info("Backfilled watchlist.fund_name for %d rows.", backfilled)
         finally:
             session.close()
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001  # 降级边界：启动期允许回填失败
+        logger.warning(
+            "watchlist.fund_name backfill skipped due to error: %s",
+            exc,
+            exc_info=False,
+        )
 
 
 def ensure_pgvector_schema(eng: Engine, dimensions: Optional[int]) -> bool:

@@ -19,6 +19,7 @@ import threading
 
 import akshare as ak
 import logging
+from backend.config.settings import get_settings
 _logger = logging.getLogger(__name__)
 
 def _log_empty(field: str, reason: str) -> None:
@@ -274,9 +275,14 @@ def fetch_index_history(symbol: str, days: int = 30) -> list[dict] | dict:
     """
     full_symbol = _normalize_index_symbol(symbol)
     try:
-        # 5s 单次 timeout: collect_market_intel 会为每个 index 调一次,
-        # 30+ 个 industry/concept history × 无 timeout = 整个 refresh 卡 60s+。
-        df = with_retry(ak.stock_zh_index_daily, symbol=full_symbol, timeout=5.0)
+        # 单次 timeout 取自 settings.market_index_history_timeout_seconds:
+        # collect_market_intel 会为每个 index 调一次,30+ 个 industry/concept
+        # history × 无 timeout = 整个 refresh 卡 60s+。
+        df = with_retry(
+            ak.stock_zh_index_daily,
+            symbol=full_symbol,
+            timeout=get_settings().market_index_history_timeout_seconds,
+        )
         if df is None or getattr(df, "empty", True):
             return {"error": f"fetch_index_history empty for {symbol}", "source": SOURCE}
         date_col = _find_col(df, "date", "日期")
@@ -998,7 +1004,7 @@ def fetch_sector_history(name: str, kind: str = "industry", days: int = 10) -> l
         df = with_retry(fn, symbol=name,
                         start_date=start.strftime("%Y%m%d"),
                         end_date=end.strftime("%Y%m%d"),
-                        timeout=5.0)
+                        timeout=get_settings().market_index_history_timeout_seconds)
         if df is None or getattr(df, "empty", True):
             return {"error": f"fetch_sector_history empty for {name} ({kind})", "source": SOURCE}
         date_col = _find_col(df, "date", "日期")

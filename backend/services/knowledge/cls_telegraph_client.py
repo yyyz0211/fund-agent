@@ -14,6 +14,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 from urllib.parse import urlencode
 
+from backend.exceptions import DataSourceError, DataSourceTimeoutError
+
 
 logger = logging.getLogger(__name__)
 CLS_TIMEZONE = timezone(timedelta(hours=8))
@@ -195,6 +197,10 @@ def _curl_get_json(
     """用 curl 作为本地开发环境下 httpx 连接失败时的兜底。
 
     不走 shell,URL 和 header 均作为 argv 传入,避免命令拼接风险。
+
+    Raises:
+        DataSourceTimeoutError: subprocess 超时。
+        DataSourceError: curl 退出非 0 或响应非 JSON。
     """
     full_url = f"{url}?{urlencode(params)}"
     cmd = [
@@ -207,16 +213,34 @@ def _curl_get_json(
     ]
     for key, value in headers.items():
         cmd.extend(["-H", f"{key}: {value}"])
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=max(2, int(timeout_seconds) + 2),
-    )
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=max(2, int(timeout_seconds) + 2),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise DataSourceTimeoutError(
+            f"curl timeout after {timeout_seconds}s",
+            source="cls_telegraph",
+            details={"url": full_url, "timeout_seconds": timeout_seconds},
+        ) from exc
     if result.returncode != 0:
         stderr = (result.stderr or "").strip()
-        raise RuntimeError(f"curl exit {result.returncode}: {stderr}")
-    return json.loads(result.stdout)
+        raise DataSourceError(
+            f"curl exit {result.returncode}: {stderr}",
+            source="cls_telegraph",
+            details={"url": full_url, "returncode": result.returncode},
+        )
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise DataSourceError(
+            f"cls telegraph returned invalid JSON: {exc}",
+            source="cls_telegraph",
+            details={"url": full_url},
+        ) from exc
 
 
 def _is_retryable_exc(exc: BaseException) -> bool:

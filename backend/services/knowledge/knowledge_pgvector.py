@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy import text
 
 from backend.db.init_db import PgVectorSchemaError, validate_pgvector_schema
+from backend.exceptions import InputValidationError
 from backend.services.knowledge.knowledge_vector import VectorHit, VectorItem
 
 
@@ -35,9 +36,11 @@ class PgVectorStore:
 
     def _validate_vector(self, vector: list[float]) -> None:
         if len(vector) != self.dimensions:
-            raise ValueError(
+            raise InputValidationError(
                 "vector dimension mismatch: "
-                f"expected={self.dimensions}, actual={len(vector)}"
+                f"expected={self.dimensions}, actual={len(vector)}",
+                field="vector",
+                details={"expected": self.dimensions, "actual": len(vector)},
             )
 
     def upsert(self, items: list[VectorItem | dict]) -> None:
@@ -61,7 +64,10 @@ class PgVectorStore:
             self._validate_vector(vector_item.vector)
             content_hash = str(vector_item.metadata.get("content_hash") or "")
             if not content_hash:
-                raise ValueError("vector item metadata.content_hash is required")
+                raise InputValidationError(
+                    "vector item metadata.content_hash is required",
+                    field="metadata.content_hash",
+                )
             self.session.execute(statement, {
                 "document_id": int(vector_item.document_id),
                 "embedding": _vector_literal(vector_item.vector),
