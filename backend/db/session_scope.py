@@ -8,6 +8,20 @@
 注意：
 - service 接收外部 Session 时不得调用此函数
 - service 只允许 flush()，不得 commit/rollback/close
+
+用法示例(scheduler / CLI / 跨 service 原子操作):
+
+    from backend.db.session_scope import session_scope
+
+    def scheduled_job():
+        with session_scope() as session:
+            # 业务逻辑
+            session.add(obj)
+        # 自动 commit;异常时自动 rollback + raise
+
+禁止用法:
+- service 函数体内部禁止开 session_scope()(破坏调用方事务)
+- service 函数体内部禁止 commit/rollback/close(只允许 flush)
 """
 from __future__ import annotations
 
@@ -16,7 +30,7 @@ from typing import Generator
 
 from sqlalchemy.orm import Session
 
-from backend.db.session import SessionLocal
+from backend.db import session as _session_module
 
 
 @contextmanager
@@ -36,7 +50,7 @@ def session_scope() -> Generator[Session, None, None]:
             # 自动 commit 或 rollback
     ```
     """
-    session = SessionLocal()
+    session = _session_module.SessionLocal()
     try:
         yield session
         session.commit()
