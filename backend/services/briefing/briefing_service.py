@@ -6,6 +6,15 @@
        → 写内存快照。
 
 简报不走 LangGraph / qa_graph，不经过 policy.py 合规检查。
+
+Phase 1.2 事务约定:
+- `run_daily_briefing` 把网络/LLM调用挪出事务:evidence 采集 + LLM compose
+  在事务外,只 persist(Briefing upsert)走短事务。
+- Service 函数体禁止 `s.commit() / s.rollback() / s.close()`;
+  caller 注 session 时只 flush,owning 模式走 `with session_scope()`.
+- `read_briefing` 同 read pattern:`session is None -> session_scope()`,
+  注 session 则只读 + flush。
+- `compose_briefing` 已由 Phase 1.1 接 `model` 参数,签名稳定,本任务不动。
 """
 from __future__ import annotations
 
@@ -19,7 +28,7 @@ from sqlalchemy import select
 
 from backend.config import settings as app_settings
 from backend.db.models import Briefing
-from backend.db.session import get_session
+from backend.db.session_scope import session_scope
 from backend.services.briefing.prompts import BRIEFING_PROMPT_TEMPLATE_V2
 from backend.services.briefing.types import ChatModel
 from backend.services.market import data_collector as dc
@@ -501,6 +510,11 @@ def run_daily_briefing(
     brief_type: post_market / pre_market / intraday。默认 post_market 以保持
     旧调用（未传参）行为一致。
 
+    Phase 1.2 事务拆分 (spec §4.2):
+    - 阶段 1: evidence 采集 + 读取 (网络/DB 短事务)
+    - 阶段 2: collect_watchlist_snapshot + LLM compose (网络, **无事务**)
+    - 阶段 3: Briefing upsert (独立 short-tx; caller 注 session 则仅 flush)
+
     Args:
         trigger: 触发来源(manual / scheduled / api)。
         session: 数据库 session,`None` 时新建。
@@ -512,9 +526,6 @@ def run_daily_briefing(
     from backend.db.repository import upsert_briefing
     from backend.services.briefing import module_briefing as mb
 
-    # 提前创建 session 让 ingest 和 search 共用同一事务上下文
-    evidence_owns = session is None
-    evidence_session = session or get_session()
     today = _today()
     profile, profile_warnings = mb.get_brief_type_profile(brief_type)
     effective_brief_type = profile.brief_type
@@ -525,36 +536,55 @@ def run_daily_briefing(
     succeeded = 0
     failed = 0
 
-    # ingest evidence (collect from all sources including CLS) before reading
-    try:
-        market_evidence_service.collect_and_run_for_brief_type(
-            brief_type=effective_brief_type, trade_date=today, sector_snapshot=None,
-            session=evidence_session,
-        )
-    except Exception:  # noqa: BLE001
-        pass  # ingestion failures are non-fatal; proceed with whatever is in DB
-
-    # collect evidence
-    evidence_rows: list[dict] = []
-    try:
-        evidence_rows = market_evidence_service.search_evidence(
-            trade_date=today, limit=20, session=evidence_session,
-        )
-    except Exception:
+    # ------------------------------------------------------------------
+    # 阶段 1: evidence 采集 (无事务或独立短事务)
+    # ------------------------------------------------------------------
+    if session is None:
+        # 阶段 1a: ingest (独立 short-tx)
+        try:
+            with session_scope() as ev_s:
+                market_evidence_service.collect_and_run_for_brief_type(
+                    brief_type=effective_brief_type, trade_date=today,
+                    sector_snapshot=None, session=ev_s,
+                )
+        except Exception:  # noqa: BLE001
+            pass  # ingestion failures are non-fatal
+        # 阶段 1b: search (独立 short-tx; 可读到 1a 写入的 evidence)
+        evidence_rows: list[dict] = []
+        try:
+            with session_scope() as ev_s:
+                evidence_rows = market_evidence_service.search_evidence(
+                    trade_date=today, limit=20, session=ev_s,
+                )
+        except Exception:
+            evidence_rows = []
+    else:
+        # caller 注 session: 同一 session 共用, 只 flush
+        try:
+            market_evidence_service.collect_and_run_for_brief_type(
+                brief_type=effective_brief_type, trade_date=today,
+                sector_snapshot=None, session=session,
+            )
+        except Exception:  # noqa: BLE001
+            pass
         evidence_rows = []
+        try:
+            evidence_rows = market_evidence_service.search_evidence(
+                trade_date=today, limit=20, session=session,
+            )
+        except Exception:
+            evidence_rows = []
 
-    # close evidence session (only if we own it)
-    if evidence_owns:
-        evidence_session.close()
-
-    # collect
+    # ------------------------------------------------------------------
+    # 阶段 2a: collect (网络, 无事务)
+    # ------------------------------------------------------------------
     try:
         snapshot = collect_watchlist_snapshot(session=session)
     except Exception as exc:  # noqa: BLE001
         failures.append({"stage": "collect", "message": str(exc)})
         failed += 1
 
-    # collect 单项 errors 也计入 failed（按 fund_code 维度）
+    # collect 单项 errors 也计入 failed (按 fund_code 维度)
     collect_errors = snapshot.get("errors", []) if snapshot else []
     for ce in collect_errors:
         failures.append({
@@ -578,7 +608,9 @@ def run_daily_briefing(
     except Exception:
         pass
 
-    # compose — 使用 compose_briefing（内部走 V2 module system）
+    # ------------------------------------------------------------------
+    # 阶段 2b: compose — LLM (DeepSeek) 网络调用, **绝不在事务内**
+    # ------------------------------------------------------------------
     try:
         compose_result = compose_briefing(
             snapshot,
@@ -623,25 +655,25 @@ def run_daily_briefing(
         "evidence_count": len(evidence_rows),
     }
 
+    # ------------------------------------------------------------------
+    # 阶段 3: 持久化 (独立 short-tx or 注 session only-flush)
+    # ------------------------------------------------------------------
     try:
-        owns = session is None
-        s = session or get_session()
-        try:
-            # briefing_date + brief_type 做幂等键 — 同一交易日不同 brief_type
-            # (post_market / pre_market / intraday) 可各自保存一行。
-            # as_of(数据交易日)与 today(本次生成日)可能不同(如周末/假期),
-            # 已在 markdown 末尾 "数据声明" 段真实展示。
-            payload_with_type = {**payload, "brief_type": effective_brief_type}
+        if session is None:
+            with session_scope() as s:
+                upsert_briefing(
+                    s,
+                    briefing_date=today,
+                    payload={**payload, "brief_type": effective_brief_type},
+                    brief_type=effective_brief_type,
+                )
+        else:
             upsert_briefing(
-                s,
+                session,
                 briefing_date=today,
-                payload=payload_with_type,
+                payload={**payload, "brief_type": effective_brief_type},
                 brief_type=effective_brief_type,
             )
-            s.commit()
-        finally:
-            if owns:
-                s.close()
     except Exception as exc:  # noqa: BLE001
         failures.append({"stage": "db_upsert", "message": str(exc)})
         failed += 1
@@ -674,9 +706,11 @@ def read_briefing(brief_date: str | None = None, brief_type: str = "post_market"
     """从 DB 读取 briefing（None=最近），返回 dict（含新 data_quality 字段）。
 
     brief_type: 按 type 过滤；None 表示不限定。
+
+    Phase 1.2: 顶层事务 — 自动 commit/rollback/close via `session_scope()`。
+    不带 session 参数的纯读接口。
     """
-    s = get_session()
-    try:
+    with session_scope() as s:
         if brief_date:
             stmt = select(Briefing).where(Briefing.briefing_date == brief_date)
             if brief_type:
@@ -730,8 +764,6 @@ def read_briefing(brief_date: str | None = None, brief_type: str = "post_market"
             "created_at": row.created_at.isoformat() if row.created_at else None,
             "updated_at": row.updated_at.isoformat() if row.updated_at else None,
         }
-    finally:
-        s.close()
 
 
 def reset_for_tests() -> None:
