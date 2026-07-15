@@ -1,18 +1,13 @@
 import pytest
-from backend.db.session import make_engine
-from backend.db.init_db import init_db
-import backend.db.models  # noqa: F401
-from sqlalchemy.orm import sessionmaker
 from backend.services.watchlist import watchlist_service as ws
 
 
+pytestmark = pytest.mark.db
+
+
 @pytest.fixture()
-def session():
-    engine = make_engine("sqlite:///:memory:")
-    init_db(engine)
-    s = sessionmaker(bind=engine, expire_on_commit=False)()
-    yield s
-    s.close()
+def session(db_session):
+    return db_session
 
 
 def test_list_empty(session):

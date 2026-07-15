@@ -5,7 +5,7 @@ import pytest
 
 
 def test_safe_job_calls_wrapped_function():
-    """scheduler_lock 必须作为函数调用，而不是被解析成子模块。"""
+    """scheduler wrapper 必须直接调用被包装函数。"""
     from backend.scheduler.scheduler import _safe_job
 
     assert _safe_job("review-regression", lambda: "ok") == "ok"

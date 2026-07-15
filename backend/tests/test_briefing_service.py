@@ -6,28 +6,17 @@ from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
-from sqlalchemy import create_engine
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import sessionmaker
-
-from backend.db.session import Base
 
 
 # ---------------------------------------------------------------------------
-# In-memory session fixture
+# PostgreSQL session fixture
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def in_memory_session():
-    """每次测试用独立 in-memory SQLite + 干净 schema。"""
-    from backend.db.models import Briefing  # noqa: F401  注册入 Base.metadata
-
-    engine = create_engine("sqlite:///:memory:", echo=False)
-    Base.metadata.create_all(engine)
-    Session = sessionmaker(bind=engine)
-    session = Session()
-    yield session
-    session.close()
+def in_memory_session(db_session):
+    """复用当前 worker 的 PostgreSQL 事务 fixture。"""
+    return db_session
 
 
 # ---------------------------------------------------------------------------
@@ -37,6 +26,7 @@ def in_memory_session():
 class TestBriefingModel:
     """Briefing ORM 写入/读回/唯一约束验证。"""
 
+    @pytest.mark.db
     def test_briefing_model_round_trip(self, in_memory_session):
         """写入一条 Briefing 再读回,所有字段正确。"""
         # import inside to allow the model to be added later
@@ -62,6 +52,7 @@ class TestBriefingModel:
         assert found.source == "akshare + deepseek"
         assert found.as_of == today
 
+    @pytest.mark.db
     def test_briefing_unique_on_date_and_brief_type(self, in_memory_session):
         """同日不同 brief_type 可共存；同日同 type 仍保持唯一。"""
         from backend.db.models import Briefing
@@ -86,6 +77,7 @@ class TestBriefingModel:
         with pytest.raises(IntegrityError):
             in_memory_session.commit()
 
+    @pytest.mark.db
     def test_briefing_sections_json_round_trip(self, in_memory_session):
         """中文 key/value 在 sections_json 序列化/反序列化后正确。"""
         from backend.db.models import Briefing
@@ -424,10 +416,10 @@ class TestComposeBriefing:
             def invoke(self, _prompt):
                 return AIMessage(content=llm_content)
 
-        with patch("backend.graph.model.build_model", return_value=FakeModel()):
-            result = briefing_service.compose_briefing(
-                {"market_snapshot": [], "watchlist_changes": []}
-            )
+        result = briefing_service.compose_briefing(
+            {"market_snapshot": [], "watchlist_changes": []},
+            model=FakeModel(),
+        )
 
         assert "markdown" in result
         assert "# 今日简报" in result["markdown"]
@@ -446,8 +438,7 @@ class TestComposeBriefing:
             def invoke(self, _prompt):
                 return AIMessage(content=raw_text)
 
-        with patch("backend.graph.model.build_model", return_value=FakeModel()):
-            result = briefing_service.compose_briefing({})
+        result = briefing_service.compose_briefing({}, model=FakeModel())
 
         # V2: 即使 LLM 返回非 JSON, V2 模块结构仍由后端构建
         assert result["markdown"] == raw_text
@@ -467,8 +458,7 @@ class TestComposeBriefing:
                 prompt_captured.append(str(prompt))
                 return AIMessage(content='{"markdown":"ok","sections":{}}')
 
-        with patch("backend.graph.model.build_model", return_value=FakeModel()):
-            briefing_service.compose_briefing({})
+        briefing_service.compose_briefing({}, model=FakeModel())
 
         full_prompt = "\n".join(prompt_captured)
         # 正面:必须有简报约束
@@ -505,10 +495,10 @@ class TestComposeBriefing:
             def invoke(self, _prompt):
                 return AIMessage(content=doubled)
 
-        with patch("backend.graph.model.build_model", return_value=FakeModel()):
-            result = briefing_service.compose_briefing(
-                {"market_snapshot": [], "watchlist_changes": []}
-            )
+        result = briefing_service.compose_briefing(
+            {"market_snapshot": [], "watchlist_changes": []},
+            model=FakeModel(),
+        )
 
         # markdown 必须是 inner markdown 字符串, 不能是 outer doubled JSON
         assert "# 今日简报" in result["markdown"], (
@@ -561,11 +551,11 @@ class TestComposeBriefing:
                 prompt_captured.append(prompt)
                 return AIMessage(content='{"markdown": "test", "sections": {}}')
 
-        with patch("backend.graph.model.build_model", return_value=FakeModel()):
-            briefing_service.compose_briefing(
-                {"market_snapshot": []},
-                evidence=evidence,
-            )
+        briefing_service.compose_briefing(
+            {"market_snapshot": []},
+            evidence=evidence,
+            model=FakeModel(),
+        )
 
         assert len(prompt_captured) == 1, "应恰好调用一次 LLM"
         prompt_text = prompt_captured[0]
@@ -639,7 +629,7 @@ class TestRunDailyBriefing:
         def mock_collect(**_kwargs):
             return snapshot
 
-        def mock_compose(snap, evidence=None, *, profile=None):
+        def mock_compose(snap, evidence=None, *, profile=None, model=None):
             assert snap == snapshot
             return compose_result
 
@@ -648,7 +638,7 @@ class TestRunDailyBriefing:
 
             briefing_service.reset_for_tests()
             result = briefing_service.run_daily_briefing(
-                trigger="manual", session=in_memory_session
+                trigger="manual", session=in_memory_session, model=MagicMock()
             )
 
         rows = in_memory_session.query(Briefing).all()
@@ -679,23 +669,27 @@ class TestRunDailyBriefing:
         def mock_collect(**_kwargs):
             return snap_v1
 
-        def mock_compose(snap, evidence=None, *, profile=None):
+        def mock_compose(snap, evidence=None, *, profile=None, model=None):
             return comp_v1
 
         briefing_service.reset_for_tests()
 
         with patch.object(briefing_service, "collect_watchlist_snapshot", mock_collect), \
              patch.object(briefing_service, "compose_briefing", mock_compose):
-            briefing_service.run_daily_briefing(trigger="manual", session=in_memory_session)
+            briefing_service.run_daily_briefing(
+                trigger="manual", session=in_memory_session, model=MagicMock()
+            )
 
         time.sleep(0.01)  # 确保 updated_at 能区分
 
-        def mock_compose_v2(snap, evidence=None, *, profile=None):
+        def mock_compose_v2(snap, evidence=None, *, profile=None, model=None):
             return comp_v2
 
         with patch.object(briefing_service, "collect_watchlist_snapshot", mock_collect), \
              patch.object(briefing_service, "compose_briefing", mock_compose_v2):
-            briefing_service.run_daily_briefing(trigger="manual", session=in_memory_session)
+            briefing_service.run_daily_briefing(
+                trigger="manual", session=in_memory_session, model=MagicMock()
+            )
 
         rows = in_memory_session.query(Briefing).all()
         assert len(rows) == 1
@@ -713,7 +707,7 @@ class TestRunDailyBriefing:
             "collect_meta": {},
         }
 
-        def mock_compose(snap, evidence=None, *, profile=None):
+        def mock_compose(snap, evidence=None, *, profile=None, model=None):
             assert snap == snapshot
             assert profile is not None
             assert profile.brief_type == "pre_market"
@@ -732,6 +726,7 @@ class TestRunDailyBriefing:
                 trigger="manual",
                 session=in_memory_session,
                 brief_type="pre_market",
+                model=MagicMock(),
             )
 
         row = in_memory_session.query(Briefing).one()
@@ -750,14 +745,16 @@ class TestRunDailyBriefing:
                 "collect_meta": {},
             }
 
-        def mock_compose(snap, evidence=None, *, profile=None):
+        def mock_compose(snap, evidence=None, *, profile=None, model=None):
             return {"markdown": "x", "sections": {}, "warnings": [], "llm_model": "test"}
 
         with patch.object(briefing_service, "collect_watchlist_snapshot", mock_collect), \
              patch.object(briefing_service, "compose_briefing", mock_compose):
 
             briefing_service.reset_for_tests()
-            briefing_service.run_daily_briefing(trigger="test_run", session=in_memory_session)
+            briefing_service.run_daily_briefing(
+                trigger="test_run", session=in_memory_session, model=MagicMock()
+            )
             last = briefing_service.get_last_run()
 
         assert last["trigger"] == "test_run"
@@ -779,7 +776,7 @@ class TestRunDailyBriefing:
                 "collect_meta": {},
             }
 
-        def mock_compose(snap, evidence=None, *, profile=None):
+        def mock_compose(snap, evidence=None, *, profile=None, model=None):
             return {"markdown": "ok", "sections": {}, "warnings": [], "llm_model": "test"}
 
         briefing_service.reset_for_tests()
@@ -787,7 +784,9 @@ class TestRunDailyBriefing:
         with patch.object(briefing_service, "collect_watchlist_snapshot", mock_collect), \
              patch.object(briefing_service, "compose_briefing", mock_compose):
 
-            result = briefing_service.run_daily_briefing(trigger="manual", session=in_memory_session)
+            result = briefing_service.run_daily_briefing(
+                trigger="manual", session=in_memory_session, model=MagicMock()
+            )
 
         assert result["failed"] == 1
         assert result["failed"] >= 1

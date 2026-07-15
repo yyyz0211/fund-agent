@@ -6,13 +6,6 @@ from pathlib import Path
 
 import pytest
 
-# 已知保留 commit 边界的多步原子 service
-ALLOWED_INTERNAL_COMMIT_SERVICES: frozenset[str] = frozenset({
-    "backend/services/watchlist/watchlist_service.py",
-    "backend/services/watchlist/transaction_service.py",
-    "backend/services/knowledge/knowledge_reindex_jobs.py",
-})
-
 
 def _method_bodies(tree: ast.AST) -> list[ast.stmt]:
     return [
@@ -37,14 +30,33 @@ def _has_forbidden_call(body: list[ast.stmt]) -> str | None:
     return None
 
 
+def test_forbidden_call_detector_scans_every_function_in_a_file() -> None:
+    """例外必须精确到函数，不能因为同文件有合法事务入口而整文件跳过。"""
+    tree = ast.parse(
+        """
+def allowed_function(session):
+    session.flush()
+
+def accidental_commit(session):
+    session.commit()
+"""
+    )
+    violations = {
+        fn.name: _has_forbidden_call(fn.body)
+        for fn in _method_bodies(tree)
+    }
+    assert violations == {
+        "allowed_function": None,
+        "accidental_commit": "session.commit()",
+    }
+
+
 @pytest.mark.parametrize(
     "service_path",
     sorted(Path("backend/services").rglob("*.py")),
     ids=lambda p: str(p),
 )
 def test_service_does_not_commit_or_close_session(service_path: Path) -> None:
-    if str(service_path) in ALLOWED_INTERNAL_COMMIT_SERVICES:
-        pytest.skip(f"{service_path.name} is in allowed list")
     source = service_path.read_text(encoding="utf-8")
     tree = ast.parse(source, filename=str(service_path))
     for fn in _method_bodies(tree):

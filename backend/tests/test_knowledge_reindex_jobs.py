@@ -1,4 +1,4 @@
-"""knowledge_reindex_jobs service 的单元测试。
+"""knowledge_reindex_jobs service 的 PostgreSQL 多连接测试。
 
 覆盖核心场景：
 - create_job 落 pending 行；
@@ -10,48 +10,34 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
-from contextlib import contextmanager
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
-from backend.db.init_db import init_db
-from backend.db.session import Base, get_session
-import backend.db.models  # noqa: F401  (注册模型)
+
+pytestmark = pytest.mark.db_multiconnection
 
 
 @pytest.fixture
-def _in_memory_db(monkeypatch):
-    """每个测试用独立的内存 SQLite + 替换进程级 engine / SessionLocal / get_session。
-
-    注意：使用 ``StaticPool`` 让内存 SQLite 在多线程下共享同一连接，
-    否则后台线程里的 Session 会落到一个全新的空库（"no such table"）。
-    """
-    from sqlalchemy.pool import StaticPool
-
-    engine = create_engine(
-        "sqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-        future=True,
-    )
-    Base.metadata.create_all(engine)
-    init_db(engine)
-
+def _in_memory_db(db_multiconnection_engine, monkeypatch):
+    """让后台线程通过独立 PostgreSQL 连接观察真实提交。"""
     from backend.db import session as session_module
     from sqlalchemy.orm import sessionmaker
 
-    new_session_local = sessionmaker(bind=engine, expire_on_commit=False)
+    new_session_local = sessionmaker(
+        bind=db_multiconnection_engine, expire_on_commit=False,
+    )
 
     def _new_get_session():
         return new_session_local()
 
-    monkeypatch.setattr(session_module, "engine", engine)
+    monkeypatch.setattr(session_module, "engine", db_multiconnection_engine)
     monkeypatch.setattr(session_module, "SessionLocal", new_session_local)
     monkeypatch.setattr(session_module, "get_session", _new_get_session)
 
-    yield engine
+    yield db_multiconnection_engine
 
 
 def test_create_job_writes_pending_row(_in_memory_db):
@@ -163,55 +149,78 @@ def test_run_job_in_background_marks_failed_on_exception(monkeypatch, _in_memory
     assert "pipeline kaboom" in snapshot["error_message"]
 
 
-def test_run_job_in_background_releases_lock_during_long_pipeline(monkeypatch, _in_memory_db):
-    """修复回归测试:即使 pipeline 跑 3 秒,scheduler_lock 持有总时长应该 < 500ms。
-
-    关键点:LLM/向量化执行期间, scheduler_lock 必须释放,这样其它 job
-    （cls_telegraph_sync / market_evidence 等）能并发抢到锁。
-    """
+def test_distinct_jobs_share_one_pipeline_singleflight(monkeypatch, _in_memory_db):
+    """不同 job_id 也代表同一知识重建业务，同一时刻只能执行一个。"""
     from backend.services.knowledge import knowledge_reindex_jobs
     from backend.services.knowledge import knowledge_search_service
-    from backend.services.shared import scheduler_lock as scheduler_lock_module
 
-    hold_log: list[tuple[str, float, float]] = []  # (label, start, end)
-    original_scheduler_lock = scheduler_lock_module.scheduler_lock
+    gate = threading.Event()
+    entered = threading.Event()
+    calls = 0
+    calls_guard = threading.Lock()
 
-    @contextmanager
-    def tracking_scheduler_lock(label: str, **kwargs):
-        start = time.monotonic()
-        with original_scheduler_lock(label, **kwargs):
-            try:
-                yield
-            finally:
-                hold_log.append((label, start, time.monotonic()))
+    def blocking_pipeline(**_kwargs):
+        nonlocal calls
+        with calls_guard:
+            calls += 1
+        entered.set()
+        gate.wait(5.0)
+        return {"status": "completed"}
 
-    # `_runner` 内部用 `from backend.services.shared.scheduler_lock import scheduler_lock`,
-    # 每次执行都会重新解析属性,所以 patch module-level 的属性就生效。
-    monkeypatch.setattr(scheduler_lock_module, "scheduler_lock", tracking_scheduler_lock)
-    monkeypatch.setattr(knowledge_search_service, "run_knowledge_pipeline_once",
-                        lambda **kwargs: time.sleep(3) or {"status": "completed", "slept": 3})
+    monkeypatch.setattr(
+        knowledge_search_service, "run_knowledge_pipeline_once", blocking_pipeline,
+    )
+    first = knowledge_reindex_jobs.create_job(trigger="manual")
+    second = knowledge_reindex_jobs.create_job(trigger="scheduled")
+    first_thread = knowledge_reindex_jobs.run_job_in_background(
+        int(first.id), pipeline_kwargs={"trigger": "manual"},
+    )
+    assert entered.wait(2.0)
+    second_thread = knowledge_reindex_jobs.run_job_in_background(
+        int(second.id), pipeline_kwargs={"trigger": "scheduled"},
+    )
+    try:
+        second_thread.join(timeout=1.0)
+        assert not second_thread.is_alive(), "duplicate pipeline did not fast-fail"
+    finally:
+        gate.set()
+        first_thread.join(timeout=5.0)
+        second_thread.join(timeout=5.0)
 
+    assert calls == 1
+    assert knowledge_reindex_jobs.get_job(int(first.id))["status"] == "completed"
+    assert knowledge_reindex_jobs.get_job(int(second.id))["status"] == "busy_skipped"
+
+
+def test_pipeline_singleflight_does_not_block_unrelated_jobs(monkeypatch, _in_memory_db):
+    """知识 pipeline 运行期间，不同业务 key 仍可获取自己的进程锁。"""
+    from backend.services.knowledge import knowledge_reindex_jobs
+    from backend.services.knowledge import knowledge_search_service
+    from backend.services.shared.process_singleflight import process_singleflight
+
+    gate = threading.Event()
+    entered = threading.Event()
+
+    def blocking_pipeline(**_kwargs):
+        entered.set()
+        gate.wait(5.0)
+        return {"status": "completed"}
+
+    monkeypatch.setattr(
+        knowledge_search_service, "run_knowledge_pipeline_once", blocking_pipeline,
+    )
     job = knowledge_reindex_jobs.create_job(trigger="manual")
-    jid = int(job.id)
     thread = knowledge_reindex_jobs.run_job_in_background(
-        jid, pipeline_kwargs={"trigger": "manual"},
+        int(job.id), pipeline_kwargs={"trigger": "manual"},
     )
-    thread.join(timeout=10.0)
+    assert entered.wait(2.0)
+    try:
+        with process_singleflight("scheduler.cls_telegraph_sync"):
+            pass
+    finally:
+        gate.set()
+        thread.join(timeout=5.0)
     assert not thread.is_alive()
-
-    # snapshot 应该是 completed
-    snapshot = knowledge_reindex_jobs.get_job(jid)
-    assert snapshot["status"] == "completed"
-
-    # scheduler_lock 持有累计时长 < 500ms（远小于 3s pipeline）。
-    # run_job_in_background 用 2 段锁:mark_running / mark_completed。
-    relevant = [(lbl, s, e) for (lbl, s, e) in hold_log if lbl == f"knowledge_reindex:{jid}"]
-    assert len(relevant) >= 1, f"expected at least one lock acquisition, got {hold_log}"
-    total_hold = sum(end - start for (_, start, end) in relevant)
-    assert total_hold < 0.5, (
-        f"scheduler_lock total hold {total_hold:.3f}s exceeds 500ms; "
-        f"sections={relevant}"
-    )
 
 
 def test_recover_interrupted_jobs_marks_stale_pending(_in_memory_db):

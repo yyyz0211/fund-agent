@@ -7,3 +7,5 @@
 import os
 
 os.environ.setdefault("SCHEDULER_ENABLED", "false")
+
+pytest_plugins = ("backend.tests.postgres_fixtures",)

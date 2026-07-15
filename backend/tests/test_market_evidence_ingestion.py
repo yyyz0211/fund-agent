@@ -2,20 +2,12 @@
 from __future__ import annotations
 
 import pytest
-from sqlalchemy.orm import sessionmaker
 
-from backend.db.init_db import init_db
-from backend.db.session import make_engine
-
+pytestmark = pytest.mark.db
 
 @pytest.fixture()
-def session():
-    engine = make_engine("sqlite:///:memory:")
-    init_db(engine)
-    Local = sessionmaker(bind=engine, expire_on_commit=False)
-    s = Local()
-    yield s
-    s.close()
+def session(db_session):
+    return db_session
 
 
 class _Adapter:
@@ -172,7 +164,7 @@ def test_ingest_market_evidence_hourly_idempotent_across_runs(session):
 
 
 def test_ingest_market_evidence_skips_cross_date_duplicate_hash_and_continues(session):
-    """真实 SQLite 文件历史 schema 对 raw_hash 有唯一约束。
+    """数据库 schema 对 raw_hash 有唯一约束。
 
     同一财联社文章可能在次日 roll list 中继续出现; 这时应跳过旧文章,
     继续写入同批次的新文章,不能让 session 因 IntegrityError 整批回滚。

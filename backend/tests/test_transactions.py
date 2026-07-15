@@ -1,6 +1,6 @@
-"""`transaction_service.recalc_holding` + watchlist transaction API 离线测试。
+"""`transaction_service.recalc_holding` + watchlist transaction API PostgreSQL 测试。
 
-不联网。in-memory SQLite,验证:
+不联网，验证:
 - 加权平均成本公式
 - 老数据兼容(已有 holding_share/cost_nav 的行,第一次加仓会正确合并)
 - list/add/delete API 行为
@@ -9,47 +9,28 @@
 import pytest
 from types import SimpleNamespace
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, func, select
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
+from sqlalchemy import func, select
 
 from backend.api.app import app
 from backend.api.routes import watchlist as watchlist_routes
 from backend.db import repository as repo
-from backend.db import session as db_session
-from backend.db.init_db import init_db
 from backend.db.models import FundNav, FundTransaction, Watchlist
 from backend.services.watchlist import transaction_service as ts
 from backend.services.watchlist import watchlist_service as ws
 
 client = TestClient(app)
+pytestmark = pytest.mark.db
 
 
 @pytest.fixture()
-def session(monkeypatch):
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    init_db(engine)
-    Session = sessionmaker(bind=engine, expire_on_commit=False)
-    s = Session()
-
-    def _get_session():
-        return Session()
-
-    monkeypatch.setattr(db_session, "get_session", _get_session)
-    monkeypatch.setattr(ws, "get_session", _get_session)
-    monkeypatch.setattr(ts, "get_session", _get_session)
+def session(db_session, monkeypatch):
     monkeypatch.setattr(
         watchlist_routes,
         "preload_jobs",
         SimpleNamespace(start_preload_job=lambda fund_code: None),
         raising=False,
     )
-    yield s
-    s.close()
+    return db_session
 
 
 # --------------------------------------------------------------------------- #
@@ -299,6 +280,8 @@ class TestInitialHoldingApi:
                 "nav": 2.0,
             }, session=session)
 
+        # 注入 session 时 service 不替调用方 rollback；事务所有者显式回滚。
+        session.rollback()
         assert session.scalar(
             select(func.count())
             .select_from(Watchlist)

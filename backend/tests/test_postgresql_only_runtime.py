@@ -18,6 +18,11 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
+
+pytestmark = pytest.mark.unit
+
 
 FORBIDDEN_TOKENS = (
     "sqlite://",
@@ -26,7 +31,14 @@ FORBIDDEN_TOKENS = (
     "NullPool",
     "call_with_sqlite_retry",
     "scheduler_lock",
+    "TEST_PGVECTOR_DATABASE_URL",
 )
+
+ALLOWED_TEST_FILES = {
+    # 负面门禁必须保留被拒绝的 URL / token 字面量。
+    "test_database_safety.py",
+    "test_postgresql_only_runtime.py",
+}
 
 
 def _scan_roots(roots: list[Path]) -> list[str]:
@@ -66,6 +78,23 @@ def test_backend_runtime_has_no_sqlite_implementation():
     )
 
 
+def test_test_suite_has_no_sqlite_fixture_implementation():
+    """除明确的拒绝测试外，测试代码不得重新创建 SQLite 数据库。"""
+    tests_root = Path(__file__).resolve().parent
+    paths = [
+        path
+        for path in tests_root.rglob("*.py")
+        if path.name not in ALLOWED_TEST_FILES and "__pycache__" not in path.parts
+    ]
+    offenders: list[str] = []
+    for path in paths:
+        source = path.read_text(encoding="utf-8")
+        for token in FORBIDDEN_TOKENS:
+            if token in source:
+                offenders.append(f"{path}: {token}")
+    assert offenders == [], "Found SQLite fixture residue:\n" + "\n".join(offenders)
+
+
 def test_postgresql_only_engine_url_guard():
     """`make_engine` 拒绝非 PostgreSQL URL,作为运行时最后一道闸。"""
     from backend.db.session import make_engine
@@ -94,6 +123,3 @@ def test_make_engine_has_no_sqlite_pool_options(monkeypatch):
     assert captured["pool_pre_ping"] is True
     assert "poolclass" not in captured
     assert "connect_args" not in captured
-
-
-import pytest  # noqa: E402  — 放在测试函数下方以便函数优先被收集

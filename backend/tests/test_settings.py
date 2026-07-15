@@ -1,7 +1,10 @@
-from backend.config.settings import get_settings
-from sqlalchemy import text
+import pytest
 
-from backend.db.session import make_engine
+from backend.config.settings import Settings, get_settings
+
+
+_TEST_DATABASE_URL = "postgresql+psycopg2://test@localhost/fund_agent_test"
+pytestmark = pytest.mark.unit
 
 
 def test_settings_defaults(monkeypatch):
@@ -13,11 +16,10 @@ def test_settings_defaults(monkeypatch):
     monkeypatch.delenv("DEEPSEEK_BASE_URL", raising=False)
     monkeypatch.delenv("DEEPSEEK_MODEL", raising=False)
     monkeypatch.delenv("DATABASE_URL", raising=False)
-    get_settings.cache_clear()
-    s = get_settings()
+    s = Settings(_env_file=None, database_url=_TEST_DATABASE_URL)
     assert s.deepseek_base_url == "https://api.deepseek.com"
     assert s.deepseek_model == "deepseek-v4-flash"
-    assert s.database_url == "sqlite:///backend/data/fund_agent.db"
+    assert s.database_url == _TEST_DATABASE_URL
 
 
 def test_settings_reads_env(monkeypatch):
@@ -43,31 +45,6 @@ def test_env_file_path_is_cwd_independent(tmp_path, monkeypatch):
     assert s.deepseek_base_url == "https://api.deepseek.com"
 
 
-def test_sqlite_engine_applies_concurrency_pragmas(tmp_path):
-    db_path = tmp_path / "fund_agent.db"
-    engine = make_engine(f"sqlite:///{db_path}")
-
-    with engine.connect() as conn:
-        journal_mode = conn.execute(text("PRAGMA journal_mode")).scalar()
-        busy_timeout = conn.execute(text("PRAGMA busy_timeout")).scalar()
-        foreign_keys = conn.execute(text("PRAGMA foreign_keys")).scalar()
-
-    assert str(journal_mode).lower() == "wal"
-    assert busy_timeout == 15000
-    assert foreign_keys == 1
-
-
-def test_sqlite_memory_engine_accepts_pragmas_without_wal_requirement():
-    engine = make_engine("sqlite:///:memory:")
-
-    with engine.connect() as conn:
-        busy_timeout = conn.execute(text("PRAGMA busy_timeout")).scalar()
-        foreign_keys = conn.execute(text("PRAGMA foreign_keys")).scalar()
-
-    assert busy_timeout == 15000
-    assert foreign_keys == 1
-
-
 def test_cls_settings_defaults(monkeypatch):
     for key in [
         "CLS_ENABLED",
@@ -83,11 +60,7 @@ def test_cls_settings_defaults(monkeypatch):
         "CLS_TELEGRAPH_SYNC_MAX_PAGES",
     ]:
         monkeypatch.delenv(key, raising=False)
-    # `CLS_TIMEOUT_SECONDS` 可能由 `.env` 覆盖,新设置默认 15.0 后
-    # 测试环境也要升级到 15.0 才反映真实默认值。
-    monkeypatch.setenv("CLS_TIMEOUT_SECONDS", "15.0")
-    get_settings.cache_clear()
-    s = get_settings()
+    s = Settings(_env_file=None, database_url=_TEST_DATABASE_URL)
     assert s.cls_enabled is True
     assert s.cls_search_enabled is True
     assert s.cls_timeout_seconds == 15.0
@@ -115,8 +88,7 @@ def test_cls_settings_read_env(monkeypatch):
     monkeypatch.setenv("CLS_TELEGRAPH_SYNC_INTERVAL_SECONDS", "30")
     monkeypatch.setenv("CLS_TELEGRAPH_SYNC_PAGE_SIZE", "25")
     monkeypatch.setenv("CLS_TELEGRAPH_SYNC_MAX_PAGES", "2")
-    get_settings.cache_clear()
-    s = get_settings()
+    s = Settings(_env_file=None, database_url=_TEST_DATABASE_URL)
     assert s.cls_enabled is False
     assert s.cls_search_enabled is False
     assert s.cls_timeout_seconds == 3.5
@@ -155,8 +127,7 @@ def test_knowledge_settings_defaults(monkeypatch):
         "SCHEDULER_KNOWLEDGE_INTERVAL_MINUTES",
     ]:
         monkeypatch.delenv(key, raising=False)
-    get_settings.cache_clear()
-    s = get_settings()
+    s = Settings(_env_file=None, database_url=_TEST_DATABASE_URL)
     assert s.knowledge_rag_enabled is True
     assert s.knowledge_vector_backend == "auto"
     assert s.knowledge_embedding_base_url is None
@@ -202,8 +173,7 @@ def test_knowledge_settings_read_env(monkeypatch):
     monkeypatch.setenv("KNOWLEDGE_MAX_QUEUE_STATUS_LIMIT", "75")
     monkeypatch.setenv("SCHEDULER_KNOWLEDGE_ENABLED", "false")
     monkeypatch.setenv("SCHEDULER_KNOWLEDGE_INTERVAL_MINUTES", "12")
-    get_settings.cache_clear()
-    s = get_settings()
+    s = Settings(_env_file=None, database_url=_TEST_DATABASE_URL)
     assert s.knowledge_rag_enabled is False
     assert s.knowledge_vector_backend == "pgvector"
     assert s.knowledge_embedding_base_url == "https://embed.example/v1"
@@ -228,7 +198,7 @@ def test_knowledge_settings_read_env(monkeypatch):
 
 
 def test_optional_embedding_dimensions_ignore_empty_env(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", _TEST_DATABASE_URL)
     monkeypatch.setenv("KNOWLEDGE_EMBEDDING_DIMENSIONS", "")
-    get_settings.cache_clear()
 
-    assert get_settings().knowledge_embedding_dimensions is None
+    assert Settings(_env_file=None).knowledge_embedding_dimensions is None

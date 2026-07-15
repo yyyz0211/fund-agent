@@ -1,22 +1,9 @@
 """CLS telegraph sync service tests."""
 from __future__ import annotations
 
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
+import pytest
 
-from backend.db.init_db import init_db
-
-
-def _new_session():
-    engine = create_engine(
-        "sqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    init_db(engine)
-    Session = sessionmaker(bind=engine)
-    return Session()
+pytestmark = pytest.mark.db
 
 
 def _raw_item(cls_id: int, *, title: str, ctime: int, category: str = "fund") -> dict:
@@ -54,10 +41,10 @@ def test_normalize_sync_record_preserves_raw_content_and_metadata():
     assert row["raw_json"]["id"] == 2421001
 
 
-def test_cls_telegraph_repository_upserts_and_filters_items():
+def test_cls_telegraph_repository_upserts_and_filters_items(db_session):
     from backend.db import repository as repo
 
-    session = _new_session()
+    session = db_session
     row = {
         "cls_id": "2421001",
         "title": "基金市场回暖",
@@ -88,11 +75,11 @@ def test_cls_telegraph_repository_upserts_and_filters_items():
     assert rows[0]["raw_json"]["title"] == "基金市场回暖"
 
 
-def test_sync_once_writes_telegraph_items_and_derives_market_evidence():
+def test_sync_once_writes_telegraph_items_and_derives_market_evidence(db_session):
     from backend.db import repository as repo
     from backend.services.knowledge.cls_telegraph_sync_service import sync_cls_telegraph_once
 
-    session = _new_session()
+    session = db_session
     pages = [
         [_raw_item(2421002, title="财联社电报：基金市场回暖", ctime=1783564494)],
         [_raw_item(2421001, title="财联社电报：半导体走强", ctime=1783564400)],
@@ -126,11 +113,11 @@ def test_sync_once_writes_telegraph_items_and_derives_market_evidence():
     assert status["last_error"] is None
 
 
-def test_sync_once_records_error_without_clearing_existing_state():
+def test_sync_once_records_error_without_clearing_existing_state(db_session):
     from backend.db import repository as repo
     from backend.services.knowledge.cls_telegraph_sync_service import sync_cls_telegraph_once
 
-    session = _new_session()
+    session = db_session
     repo.update_cls_telegraph_sync_state(
         session,
         last_seen_ctime=1783564494,

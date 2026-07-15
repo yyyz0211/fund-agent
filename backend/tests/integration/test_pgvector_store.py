@@ -1,25 +1,33 @@
 from __future__ import annotations
 
-import os
-
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from backend.db.init_db import ensure_pgvector_schema, init_db, rebuild_pgvector_schema
+from backend.db.init_db import (
+    PgVectorUnavailableError,
+    ensure_pgvector_schema,
+    rebuild_pgvector_schema,
+)
 from backend.db.models import KnowledgeDocument
 from backend.services.knowledge.knowledge_pgvector import PgVectorStore
 from backend.services.knowledge.knowledge_vector import VectorItem
 
 
-DATABASE_URL = os.getenv("TEST_PGVECTOR_DATABASE_URL")
 pytestmark = [
     pytest.mark.pgvector,
-    pytest.mark.skipif(
-        not DATABASE_URL,
-        reason="TEST_PGVECTOR_DATABASE_URL is not configured",
-    ),
+    pytest.mark.db_pgvector,
+    pytest.mark.db_ddl,
 ]
+
+
+@pytest.fixture
+def pgvector_engine(db_ddl_schema):
+    try:
+        ensure_pgvector_schema(db_ddl_schema, dimensions=3)
+    except PgVectorUnavailableError as exc:
+        pytest.skip(f"pgvector extension is unavailable: {exc}")
+    return db_ddl_schema
 
 
 def _document(source_id: str, topic: str) -> KnowledgeDocument:
@@ -50,10 +58,8 @@ def _document(source_id: str, topic: str) -> KnowledgeDocument:
     )
 
 
-def test_pgvector_upsert_search_filter_and_cascade():
-    engine = create_engine(DATABASE_URL)
-    init_db(engine)
-    ensure_pgvector_schema(engine, dimensions=3)
+def test_pgvector_upsert_search_filter_and_cascade(pgvector_engine):
+    engine = pgvector_engine
     connection = engine.connect()
     transaction = connection.begin()
     session = Session(bind=connection)
@@ -86,13 +92,10 @@ def test_pgvector_upsert_search_filter_and_cascade():
         session.close()
         transaction.rollback()
         connection.close()
-        engine.dispose()
 
 
-def test_pgvector_rebuild_requeues_documents_transactionally():
-    engine = create_engine(DATABASE_URL)
-    init_db(engine)
-    ensure_pgvector_schema(engine, dimensions=3)
+def test_pgvector_rebuild_requeues_documents_transactionally(pgvector_engine):
+    engine = pgvector_engine
     connection = engine.connect()
     transaction = connection.begin()
     session = Session(bind=connection)
@@ -132,4 +135,3 @@ def test_pgvector_rebuild_requeues_documents_transactionally():
         session.close()
         transaction.rollback()
         connection.close()
-        engine.dispose()

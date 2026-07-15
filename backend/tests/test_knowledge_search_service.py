@@ -2,10 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
+import pytest
 
-from backend.db.init_db import init_db
 from backend.db.models import KnowledgeDocument
 from backend.services.knowledge import knowledge_search_service as service
 from backend.services.knowledge.knowledge_vector import (
@@ -89,17 +87,19 @@ def _add_search_doc(
     return doc
 
 
-def test_structured_search_excludes_expired_documents():
-    engine = create_engine("sqlite:///:memory:")
-    init_db(engine)
-    with Session(engine) as session:
-        _add_search_doc(session, source_id="active", effective_until="2099-01-01 00:00:00")
-        _add_search_doc(session, source_id="expired", effective_until="2020-01-01 00:00:00")
-        session.commit()
+@pytest.mark.db
+def test_structured_search_excludes_expired_documents(db_session):
+    _add_search_doc(
+        db_session, source_id="active", effective_until="2099-01-01 00:00:00",
+    )
+    _add_search_doc(
+        db_session, source_id="expired", effective_until="2020-01-01 00:00:00",
+    )
+    db_session.flush()
 
-        result = service.search_knowledge("人工智能", session=session)
+    result = service.search_knowledge("人工智能", session=db_session)
 
-        assert [item["title"] for item in result["items"]] == ["AI消息 active"]
+    assert [item["title"] for item in result["items"]] == ["AI消息 active"]
 
 
 def test_merge_hybrid_candidates_dedupes_then_applies_limit():
@@ -117,50 +117,46 @@ def test_merge_hybrid_candidates_dedupes_then_applies_limit():
     assert [item["document_id"] for item in result] == [3, 2]
 
 
-def test_search_uses_injected_vector_runtime_for_hybrid_retrieval():
-    engine = create_engine("sqlite:///:memory:")
-    init_db(engine)
+@pytest.mark.db
+def test_search_uses_injected_vector_runtime_for_hybrid_retrieval(db_session):
     provider = DeterministicEmbeddingProvider()
     store = InMemoryVectorStore()
-    with Session(engine) as session:
-        doc = _add_search_doc(
-            session,
-            source_id="semantic-only",
-            effective_until="2099-01-01 00:00:00",
-            text="芯片产业链扩产",
-        )
-        session.commit()
-        store.upsert([VectorItem(
-            document_id=doc.id,
-            text=doc.normalized_text,
-            vector=provider.embed([doc.normalized_text])[0],
-            metadata={"source_type": doc.source_type},
-        )])
+    doc = _add_search_doc(
+        db_session,
+        source_id="semantic-only",
+        effective_until="2099-01-01 00:00:00",
+        text="芯片产业链扩产",
+    )
+    db_session.flush()
+    store.upsert([VectorItem(
+        document_id=doc.id,
+        text=doc.normalized_text,
+        vector=provider.embed([doc.normalized_text])[0],
+        metadata={"source_type": doc.source_type},
+    )])
 
-        result = service.search_knowledge(
-            "没有词面命中的查询",
-            session=session,
-            embedding_provider=provider,
-            vector_store=store,
-        )
+    result = service.search_knowledge(
+        "没有词面命中的查询",
+        session=db_session,
+        embedding_provider=provider,
+        vector_store=store,
+    )
 
-        assert result["retrieval_mode"] == "hybrid"
-        assert [item["document_id"] for item in result["items"]] == [doc.id]
+    assert result["retrieval_mode"] == "hybrid"
+    assert [item["document_id"] for item in result["items"]] == [doc.id]
 
 
-def test_structured_fallback_keeps_accepted_pending_document_visible():
-    engine = create_engine("sqlite:///:memory:")
-    init_db(engine)
-    with Session(engine) as session:
-        doc = _add_search_doc(
-            session,
-            source_id="pending",
-            effective_until="2099-01-01 00:00:00",
-            index_status="pending",
-        )
-        session.commit()
+@pytest.mark.db
+def test_structured_fallback_keeps_accepted_pending_document_visible(db_session):
+    doc = _add_search_doc(
+        db_session,
+        source_id="pending",
+        effective_until="2099-01-01 00:00:00",
+        index_status="pending",
+    )
+    db_session.flush()
 
-        result = service.search_knowledge("人工智能", session=session)
+    result = service.search_knowledge("人工智能", session=db_session)
 
-        assert result["retrieval_mode"] == "structured_fallback"
-        assert [item["document_id"] for item in result["items"]] == [doc.id]
+    assert result["retrieval_mode"] == "structured_fallback"
+    assert [item["document_id"] for item in result["items"]] == [doc.id]

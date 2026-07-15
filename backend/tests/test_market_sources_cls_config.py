@@ -1,7 +1,15 @@
 """CLS adapter builder integration tests."""
 from __future__ import annotations
 
-import logging
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _clear_settings_cache_after_test():
+    yield
+    from backend.config.settings import get_settings
+
+    get_settings.cache_clear()
 
 
 def test_build_default_adapters_includes_cls_only_for_post_market(monkeypatch):
@@ -35,17 +43,36 @@ def test_build_default_adapters_excludes_cls_when_disabled(monkeypatch):
     assert not any(isinstance(adapter, ClsTelegraphAdapter) for adapter in adapters)
 
 
-def test_build_default_adapters_logs_cls_configuration_failure(monkeypatch, caplog):
-    from backend.config import settings as settings_mod
-    from backend.services.market_sources import build_default_adapters
+def test_build_default_adapters_logs_cls_configuration_failure(monkeypatch):
+    import importlib
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
 
-    def broken_settings():
-        raise RuntimeError("bad cls settings")
+    market_sources = importlib.import_module("backend.services.market_sources")
+    build_default_adapters = market_sources.build_default_adapters
+    monkeypatch.setitem(
+        build_default_adapters.__globals__,
+        "get_settings",
+        lambda: SimpleNamespace(
+            cls_enabled=True,
+            cls_categories="fund",
+            cls_per_category_limit=1,
+            cls_timeout_seconds=1.0,
+            cls_app_version="test",
+            cls_max_attempts=1,
+            cls_retry_base_seconds=0.0,
+        ),
+    )
+    monkeypatch.setitem(
+        build_default_adapters.__globals__,
+        "ClsTelegraphAdapter",
+        MagicMock(side_effect=RuntimeError("bad cls settings")),
+    )
+    warning = MagicMock()
+    monkeypatch.setattr(market_sources.logger, "warning", warning)
 
-    monkeypatch.setattr(settings_mod, "get_settings", broken_settings)
+    build_default_adapters(client=object(), brief_type="post_market")
 
-    with caplog.at_level(logging.WARNING):
-        build_default_adapters(client=object(), brief_type="post_market")
-
-    assert "CLS adapter disabled" in caplog.text
-    assert "bad cls settings" in caplog.text
+    warning.assert_called_once()
+    assert "CLS adapter disabled" in warning.call_args.args[0]
+    assert "bad cls settings" in str(warning.call_args.args[1])

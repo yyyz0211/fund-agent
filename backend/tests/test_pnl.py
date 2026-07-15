@@ -1,30 +1,19 @@
 """`pnl_service.calculate_pnl` 离线测试。
 
-不联网、不调真实 LLM。直接 in-memory SQLite,写 watchlist + nav,
+不联网、不调真实 LLM。直接写 PostgreSQL 测试 schema 中的 watchlist + nav,
 验证 PnL 计算与 skipped 语义。
 """
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
 from backend.db import repository as repo
-from backend.db.init_db import init_db
 from backend.services.fund import pnl_service as psvc
+
+pytestmark = pytest.mark.db
 
 
 @pytest.fixture()
-def session():
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    init_db(engine)
-    Session = sessionmaker(bind=engine, expire_on_commit=False)
-    s = Session()
-    yield s
-    s.close()
+def session(db_session):
+    return db_session
 
 
 def _seed_holding(s, fund_code, share, cost, fund_name=None, current_nav=None,
@@ -39,7 +28,7 @@ def _seed_holding(s, fund_code, share, cost, fund_name=None, current_nav=None,
         # add_to_watchlist_full 不写 Fund 表,补一行
         if not s.get(Fund, fund_code):
             s.add(Fund(fund_code=fund_code, fund_name=fund_name))
-            s.commit()
+            s.flush()
     if current_nav is not None:
         from backend.db.models import FundNav
         s.add(FundNav(
@@ -47,7 +36,7 @@ def _seed_holding(s, fund_code, share, cost, fund_name=None, current_nav=None,
             accumulated_nav=current_nav, daily_return=daily_return,
             source="akshare",
         ))
-        s.commit()
+        s.flush()
 
 
 class TestSingleFund:

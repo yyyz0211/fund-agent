@@ -1,21 +1,16 @@
 """持仓组合每日盈亏时间序列测试。"""
 import pytest
-from sqlalchemy.orm import sessionmaker
 
 import backend.db.models  # noqa: F401
 from backend.db import repository as repo
-from backend.db.init_db import init_db
 from backend.db.models import Watchlist
-from backend.db.session import make_engine
+
+pytestmark = pytest.mark.db
 
 
 @pytest.fixture()
-def session():
-    engine = make_engine("sqlite:///:memory:")
-    init_db(engine)
-    s = sessionmaker(bind=engine, expire_on_commit=False)()
-    yield s
-    s.close()
+def session(db_session):
+    return db_session
 
 
 def _seed_fund(session, code, nav_rows, tx_rows, *, fund_name=None):
@@ -26,7 +21,7 @@ def _seed_fund(session, code, nav_rows, tx_rows, *, fund_name=None):
     session.add(Watchlist(fund_code=code, is_holding=True))
     session.commit()
     for tx in tx_rows:
-        repo.add_transaction(session, code, tx, commit=False)
+        repo.add_transaction(session, code, tx)
     session.commit()
 
 

@@ -1,10 +1,10 @@
 """QA-facing market tools tests."""
 from __future__ import annotations
 
-from sqlalchemy import create_engine
+import pytest
 from sqlalchemy.orm import sessionmaker
 
-from backend.db.models import Base, Briefing
+from backend.db.models import Briefing
 from backend.services.market import market_intel_service
 from backend.tools import market_tools as mt
 
@@ -78,10 +78,11 @@ def test_sector_heatmap_tool_merges_flow_data(monkeypatch):
     assert out["source"] == "akshare"
 
 
-def test_latest_market_brief_tool_returns_recent_briefing(monkeypatch):
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine)
-    Session = sessionmaker(bind=engine, expire_on_commit=False)
+@pytest.mark.db_multiconnection
+def test_latest_market_brief_tool_returns_recent_briefing(
+    monkeypatch, db_multiconnection_engine
+):
+    Session = sessionmaker(bind=db_multiconnection_engine, expire_on_commit=False)
     session = Session()
     session.add(
         Briefing(

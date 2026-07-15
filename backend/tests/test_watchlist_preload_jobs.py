@@ -1,19 +1,20 @@
+import pytest
 from sqlalchemy.orm import sessionmaker
 
 import backend.db.models  # noqa: F401
 from backend.db import repository as repo
-from backend.db.init_db import init_db
-from backend.db.session import make_engine
 
+pytestmark = pytest.mark.db_multiconnection
 
-def test_preload_job_refreshes_data_without_backfilling_peer_category(monkeypatch):
+def test_preload_job_refreshes_data_without_backfilling_peer_category(
+    monkeypatch, db_multiconnection_engine
+):
     from backend.services.watchlist import watchlist_preload_jobs as jobs
 
-    engine = make_engine("sqlite:///:memory:")
-    init_db(engine)
-    Session = sessionmaker(bind=engine, expire_on_commit=False)
+    Session = sessionmaker(bind=db_multiconnection_engine, expire_on_commit=False)
     s = Session()
     repo.add_to_watchlist(s, "110011")
+    s.commit()
     s.close()
 
     monkeypatch.setattr(jobs, "get_session", lambda: Session())
@@ -47,14 +48,15 @@ def test_preload_job_refreshes_data_without_backfilling_peer_category(monkeypatc
         s.close()
 
 
-def test_preload_job_marks_partial_when_profile_missing_data(monkeypatch):
+def test_preload_job_marks_partial_when_profile_missing_data(
+    monkeypatch, db_multiconnection_engine
+):
     from backend.services.watchlist import watchlist_preload_jobs as jobs
 
-    engine = make_engine("sqlite:///:memory:")
-    init_db(engine)
-    Session = sessionmaker(bind=engine, expire_on_commit=False)
+    Session = sessionmaker(bind=db_multiconnection_engine, expire_on_commit=False)
     s = Session()
     repo.add_to_watchlist(s, "110011")
+    s.commit()
     s.close()
 
     monkeypatch.setattr(jobs, "get_session", lambda: Session())

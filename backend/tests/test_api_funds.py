@@ -1,36 +1,19 @@
 """`/api/funds/*` 路由离线测试 —— `POST /refresh` 等增量端点。"""
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
 from backend.api.app import app
 from backend.db import repository as repo
-from backend.db import session as db_session
-from backend.db.init_db import init_db
 from backend.db.models import Fund, FundNav
 from backend.services.fund import fund_service as fs
 
 client = TestClient(app)
+pytestmark = pytest.mark.db
 
 
 @pytest.fixture()
-def session(monkeypatch):
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    init_db(engine)
-    Session = sessionmaker(bind=engine, expire_on_commit=False)
-    s = Session()
-
-    monkeypatch.setattr(fs, "get_session", lambda: Session())
-    monkeypatch.setattr(db_session, "get_session", lambda: Session())
-
-    yield s
-    s.close()
+def session(db_session):
+    return db_session
 
 
 def test_refresh_success(monkeypatch):

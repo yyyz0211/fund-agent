@@ -2,10 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
+import pytest
 
-from backend.db.init_db import init_db
 from backend.db.models import KnowledgeDocument
 from backend.services.knowledge.knowledge_vector import (
     DeterministicEmbeddingProvider,
@@ -48,84 +46,80 @@ def add_doc(session):
     return doc.id
 
 
-def test_index_pending_documents_marks_indexed():
-    eng = create_engine("sqlite:///:memory:")
-    init_db(eng)
+@pytest.mark.db
+def test_index_pending_documents_marks_indexed(db_session):
     store = InMemoryVectorStore()
 
-    with Session(eng) as s:
-        doc_id = add_doc(s)
-        result = index_pending_documents(
-            session=s,
-            embedding_provider=DeterministicEmbeddingProvider(),
-            vector_store=store,
-            limit=10,
-        )
+    doc_id = add_doc(db_session)
+    result = index_pending_documents(
+        session=db_session,
+        embedding_provider=DeterministicEmbeddingProvider(),
+        vector_store=store,
+        limit=10,
+    )
 
-        assert result["indexed"] == 1
-        assert s.get(KnowledgeDocument, doc_id).index_status == "indexed"
-        assert store.items[doc_id].metadata["topics"] == ["人工智能"]
+    assert result["indexed"] == 1
+    assert db_session.get(KnowledgeDocument, doc_id).index_status == "indexed"
+    assert store.items[doc_id].metadata["topics"] == ["人工智能"]
 
 
-def test_indexed_documents_are_requeued_for_provider_metadata_mismatch():
+@pytest.mark.db
+@pytest.mark.parametrize(
+    ("embedding_model", "embedding_version"),
+    [
+        (None, DeterministicEmbeddingProvider().version),
+        (DeterministicEmbeddingProvider().model, None),
+        ("old-model", DeterministicEmbeddingProvider().version),
+        (DeterministicEmbeddingProvider().model, "old-version"),
+    ],
+)
+def test_indexed_documents_are_requeued_for_provider_metadata_mismatch(
+    db_session, embedding_model, embedding_version
+):
     provider = DeterministicEmbeddingProvider()
-    mismatches = [
-        (None, provider.version),
-        (provider.model, None),
-        ("old-model", provider.version),
-        (provider.model, "old-version"),
-    ]
+    store = InMemoryVectorStore()
+    doc_id = add_doc(db_session)
+    doc = db_session.get(KnowledgeDocument, doc_id)
+    doc.index_status = "indexed"
+    doc.embedding_model = embedding_model
+    doc.embedding_version = embedding_version
+    db_session.flush()
 
-    for embedding_model, embedding_version in mismatches:
-        eng = create_engine("sqlite:///:memory:")
-        init_db(eng)
-        store = InMemoryVectorStore()
+    result = index_pending_documents(
+        session=db_session,
+        embedding_provider=provider,
+        vector_store=store,
+        limit=10,
+    )
 
-        with Session(eng) as s:
-            doc_id = add_doc(s)
-            doc = s.get(KnowledgeDocument, doc_id)
-            doc.index_status = "indexed"
-            doc.embedding_model = embedding_model
-            doc.embedding_version = embedding_version
-            s.flush()
-
-            result = index_pending_documents(
-                session=s,
-                embedding_provider=provider,
-                vector_store=store,
-                limit=10,
-            )
-
-            refreshed = s.get(KnowledgeDocument, doc_id)
-            assert result == {"processed": 1, "indexed": 1, "failed": 0}
-            assert refreshed.embedding_model == provider.model
-            assert refreshed.embedding_version == provider.version
-            assert doc_id in store.items
+    refreshed = db_session.get(KnowledgeDocument, doc_id)
+    assert result == {"processed": 1, "indexed": 1, "failed": 0}
+    assert refreshed.embedding_model == provider.model
+    assert refreshed.embedding_version == provider.version
+    assert doc_id in store.items
 
 
-def test_indexed_document_with_matching_provider_metadata_is_not_requeued():
-    eng = create_engine("sqlite:///:memory:")
-    init_db(eng)
+@pytest.mark.db
+def test_indexed_document_with_matching_provider_metadata_is_not_requeued(db_session):
     provider = DeterministicEmbeddingProvider()
     store = InMemoryVectorStore()
 
-    with Session(eng) as s:
-        doc_id = add_doc(s)
-        doc = s.get(KnowledgeDocument, doc_id)
-        doc.index_status = "indexed"
-        doc.embedding_model = provider.model
-        doc.embedding_version = provider.version
-        s.flush()
+    doc_id = add_doc(db_session)
+    doc = db_session.get(KnowledgeDocument, doc_id)
+    doc.index_status = "indexed"
+    doc.embedding_model = provider.model
+    doc.embedding_version = provider.version
+    db_session.flush()
 
-        result = index_pending_documents(
-            session=s,
-            embedding_provider=provider,
-            vector_store=store,
-            limit=10,
-        )
+    result = index_pending_documents(
+        session=db_session,
+        embedding_provider=provider,
+        vector_store=store,
+        limit=10,
+    )
 
-        assert result == {"processed": 0, "indexed": 0, "failed": 0}
-        assert doc_id not in store.items
+    assert result == {"processed": 0, "indexed": 0, "failed": 0}
+    assert doc_id not in store.items
 
 
 def test_vector_search_respects_metadata_filter():
@@ -164,38 +158,36 @@ class FailingOnceVectorStore(InMemoryVectorStore):
         return super().upsert(items)
 
 
-def test_failed_index_is_retried_after_backoff():
-    eng = create_engine("sqlite:///:memory:")
-    init_db(eng)
+@pytest.mark.db
+def test_failed_index_is_retried_after_backoff(db_session):
     store = FailingOnceVectorStore()
     started = datetime(2026, 7, 10, 10, 0, 0)
 
-    with Session(eng) as s:
-        doc_id = add_doc(s)
-        first = index_pending_documents(
-            session=s,
-            embedding_provider=DeterministicEmbeddingProvider(),
-            vector_store=store,
-            limit=10,
-            now=started,
-            retry_seconds=60,
-        )
-        failed = s.get(KnowledgeDocument, doc_id)
-        assert first["failed"] == 1
-        assert failed.index_status == "failed"
-        assert failed.index_attempts == 1
-        assert failed.next_index_retry_at == started + timedelta(seconds=60)
+    doc_id = add_doc(db_session)
+    first = index_pending_documents(
+        session=db_session,
+        embedding_provider=DeterministicEmbeddingProvider(),
+        vector_store=store,
+        limit=10,
+        now=started,
+        retry_seconds=60,
+    )
+    failed = db_session.get(KnowledgeDocument, doc_id)
+    assert first["failed"] == 1
+    assert failed.index_status == "failed"
+    assert failed.index_attempts == 1
+    assert failed.next_index_retry_at == started + timedelta(seconds=60)
 
-        second = index_pending_documents(
-            session=s,
-            embedding_provider=DeterministicEmbeddingProvider(),
-            vector_store=store,
-            limit=10,
-            now=started + timedelta(seconds=61),
-            retry_seconds=60,
-        )
-        indexed = s.get(KnowledgeDocument, doc_id)
-        assert second["indexed"] == 1
-        assert indexed.index_status == "indexed"
-        assert indexed.last_index_error is None
-        assert indexed.next_index_retry_at is None
+    second = index_pending_documents(
+        session=db_session,
+        embedding_provider=DeterministicEmbeddingProvider(),
+        vector_store=store,
+        limit=10,
+        now=started + timedelta(seconds=61),
+        retry_seconds=60,
+    )
+    indexed = db_session.get(KnowledgeDocument, doc_id)
+    assert second["indexed"] == 1
+    assert indexed.index_status == "indexed"
+    assert indexed.last_index_error is None
+    assert indexed.next_index_retry_at is None

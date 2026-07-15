@@ -2,22 +2,17 @@ from __future__ import annotations
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from backend.api.app import app
 from backend.api.deps import get_db_session
-from backend.db.init_db import init_db
+
+pytestmark = pytest.mark.db_multiconnection
 
 
 @pytest.fixture(autouse=True)
-def isolated_db_session(tmp_path):
-    engine = create_engine(
-        f"sqlite:///{tmp_path / 'knowledge-route.db'}",
-        connect_args={"check_same_thread": False},
-    )
-    init_db(engine)
-    sessions = sessionmaker(bind=engine, expire_on_commit=False)
+def isolated_db_session(db_multiconnection_engine):
+    sessions = sessionmaker(bind=db_multiconnection_engine, expire_on_commit=False)
 
     def dependency():
         with sessions() as session:
@@ -37,7 +32,6 @@ def isolated_db_session(tmp_path):
             app.dependency_overrides[get_db_session] = previous_db_override
         else:
             app.dependency_overrides.pop(get_db_session, None)
-        engine.dispose()
 
 
 def test_knowledge_search_accepts_fund_code_filter():
@@ -105,26 +99,8 @@ def test_knowledge_reindex_requires_local_trigger(monkeypatch):
     assert called["value"] is False
 
 
-def test_ordinary_reindex_never_rebuilds_vector_schema(monkeypatch, tmp_path):
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import sessionmaker
-
-    from backend.api.deps import get_db_session
+def test_ordinary_reindex_never_rebuilds_vector_schema(monkeypatch):
     from backend.api.routes import knowledge as route
-    from backend.db.init_db import init_db
-
-    engine = create_engine(
-        f"sqlite:///{tmp_path / 'ordinary-reindex.db'}",
-        connect_args={"check_same_thread": False},
-    )
-    init_db(engine)
-    sessions = sessionmaker(bind=engine, expire_on_commit=False)
-
-    def dependency():
-        with sessions() as session:
-            yield session
-
-    app.dependency_overrides[get_db_session] = dependency
     monkeypatch.setattr(
         route,
         "rebuild_pgvector_schema",
@@ -137,14 +113,10 @@ def test_ordinary_reindex_never_rebuilds_vector_schema(monkeypatch, tmp_path):
         "run_job_in_background",
         lambda *_args, **_kwargs: None,
     )
-    try:
-        response = TestClient(app).post(
-            "/api/knowledge/reindex",
-            headers={"X-Local-Trigger": "1"},
-        )
-    finally:
-        app.dependency_overrides.pop(get_db_session, None)
-        engine.dispose()
+    response = TestClient(app).post(
+        "/api/knowledge/reindex",
+        headers={"X-Local-Trigger": "1"},
+    )
 
     assert response.status_code == 202
 
@@ -247,25 +219,14 @@ def test_knowledge_reindex_job_status_404_when_missing():
     assert response.status_code == 404
 
 
-def test_knowledge_reindex_commits_job_before_background_start(monkeypatch, tmp_path):
+def test_knowledge_reindex_commits_job_before_background_start(
+    monkeypatch, isolated_db_session
+):
     """后台线程启动时，pending job 必须已对新数据库连接可见。"""
     from backend.api.routes import knowledge as route
     from backend.db.models import KnowledgeReindexJob
 
-    engine = create_engine(
-        f"sqlite:///{tmp_path / 'reindex.db'}",
-        connect_args={"check_same_thread": False},
-    )
-    init_db(engine)
-    sessions = sessionmaker(bind=engine, expire_on_commit=False)
-
-    def dependency():
-        with sessions() as session:
-            try:
-                yield session
-            except Exception:
-                session.rollback()
-                raise
+    sessions = isolated_db_session
 
     seen: list[bool] = []
 
@@ -273,21 +234,15 @@ def test_knowledge_reindex_commits_job_before_background_start(monkeypatch, tmp_
         with sessions() as check:
             seen.append(check.get(KnowledgeReindexJob, job_id) is not None)
 
-    previous_db_override = app.dependency_overrides[get_db_session]
-    app.dependency_overrides[get_db_session] = dependency
     monkeypatch.setattr(
         route.knowledge_reindex_jobs,
         "run_job_in_background",
         fake_background,
     )
-    try:
-        response = TestClient(app).post(
-            "/api/knowledge/reindex",
-            headers={"X-Local-Trigger": "1"},
-        )
-    finally:
-        app.dependency_overrides[get_db_session] = previous_db_override
-        engine.dispose()
+    response = TestClient(app).post(
+        "/api/knowledge/reindex",
+        headers={"X-Local-Trigger": "1"},
+    )
 
     assert response.status_code == 202
     assert seen == [True]

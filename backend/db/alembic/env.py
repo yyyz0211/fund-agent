@@ -32,14 +32,16 @@ if config.config_file_name is not None:
 # Get database URL from environment variable
 # This is the PRIMARY source of truth for migration connections
 database_url = os.environ.get("DATABASE_URL")
-if not database_url:
+external_connection = config.attributes.get("connection")
+if not database_url and external_connection is None:
     raise RuntimeError(
         "DATABASE_URL environment variable is required. "
         "Alembic migrations only support PostgreSQL."
     )
 
 # Configure Alembic to use the DATABASE_URL
-config.set_main_option("sqlalchemy.url", database_url)
+if database_url:
+    config.set_main_option("sqlalchemy.url", database_url)
 
 # add your model's MetaData object here
 # for 'autogenerate' support
@@ -49,7 +51,7 @@ target_metadata = Base.metadata
 # Fixtures set these via `with alembic_env(connection=..., version_table_schema=...):`
 # (see `backend.tests.postgres_fixtures`). When unset, Alembic falls back to
 # default behavior (single alembic_version table in current search_path).
-_EXTERNAL_CONNECTION = config.attributes.get("connection")
+_EXTERNAL_CONNECTION = external_connection
 _VERSION_TABLE_SCHEMA = config.attributes.get("version_table_schema")
 
 

@@ -1,38 +1,18 @@
 """`/api/portfolio/*` 离线测试。"""
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
 from backend.api.app import app
 from backend.db import repository as repo
-from backend.db.init_db import init_db
 from backend.db.models import Fund, FundNav
 
 client = TestClient(app)
+pytestmark = pytest.mark.db
 
 
 @pytest.fixture()
-def session(monkeypatch):
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    init_db(engine)
-    Session = sessionmaker(bind=engine, expire_on_commit=False)
-    s = Session()
-
-    from backend.api.routes import portfolio as portfolio_routes
-    monkeypatch.setattr(portfolio_routes, "get_session", lambda: Session())
-    # pnl_service 走的是 `from backend.db.session import get_session`,
-    # 实际调用时拿到的是 `backend.db.session` 模块的 name。
-    from backend.db import session as db_session
-    monkeypatch.setattr(db_session, "get_session", lambda: Session())
-
-    yield s
-    s.close()
+def session(db_session):
+    return db_session
 
 
 def _seed(s, fund_code, share, cost, current_nav, nav_date="2026-06-30",

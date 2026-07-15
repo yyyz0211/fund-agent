@@ -8,6 +8,8 @@ from backend.tests.postgres_fixtures import (
     worker_schema_name,
 )
 
+pytestmark = pytest.mark.unit
+
 
 class TestValidateTestDatabaseUrl:
     @pytest.mark.parametrize("url", [

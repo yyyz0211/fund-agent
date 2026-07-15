@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from sqlalchemy import create_engine, inspect
-from sqlalchemy.exc import SQLAlchemyError
 import pytest
-from types import SimpleNamespace
+
+pytestmark = pytest.mark.unit
 
 
 class FakeConnection:
@@ -58,13 +57,8 @@ class FakePostgresEngine:
         return FakeBegin(self.connection)
 
 
-def test_pgvector_schema_is_noop_for_sqlite():
-    from backend.db.init_db import ensure_pgvector_schema
-
-    engine = create_engine("sqlite:///:memory:")
-
-    assert ensure_pgvector_schema(engine, dimensions=16) is False
-    assert "knowledge_embeddings" not in inspect(engine).get_table_names()
+class FakeNonPostgresEngine:
+    dialect = type("Dialect", (), {"name": "mysql"})()
 
 
 def test_pgvector_schema_creates_extension_table_and_cosine_index():
@@ -86,70 +80,6 @@ def test_pgvector_schema_rejects_existing_dimension_mismatch():
 
     with pytest.raises(PgVectorDimensionMismatch, match="dimension mismatch"):
         ensure_pgvector_schema(engine, dimensions=1024)
-
-
-def test_init_db_tolerates_pgvector_dimension_mismatch(monkeypatch):
-    import backend.db.init_db as init_module
-
-    engine = FakePostgresEngine()
-    monkeypatch.setattr(init_module.Base.metadata, "create_all", lambda _engine: None)
-    monkeypatch.setattr(init_module, "_apply_missing_columns", lambda _engine: None)
-    monkeypatch.setattr(init_module, "_migrate_briefings_unique_constraint", lambda _engine: None)
-    monkeypatch.setattr(
-        init_module,
-        "_migrate_knowledge_classification_log_unique_constraint",
-        lambda _engine: None,
-    )
-    monkeypatch.setattr(init_module, "_drop_obsolete_columns", lambda _engine: None)
-    monkeypatch.setattr(
-        init_module,
-        "get_settings",
-        lambda: SimpleNamespace(
-            knowledge_vector_backend="pgvector",
-            knowledge_embedding_dimensions=1024,
-        ),
-    )
-    calls = []
-
-    def mismatch(_engine, dimensions):
-        calls.append(dimensions)
-        raise init_module.PgVectorDimensionMismatch("dimension mismatch")
-
-    monkeypatch.setattr(init_module, "ensure_pgvector_schema", mismatch)
-
-    init_module.init_db(engine)
-
-    assert calls == [1024]
-
-
-def test_init_db_tolerates_pgvector_extension_setup_failure(monkeypatch):
-    import backend.db.init_db as init_module
-
-    engine = FakePostgresEngine()
-    engine.connection = FakeConnection()
-
-    def fail_extension(_statement, _params=None):
-        raise SQLAlchemyError("permission denied to create extension")
-
-    engine.connection.execute = fail_extension
-    monkeypatch.setattr(init_module.Base.metadata, "create_all", lambda _engine: None)
-    monkeypatch.setattr(init_module, "_apply_missing_columns", lambda _engine: None)
-    monkeypatch.setattr(init_module, "_migrate_briefings_unique_constraint", lambda _engine: None)
-    monkeypatch.setattr(
-        init_module,
-        "_migrate_knowledge_classification_log_unique_constraint",
-        lambda _engine: None,
-    )
-    monkeypatch.setattr(init_module, "_drop_obsolete_columns", lambda _engine: None)
-    monkeypatch.setattr(
-        init_module,
-        "get_settings",
-        lambda: SimpleNamespace(
-            knowledge_vector_backend="pgvector",
-            knowledge_embedding_dimensions=16,
-        ),
-    )
-    init_module.init_db(engine)
 
 
 def test_pgvector_schema_rejects_incomplete_existing_table():
@@ -176,14 +106,13 @@ def test_pgvector_rebuild_requires_explicit_confirmation():
     assert engine.connection.statements == []
 
 
-def test_pgvector_rebuild_rejects_sqlite_without_dropping_tables():
+def test_pgvector_rebuild_rejects_non_postgresql_engine():
     from backend.db.init_db import rebuild_pgvector_schema
 
-    engine = create_engine("sqlite:///:memory:")
+    engine = FakeNonPostgresEngine()
 
     with pytest.raises(ValueError, match="only supported on PostgreSQL"):
         rebuild_pgvector_schema(engine, dimensions=16, confirmed=True)
-    assert "knowledge_embeddings" not in inspect(engine).get_table_names()
 
 
 def test_pgvector_rebuild_drops_only_vector_table_and_requeues_documents():
@@ -204,23 +133,3 @@ def test_pgvector_rebuild_drops_only_vector_table_and_requeues_documents():
     assert "index_attempts = 0" in sql
     assert "last_index_error = NULL" in sql
     assert "next_index_retry_at = NULL" in sql
-
-
-def test_postgres_classification_log_constraint_migration_is_idempotent():
-    from backend.db.init_db import (
-        _migrate_knowledge_classification_log_unique_constraint,
-    )
-
-    engine = FakePostgresEngine()
-
-    _migrate_knowledge_classification_log_unique_constraint(engine)
-    _migrate_knowledge_classification_log_unique_constraint(engine)
-
-    sql = "\n".join(engine.connection.statements)
-    assert "DROP CONSTRAINT IF EXISTS uq_knowledge_classification_log_attempt" in sql
-    assert "uq_knowledge_classification_log_content_attempt" in sql
-    assert (
-        "source_type, source_id, canonical_content_hash,\n"
-        "                            prompt_version, attempt_no"
-    ) in sql
-    assert sql.count("IF NOT EXISTS") == 2

@@ -1,22 +1,16 @@
 import json
 
 import pytest
-from sqlalchemy.orm import sessionmaker
 
 import backend.db.models  # noqa: F401
 from backend.db import repository as repo
-from backend.db.init_db import init_db
-from backend.db.session import make_engine
+
+pytestmark = pytest.mark.db
 
 
 @pytest.fixture()
-def session():
-    engine = make_engine("sqlite:///:memory:")
-    init_db(engine)
-    Local = sessionmaker(bind=engine, expire_on_commit=False)
-    s = Local()
-    yield s
-    s.close()
+def session(db_session):
+    return db_session
 
 
 def test_diagnosis_with_core_data_returns_structured_payload(session, monkeypatch):

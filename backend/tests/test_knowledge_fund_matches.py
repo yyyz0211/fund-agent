@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from sqlalchemy import create_engine, select
-from sqlalchemy.orm import Session
+import pytest
+from sqlalchemy import select
 
-from backend.db.init_db import init_db
 from backend.db.models import FundWatchlistProfile, KnowledgeDocument, KnowledgeFundMatch
 from backend.services.knowledge.knowledge_match_service import (
     calculate_match_score,
@@ -57,11 +56,10 @@ def test_calculate_match_score_returns_zero_for_unrelated_profile():
     assert reason == ""
 
 
-def test_refresh_matches_deletes_relationship_that_no_longer_matches():
-    eng = create_engine("sqlite:///:memory:")
-    init_db(eng)
-    with Session(eng) as s:
-        doc = KnowledgeDocument(
+@pytest.mark.db
+def test_refresh_matches_deletes_relationship_that_no_longer_matches(db_session):
+    s = db_session
+    doc = KnowledgeDocument(
             source_type="cls_telegraph",
             source_id="cls-1",
             source_url="u1",
@@ -86,7 +84,7 @@ def test_refresh_matches_deletes_relationship_that_no_longer_matches():
             content_hash="hash-1",
             canonical_content_hash="canonical-1",
         )
-        profile = FundWatchlistProfile(
+    profile = FundWatchlistProfile(
             fund_code="000001",
             fund_name="消费主题基金",
             priority="watching",
@@ -94,18 +92,18 @@ def test_refresh_matches_deletes_relationship_that_no_longer_matches():
             fund_type="债券型",
             profile_status="ready",
         )
-        s.add_all([doc, profile])
-        s.flush()
-        s.add(KnowledgeFundMatch(
-            document_id=doc.id,
-            fund_code=profile.fund_code,
-            match_score=0.8,
-            matched_topics_json='["人工智能"]',
-            match_reason="旧关系",
-        ))
-        s.commit()
+    s.add_all([doc, profile])
+    s.flush()
+    s.add(KnowledgeFundMatch(
+        document_id=doc.id,
+        fund_code=profile.fund_code,
+        match_score=0.8,
+        matched_topics_json='["人工智能"]',
+        match_reason="旧关系",
+    ))
+    s.commit()
 
-        result = refresh_knowledge_fund_matches(session=s)
+    result = refresh_knowledge_fund_matches(session=s)
 
-        assert result["matches_deleted"] == 1
-        assert s.scalar(select(KnowledgeFundMatch)) is None
+    assert result["matches_deleted"] == 1
+    assert s.scalar(select(KnowledgeFundMatch)) is None

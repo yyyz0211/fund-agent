@@ -9,23 +9,16 @@
 回测本身只依赖本地 NAV 表 + 窗口日期 + 权重,不联网、不调 LLM。
 """
 import pytest
-from sqlalchemy.orm import sessionmaker
 
 import backend.db.models  # noqa: F401  (ensure ORM mapping registered)
 from backend.db import repository as repo
-from backend.db.init_db import init_db
-from backend.db.session import make_engine
 from backend.services.fund import what_if_service as wsvc
 
+pytestmark = pytest.mark.db
 
 @pytest.fixture()
-def session():
-    engine = make_engine("sqlite:///:memory:")
-    init_db(engine)
-    Local = sessionmaker(bind=engine, expire_on_commit=False)
-    s = Local()
-    yield s
-    s.close()
+def session(db_session):
+    return db_session
 
 
 # ─── 测试 fixtures ─────────────────────────────────────────────────────────────

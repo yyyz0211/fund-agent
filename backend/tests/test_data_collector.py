@@ -513,13 +513,12 @@ def test_fetch_announcements_serializes_concurrent_calls(monkeypatch):
             _time.sleep(single_call_ms / 1000.0)
             return pd.DataFrame()
 
-    from backend.db.models import Watchlist
     from unittest.mock import MagicMock
 
     fake_session = MagicMock()
-    fake_session.scalars.return_value.all.return_value = [Watchlist(fund_code="000001")]
+    fake_session.scalars.return_value.all.return_value = ["000001"]
     import backend.db.session as db_session_mod
-    monkeypatch.setattr(db_session_mod, "get_session", lambda: fake_session)
+    monkeypatch.setattr(db_session_mod, "SessionLocal", lambda: fake_session)
     monkeypatch.setattr(dc, "ak", _TimedAkshare())
 
     t0 = time.monotonic()

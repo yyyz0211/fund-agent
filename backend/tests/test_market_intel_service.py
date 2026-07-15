@@ -9,17 +9,9 @@ from backend.services.market import market_intel_service
 
 
 @pytest.fixture
-def in_memory_session():
-    """每次测试用独立 in-memory SQLite + 干净 schema。"""
-    from backend.db.models import MarketSnapshot  # noqa: F401
-
-    engine = pytest.importorskip("sqlalchemy").create_engine("sqlite:///:memory:", echo=False)
-    Base = pytest.importorskip("backend.db.session").Base
-    Base.metadata.create_all(engine)
-    Session = pytest.importorskip("sqlalchemy.orm").sessionmaker(bind=engine)
-    session = Session()
-    yield session
-    session.close()
+def in_memory_session(db_session):
+    """复用当前 worker 的 PostgreSQL 事务 fixture。"""
+    return db_session
 
 
 def _mock_all_dc_calls():
@@ -46,6 +38,7 @@ def test_market_snapshot_model_import():
     assert MarketSnapshot.__tablename__ == "market_snapshots"
 
 
+@pytest.mark.db
 def test_upsert_market_snapshot_idempotent(in_memory_session):
     from backend.db.models import MarketSnapshot
     from backend.db.repository import upsert_market_snapshot

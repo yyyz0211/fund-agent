@@ -1,20 +1,14 @@
 import pytest
-from backend.db.session import make_engine
-from backend.db.init_db import init_db
-import backend.db.models  # noqa: F401
-from sqlalchemy.orm import sessionmaker
 from backend.db import repository as repo
 from backend.db.models import FundNav
 
 
+pytestmark = pytest.mark.db
+
+
 @pytest.fixture()
-def session():
-    engine = make_engine("sqlite:///:memory:")
-    init_db(engine)
-    Local = sessionmaker(bind=engine, expire_on_commit=False)
-    s = Local()
-    yield s
-    s.close()
+def session(db_session):
+    return db_session
 
 
 def test_watchlist_crud(session):

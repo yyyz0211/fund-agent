@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from sqlalchemy import create_engine, select
-from sqlalchemy.orm import Session
+import pytest
+from sqlalchemy import select
 
-from backend.db.init_db import init_db
 from backend.db.models import (
     KnowledgeClassificationLog,
     KnowledgeClassificationState,
@@ -12,6 +11,9 @@ from backend.db.models import (
 from backend.services.knowledge.knowledge_classifier import ClassificationOutcome
 from backend.services.knowledge.knowledge_ingestion_service import ingest_candidates
 from backend.services.knowledge.knowledge_schema import KnowledgeClassificationResult, TopicTag
+
+
+pytestmark = pytest.mark.db
 
 
 class StaticClassifier:
@@ -72,9 +74,7 @@ def accepted_result():
     )
 
 
-def test_ingest_candidates_creates_document_for_accepted_item():
-    eng = create_engine("sqlite:///:memory:")
-    init_db(eng)
+def test_ingest_candidates_creates_document_for_accepted_item(db_session):
     candidate = {
         "source_type": "cls_telegraph",
         "source_id": "cls-1",
@@ -84,39 +84,35 @@ def test_ingest_candidates_creates_document_for_accepted_item():
         "published_at": "2026-07-09 10:00:00",
     }
 
-    with Session(eng) as s:
-        result = ingest_candidates([candidate], classifier=StaticClassifier(accepted_result()), session=s)
+    result = ingest_candidates(
+        [candidate], classifier=StaticClassifier(accepted_result()), session=db_session,
+    )
 
-        assert result["accepted"] == 1
-        doc = s.scalar(select(KnowledgeDocument))
-        assert doc.title == "AI消息"
-        assert doc.index_status == "pending"
-        state = s.scalar(select(KnowledgeClassificationState))
-        assert state.status == "accepted"
-        assert state.document_id == doc.id
+    assert result["accepted"] == 1
+    doc = db_session.scalar(select(KnowledgeDocument))
+    assert doc.title == "AI消息"
+    assert doc.index_status == "pending"
+    state = db_session.scalar(select(KnowledgeClassificationState))
+    assert state.status == "accepted"
+    assert state.document_id == doc.id
 
 
-def test_ingest_candidates_logs_rejected_without_document():
-    eng = create_engine("sqlite:///:memory:")
-    init_db(eng)
+def test_ingest_candidates_logs_rejected_without_document(db_session):
     rejected = accepted_result().model_copy(update={"should_index": False, "reason": "not market related"})
 
-    with Session(eng) as s:
-        result = ingest_candidates([{
-            "source_type": "cls_telegraph",
-            "source_id": "cls-2",
-            "title": "无关消息",
-            "content": "无关消息",
-        }], classifier=StaticClassifier(rejected), session=s)
+    result = ingest_candidates([{
+        "source_type": "cls_telegraph",
+        "source_id": "cls-2",
+        "title": "无关消息",
+        "content": "无关消息",
+    }], classifier=StaticClassifier(rejected), session=db_session)
 
-        assert result["rejected"] == 1
-        assert s.scalar(select(KnowledgeDocument)) is None
-        assert s.scalar(select(KnowledgeClassificationState)).status == "rejected"
+    assert result["rejected"] == 1
+    assert db_session.scalar(select(KnowledgeDocument)) is None
+    assert db_session.scalar(select(KnowledgeClassificationState)).status == "rejected"
 
 
-def test_ingest_candidates_dedupes_cross_source_items():
-    eng = create_engine("sqlite:///:memory:")
-    init_db(eng)
+def test_ingest_candidates_dedupes_cross_source_items(db_session):
     candidates = [
         {
             "source_type": "cls_telegraph",
@@ -136,16 +132,15 @@ def test_ingest_candidates_dedupes_cross_source_items():
         },
     ]
 
-    with Session(eng) as s:
-        result = ingest_candidates(candidates, classifier=StaticClassifier(accepted_result()), session=s)
+    result = ingest_candidates(
+        candidates, classifier=StaticClassifier(accepted_result()), session=db_session,
+    )
 
-        assert result["accepted"] == 2
-        assert result["documents_created"] == 1
+    assert result["accepted"] == 2
+    assert result["documents_created"] == 1
 
 
-def test_ingest_candidates_skips_unchanged_candidate_with_same_prompt():
-    eng = create_engine("sqlite:///:memory:")
-    init_db(eng)
+def test_ingest_candidates_skips_unchanged_candidate_with_same_prompt(db_session):
     classifier = CountingClassifier(accepted_result())
     candidate = {
         "source_type": "cls_telegraph",
@@ -155,18 +150,15 @@ def test_ingest_candidates_skips_unchanged_candidate_with_same_prompt():
         "published_at": "2026-07-09 10:00:00",
     }
 
-    with Session(eng) as s:
-        ingest_candidates([candidate], classifier=classifier, session=s)
-        second = ingest_candidates([candidate], classifier=classifier, session=s)
+    ingest_candidates([candidate], classifier=classifier, session=db_session)
+    second = ingest_candidates([candidate], classifier=classifier, session=db_session)
 
-        assert classifier.calls == 1
-        assert second["skipped_unchanged"] == 1
-        assert s.scalar(select(KnowledgeClassificationState)).latest_attempt_no == 1
+    assert classifier.calls == 1
+    assert second["skipped_unchanged"] == 1
+    assert db_session.scalar(select(KnowledgeClassificationState)).latest_attempt_no == 1
 
 
-def test_ingest_candidates_stops_retrying_after_max_attempts():
-    eng = create_engine("sqlite:///:memory:")
-    init_db(eng)
+def test_ingest_candidates_stops_retrying_after_max_attempts(db_session):
     classifier = CountingFailedClassifier()
     candidate = {
         "source_type": "cls_telegraph",
@@ -175,22 +167,19 @@ def test_ingest_candidates_stops_retrying_after_max_attempts():
         "content": "分类服务暂时失败",
     }
 
-    with Session(eng) as s:
-        ingest_candidates([candidate], classifier=classifier, session=s)
-        state = s.scalar(select(KnowledgeClassificationState))
-        state.latest_attempt_no = 3
-        state.next_retry_at = None
-        s.flush()
+    ingest_candidates([candidate], classifier=classifier, session=db_session)
+    state = db_session.scalar(select(KnowledgeClassificationState))
+    state.latest_attempt_no = 3
+    state.next_retry_at = None
+    db_session.flush()
 
-        second = ingest_candidates([candidate], classifier=classifier, session=s)
+    second = ingest_candidates([candidate], classifier=classifier, session=db_session)
 
-        assert classifier.calls == 1
-        assert second["retry_exhausted"] == 1
+    assert classifier.calls == 1
+    assert second["retry_exhausted"] == 1
 
 
-def test_changed_content_resets_exhausted_classification_attempts():
-    eng = create_engine("sqlite:///:memory:")
-    init_db(eng)
+def test_changed_content_resets_exhausted_classification_attempts(db_session):
     classifier = CountingFailedClassifier()
     candidate = {
         "source_type": "cls_telegraph",
@@ -199,21 +188,20 @@ def test_changed_content_resets_exhausted_classification_attempts():
         "content": "旧内容",
     }
 
-    with Session(eng) as s:
-        ingest_candidates([candidate], classifier=classifier, session=s)
-        state = s.scalar(select(KnowledgeClassificationState))
-        state.latest_attempt_no = 3
-        state.next_retry_at = None
-        s.flush()
+    ingest_candidates([candidate], classifier=classifier, session=db_session)
+    state = db_session.scalar(select(KnowledgeClassificationState))
+    state.latest_attempt_no = 3
+    state.next_retry_at = None
+    db_session.flush()
 
-        changed = {**candidate, "content": "新内容"}
-        second = ingest_candidates([changed], classifier=classifier, session=s)
-        logs = s.scalars(
-            select(KnowledgeClassificationLog).order_by(KnowledgeClassificationLog.id)
-        ).all()
+    changed = {**candidate, "content": "新内容"}
+    second = ingest_candidates([changed], classifier=classifier, session=db_session)
+    logs = db_session.scalars(
+        select(KnowledgeClassificationLog).order_by(KnowledgeClassificationLog.id)
+    ).all()
 
-        assert classifier.calls == 2
-        assert second["failed"] == 1
-        assert state.latest_attempt_no == 1
-        assert [log.attempt_no for log in logs] == [1, 1]
-        assert logs[0].canonical_content_hash != logs[1].canonical_content_hash
+    assert classifier.calls == 2
+    assert second["failed"] == 1
+    assert state.latest_attempt_no == 1
+    assert [log.attempt_no for log in logs] == [1, 1]
+    assert logs[0].canonical_content_hash != logs[1].canonical_content_hash

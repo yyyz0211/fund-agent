@@ -1,11 +1,13 @@
 """API 启动与 health 端点（不依赖任何业务）。"""
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 
 from backend.api.app import app
 
 client = TestClient(app)
+pytestmark = pytest.mark.unit
 
 
 def test_health(monkeypatch):
@@ -59,7 +61,7 @@ def test_health_preserves_top_level_status_when_database_is_unavailable(monkeypa
     monkeypatch.setattr(
         knowledge_pgvector,
         "database_health_snapshot",
-        lambda _engine: {"status": "degraded", "dialect": "sqlite", "error": "Offline"},
+        lambda _engine: {"status": "degraded", "dialect": "unknown", "error": "Offline"},
     )
 
     body = client.get("/api/health").json()
@@ -94,7 +96,6 @@ def test_health_degrades_top_level_for_explicit_pgvector_failure(monkeypatch):
 
 def test_vector_health_is_local_and_reports_explicit_pgvector_failure():
     from types import SimpleNamespace
-    from sqlalchemy import create_engine
 
     from backend.services.knowledge.knowledge_pgvector import knowledge_vector_health_snapshot
 
@@ -107,14 +108,14 @@ def test_vector_health_is_local_and_reports_explicit_pgvector_failure():
         knowledge_embedding_version="v1",
         knowledge_embedding_dimensions=16,
     )
-    engine = create_engine("sqlite:///:memory:")
+    engine = SimpleNamespace(dialect=SimpleNamespace(name="mysql"))
 
     snapshot = knowledge_vector_health_snapshot(engine, settings)
 
     assert snapshot == {
         "status": "degraded",
         "backend": "pgvector",
-        "dialect": "sqlite",
+        "dialect": "mysql",
         "reason": "postgresql_required",
     }
 

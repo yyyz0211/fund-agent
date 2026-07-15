@@ -11,57 +11,18 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
+pytestmark = pytest.mark.db_multiconnection
+
 
 @pytest.fixture
-def client_with_session():
-    """FastAPI TestClient + in-memory DB session。
-
-    策略:
-    - 让 `get_settings()` 指向 in-memory,这样 app.on_event("startup") 触发的
-      init_db 也会建到同一张内存库里(虽然其实每个 connection 独立,但 SQLAlchemy
-      SQLite memory 用 StaticPool 才能多 connection 共享)
-    - 使用 StaticPool 让 :memory: 在多连接下共享同一张库
-    - override `get_session` 让 route 用同样的测试 session 工厂
-    """
-    import os
-    from sqlalchemy import create_engine
+def client_with_session(db_multiconnection_engine):
+    """FastAPI TestClient + PostgreSQL worker schema session factory。"""
     from sqlalchemy.orm import sessionmaker
-    from sqlalchemy.pool import StaticPool
 
     from backend.api.deps import get_db_session
-    from backend.db.session import Base, engine, SessionLocal
     from backend.api.app import app
 
-    # 1) 引入模型,确保 Base.metadata 注册完整
-    from backend.db.models import Briefing, Fund, Watchlist  # noqa: F401
-
-    # 2) 关掉 startup hook 中的 scheduler 启动;init_db 也用 monkeypatch 跳过
-    import backend.scheduler as scheduler_module
-    orig_start = scheduler_module.start_scheduler
-    scheduler_module.start_scheduler = lambda *args, **kwargs: None
-
-    # 3) 替换全局 engine 为 in-memory + StaticPool,这样 init_db / route / 测试插入
-    #    都共享同一张 :memory: 库
-    test_engine = create_engine(
-        "sqlite:///:memory:",
-        echo=False,
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    Base.metadata.create_all(test_engine)
-
-    # monkeypatch 全局 engine 和 SessionLocal
-    import backend.db.session as session_module
-    orig_engine = session_module.engine
-    orig_session_local = session_module.SessionLocal
-    session_module.engine = test_engine
-    session_module.SessionLocal = sessionmaker(bind=test_engine, expire_on_commit=False)
-    # 同步 app 内的 startup hook(它 import 时取了旧引用)
-    from backend.db import init_db as init_db_module
-    orig_init = init_db_module.init_db
-    init_db_module.init_db = lambda: None  # 防止它在 in-memory engine 上重复跑
-
-    TestingSession = sessionmaker(bind=test_engine)
+    TestingSession = sessionmaker(bind=db_multiconnection_engine, expire_on_commit=False)
 
     def _override():
         s = TestingSession()
@@ -72,14 +33,12 @@ def client_with_session():
 
     app.dependency_overrides[get_db_session] = _override
 
-    with TestClient(app) as client:
+    client = TestClient(app)
+    try:
         yield client, TestingSession
-
-    app.dependency_overrides.clear()
-    session_module.engine = orig_engine
-    session_module.SessionLocal = orig_session_local
-    init_db_module.init_db = orig_init
-    scheduler_module.start_scheduler = orig_start
+    finally:
+        client.close()
+        app.dependency_overrides.pop(get_db_session, None)
 
 
 def _insert_briefing(
@@ -190,5 +149,7 @@ class TestRouteRun:
             )
 
         assert resp.status_code == 202
-        assert captured == {"trigger": "manual", "brief_type": "pre_market"}
+        assert captured["trigger"] == "manual"
+        assert captured["brief_type"] == "pre_market"
+        assert captured["model"] is not None
         assert resp.json()["brief_type"] == "pre_market"

@@ -21,10 +21,20 @@
 """
 from __future__ import annotations
 
+import os
 import re
+from uuid import uuid4
+from pathlib import Path
 from urllib.parse import urlparse
 
 import pytest
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import create_engine, event, text
+from sqlalchemy.orm import sessionmaker
+
+from backend.db import session as session_module
+from backend.db.session import Base, reset_session_factory, set_session_factory
 
 
 # database 必须以 `_test` 结尾,这是 fixture 唯一的"破坏面"保护。
@@ -103,3 +113,155 @@ def worker_schema_name(worker_id: str | None) -> str:
     else:
         suffix = worker_id.lower()
     return f"test_{suffix}"
+
+
+def _quoted_identifier(value: str) -> str:
+    """Quote a previously validated PostgreSQL identifier."""
+    if not re.fullmatch(r"[a-z0-9_]+", value):
+        raise ValueError(f"unsafe PostgreSQL identifier: {value!r}")
+    return f'"{value}"'
+
+
+def run_alembic_upgrade(engine, schema: str) -> None:
+    """Upgrade an empty worker schema using an externally supplied connection."""
+    quoted_schema = _quoted_identifier(schema)
+    config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
+    with engine.begin() as connection:
+        connection.execute(text(f"SET LOCAL search_path TO {quoted_schema}, public"))
+        config.attributes["connection"] = connection
+        config.attributes["version_table_schema"] = schema
+        command.upgrade(config, "head")
+
+
+@pytest.fixture(scope="session")
+def test_database_url() -> str:
+    return validate_test_database_url(os.environ.get("TEST_DATABASE_URL"))
+
+
+@pytest.fixture(scope="session")
+def worker_schema(request) -> str:
+    worker_input = getattr(request.config, "workerinput", None) or {}
+    return worker_schema_name(worker_input.get("workerid", "master"))
+
+
+@pytest.fixture(scope="session")
+def postgres_admin_engine(test_database_url, worker_schema):
+    engine = create_engine(test_database_url, pool_pre_ping=True, future=True)
+    quoted_schema = _quoted_identifier(worker_schema)
+    with engine.begin() as connection:
+        connection.execute(text(f"DROP SCHEMA IF EXISTS {quoted_schema} CASCADE"))
+        connection.execute(text(f"CREATE SCHEMA {quoted_schema}"))
+    try:
+        yield engine
+    finally:
+        with engine.begin() as connection:
+            connection.execute(text(f"DROP SCHEMA IF EXISTS {quoted_schema} CASCADE"))
+        engine.dispose()
+
+
+@pytest.fixture(scope="session")
+def postgres_engine(test_database_url, worker_schema, postgres_admin_engine):
+    quoted_schema = _quoted_identifier(worker_schema)
+    engine = create_engine(test_database_url, pool_pre_ping=True, future=True)
+
+    @event.listens_for(engine, "connect")
+    def _set_search_path(dbapi_connection, _connection_record):
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute(f"SET search_path TO {quoted_schema}, public")
+        finally:
+            cursor.close()
+
+    run_alembic_upgrade(engine, worker_schema)
+    try:
+        yield engine
+    finally:
+        engine.dispose()
+
+
+@pytest.fixture
+def db_session(postgres_engine, monkeypatch):
+    """Connection-bound Session whose writes are rolled back after each test."""
+    connection = postgres_engine.connect()
+    outer = connection.begin()
+    factory = sessionmaker(
+        bind=connection,
+        expire_on_commit=False,
+        join_transaction_mode="create_savepoint",
+    )
+    token = set_session_factory(factory)
+    monkeypatch.setattr(session_module, "SessionLocal", factory)
+    try:
+        from backend.api import deps as api_deps
+
+        monkeypatch.setattr(api_deps, "SessionLocal", factory)
+    except ImportError:
+        pass
+    session = factory()
+    try:
+        yield session
+    finally:
+        session.close()
+        reset_session_factory(token)
+        if outer.is_active:
+            outer.rollback()
+        connection.close()
+
+
+def _truncate_worker_tables(engine, schema: str) -> None:
+    quoted_schema = _quoted_identifier(schema)
+    tables = [
+        f"{quoted_schema}.{_quoted_identifier(table.name)}"
+        for table in reversed(Base.metadata.sorted_tables)
+    ]
+    if not tables:
+        return
+    with engine.begin() as connection:
+        connection.execute(text(
+            f"TRUNCATE TABLE {', '.join(tables)} RESTART IDENTITY CASCADE"
+        ))
+
+
+@pytest.fixture
+def db_multiconnection_engine(postgres_engine, worker_schema, monkeypatch):
+    """Engine for tests that require independent connections and real commits."""
+    _truncate_worker_tables(postgres_engine, worker_schema)
+    factory = sessionmaker(bind=postgres_engine, expire_on_commit=False)
+    monkeypatch.setattr(session_module, "SessionLocal", factory)
+    try:
+        from backend.api import deps as api_deps
+
+        monkeypatch.setattr(api_deps, "SessionLocal", factory)
+    except ImportError:
+        pass
+    try:
+        yield postgres_engine
+    finally:
+        _truncate_worker_tables(postgres_engine, worker_schema)
+
+
+@pytest.fixture
+def db_ddl_schema(test_database_url, postgres_admin_engine, worker_schema):
+    """独立、可丢弃的 PostgreSQL schema，供 DDL/迁移测试使用。"""
+    schema = f"{worker_schema}_ddl_{uuid4().hex[:12]}"
+    quoted_schema = _quoted_identifier(schema)
+    with postgres_admin_engine.begin() as connection:
+        connection.execute(text(f"CREATE SCHEMA {quoted_schema}"))
+
+    engine = create_engine(test_database_url, pool_pre_ping=True, future=True)
+
+    @event.listens_for(engine, "connect")
+    def _set_search_path(dbapi_connection, _connection_record):
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute(f"SET search_path TO {quoted_schema}, public")
+        finally:
+            cursor.close()
+
+    try:
+        run_alembic_upgrade(engine, schema)
+        yield engine
+    finally:
+        engine.dispose()
+        with postgres_admin_engine.begin() as connection:
+            connection.execute(text(f"DROP SCHEMA IF EXISTS {quoted_schema} CASCADE"))

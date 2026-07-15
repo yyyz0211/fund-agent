@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
+
+pytestmark = pytest.mark.unit
+
 
 class FakeMappings:
     def __init__(self, rows):
@@ -45,10 +50,10 @@ def _settings(**overrides):
     return SimpleNamespace(**values)
 
 
-def test_vector_store_factory_degrades_for_sqlite():
+def test_vector_store_factory_degrades_for_non_postgresql_dialect():
     from backend.services.knowledge.knowledge_pgvector import build_vector_store
 
-    assert build_vector_store(RecordingSession(dialect="sqlite"), _settings()) is None
+    assert build_vector_store(RecordingSession(dialect="mysql"), _settings()) is None
 
 
 def test_vector_store_factory_builds_pgvector_for_postgres():
@@ -97,13 +102,13 @@ def test_pgvector_store_uses_parameterized_upsert_search_and_delete():
 
 
 def test_pgvector_store_rejects_wrong_vector_dimension():
-    import pytest
+    from backend.exceptions import InputValidationError
     from backend.services.knowledge.knowledge_pgvector import PgVectorStore
     from backend.services.knowledge.knowledge_vector import VectorItem
 
     store = PgVectorStore(RecordingSession(), model="embed-model", version="v1", dimensions=3)
 
-    with pytest.raises(ValueError, match="dimension"):
+    with pytest.raises(InputValidationError, match="dimension"):
         store.upsert([VectorItem(
             document_id=1,
             text="bad",

@@ -3,13 +3,15 @@
 策略:
 - 测试工具对象的 LangChain 元数据(name / description / args schema)
   不被未来重构意外破坏。
-- 测试工具转发参数正确(用一个 in-memory session 通过 monkeypatch
+- 测试工具转发参数正确(用一个 session test double 通过 monkeypatch
   替换 backend.db.session.get_session)。
 - 不测试 what_if_service.backtest 的算法 —— 已在 test_what_if_service.py。
 """
 import pytest
 
 from backend.tools.what_if_tools import what_if_analysis, WHAT_IF_TOOLS
+
+pytestmark = pytest.mark.unit
 
 
 def test_tool_is_registered():
@@ -40,16 +42,8 @@ def test_tool_forwards_args_to_service(monkeypatch):
         captured["session"] = session
         return {"echo": True, "start_date": start_date}
 
-    # 用一个 in-memory session 替换 get_session,避免依赖真实 DB
-    from sqlalchemy.orm import sessionmaker
-    from backend.db.init_db import init_db
-    from backend.db.session import make_engine
-    import backend.db.models  # noqa: F401
-
-    engine = make_engine("sqlite:///:memory:")
-    init_db(engine)
-    Session = sessionmaker(bind=engine, expire_on_commit=False)
-    fake_session = Session()
+    # 服务已被 mock；session 只需验证透传和关闭语义。
+    fake_session = type("FakeSession", (), {"close": lambda self: None})()
 
     monkeypatch.setattr("backend.tools.what_if_tools.get_session",
                         lambda: fake_session)
