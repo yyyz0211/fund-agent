@@ -3,15 +3,13 @@ from __future__ import annotations
 import json
 import logging
 import time
-from contextlib import nullcontext
 from datetime import datetime
 
-from sqlalchemy import or_, select
+from sqlalchemy import String, cast, or_, select
 
 from backend.config.settings import get_settings
 from backend.db import repository as repo
 from backend.db.models import KnowledgeDocument, KnowledgeFundMatch, KnowledgeRetrievalLog
-from backend.db.session import get_session
 from backend.db.session_scope import session_scope
 from backend.services.knowledge import (
     knowledge_fund_profile_service,
@@ -123,7 +121,9 @@ def _apply_structured_filters(stmt, *, query, topic, source_type, date_from, dat
     if source_type:
         stmt = stmt.where(KnowledgeDocument.source_type == source_type)
     if topic:
-        stmt = stmt.where(KnowledgeDocument.topic_names_json.like(f"%{topic}%"))
+        stmt = stmt.where(
+            cast(KnowledgeDocument.topic_names_json, String).like(f"%{topic}%")
+        )
     if date_from:
         stmt = stmt.where(KnowledgeDocument.published_at >= date_from)
     if date_to:
@@ -136,7 +136,7 @@ def _apply_structured_filters(stmt, *, query, topic, source_type, date_from, dat
             KnowledgeDocument.title.like(like),
             KnowledgeDocument.summary.like(like),
             KnowledgeDocument.normalized_text.like(like),
-            KnowledgeDocument.topic_names_json.like(like),
+            cast(KnowledgeDocument.topic_names_json, String).like(like),
         ))
     return stmt
 
@@ -172,18 +172,24 @@ def search_knowledge(
     """
     started = time.monotonic()
     owns_session = session is None
-    active_session = session if session is not None else get_session()
-    ctx = active_session if owns_session else nullcontext(active_session)
-    with ctx as s:
-        mode = "structured_fallback"
-        warning = STRUCTURED_FALLBACK_WARNING
+    query_vector = None
+    if query.strip():
         try:
             active_provider = embedding_provider or build_embedding_provider(get_settings())
-            active_store = vector_store or build_vector_store(s, get_settings())
-        except Exception as exc:  # noqa: BLE001 - 检索必须能结构化降级
-            logger.warning("knowledge vector runtime unavailable: %s", exc)
-            active_provider = None
-            active_store = None
+            query_vector = active_provider.embed([query])[0]
+        except Exception as exc:  # noqa: BLE001 - embedding 失败走结构化降级
+            logger.warning("knowledge embedding unavailable: %s", exc)
+
+    filters = {
+        "fund_code": fund_code,
+        "topic": topic,
+        "source_type": source_type,
+        "date_from": date_from,
+        "date_to": date_to,
+        "include_pending": include_pending,
+    }
+
+    def _read(s):
         match_by_doc: dict[int, KnowledgeFundMatch] = {}
         if fund_code:
             matches = s.scalars(
@@ -192,35 +198,13 @@ def search_knowledge(
             match_by_doc = {match.document_id: match for match in matches}
 
         if fund_code and not match_by_doc:
-            # stage 2: short-tx write of empty-retrieval log
-            _log_retrieval(
-                s if owns_session else None,
-                owns=owns_session,
-                query=query,
-                filters={"fund_code": fund_code, "topic": topic, "source_type": source_type},
-                mode="structured_fallback",
-                count=0,
-                latency_ms=int((time.monotonic() - started) * 1000),
-            )
-            return {
-                "count": 0,
-                "retrieval_mode": "structured_fallback",
-                "coverage_warning": STRUCTURED_FALLBACK_WARNING,
-                "items": [],
-            }
-
-        filters = {
-            "fund_code": fund_code,
-            "topic": topic,
-            "source_type": source_type,
-            "date_from": date_from,
-            "date_to": date_to,
-            "include_pending": include_pending,
-        }
-        # stage 1: fetch candidates + (optionally) semantic embeddings outside the
-        # long-running transaction. We share the active session only for the SQL
-        # `vector store.search` call, which needs a live connection.
-        items, mode, warning = _fetch_search_results(
+            return [], "structured_fallback", STRUCTURED_FALLBACK_WARNING
+        try:
+            active_store = vector_store or build_vector_store(s, get_settings())
+        except Exception as exc:  # noqa: BLE001 - vector store 失败走结构化降级
+            logger.warning("knowledge vector store unavailable: %s", exc)
+            active_store = None
+        return _fetch_search_results(
             s=s,
             query=query,
             filters=filters,
@@ -231,60 +215,36 @@ def search_knowledge(
             include_pending=include_pending,
             limit=limit,
             match_by_doc=match_by_doc,
-            active_provider=active_provider,
             active_store=active_store,
+            query_vector=query_vector,
         )
-        for item in items:
-            item["retrieval_mode"] = mode
 
-        # stage 2: short-tx write of retrieval log
-        if owns_session:
-            with session_scope() as tx:
-                _write_retrieval_log(
-                    tx,
-                    query=query,
-                    filters=filters,
-                    mode=mode,
-                    count=len(items),
-                    latency_ms=int((time.monotonic() - started) * 1000),
-                )
-        else:
+    if owns_session:
+        with session_scope() as s:
+            items, mode, warning = _read(s)
+    else:
+        items, mode, warning = _read(session)
+
+    for item in items:
+        item["retrieval_mode"] = mode
+    latency_ms = int((time.monotonic() - started) * 1000)
+    if owns_session:
+        with session_scope() as tx:
             _write_retrieval_log(
-                s,
-                query=query,
-                filters=filters,
-                mode=mode,
-                count=len(items),
-                latency_ms=int((time.monotonic() - started) * 1000),
+                tx, query=query, filters=filters, mode=mode,
+                count=len(items), latency_ms=latency_ms,
             )
-        return {
-            "count": len(items),
-            "retrieval_mode": mode,
-            "coverage_warning": warning,
-            "items": items,
-        }
-
-
-def _log_retrieval(
-    s,
-    *,
-    owns: bool,
-    query: str,
-    filters: dict,
-    mode: str,
-    count: int,
-    latency_ms: int,
-) -> None:
-    """为空命中场景写一条 retrieval log；owning 时使用独立 short-tx。"""
-    if not owns:
+    else:
         _write_retrieval_log(
-            s, query=query, filters=filters, mode=mode, count=count, latency_ms=latency_ms,
+            session, query=query, filters=filters, mode=mode,
+            count=len(items), latency_ms=latency_ms,
         )
-        return
-    with session_scope() as tx:
-        _write_retrieval_log(
-            tx, query=query, filters=filters, mode=mode, count=count, latency_ms=latency_ms,
-        )
+    return {
+        "count": len(items),
+        "retrieval_mode": mode,
+        "coverage_warning": warning,
+        "items": items,
+    }
 
 
 def _fetch_search_results(
@@ -299,8 +259,8 @@ def _fetch_search_results(
     include_pending: bool,
     limit: int,
     match_by_doc: dict[int, KnowledgeFundMatch],
-    active_provider,
     active_store,
+    query_vector,
 ) -> tuple[list[dict], str, str | None]:
     """执行检索 — structured + 可选 semantic,然后合并并按 limit 截断。"""
     candidate_limit = max(1, int(limit)) * 5
@@ -333,12 +293,11 @@ def _fetch_search_results(
     warning: str | None = STRUCTURED_FALLBACK_WARNING
     vector_items: list[dict] = []
     if (
-        active_provider is not None
+        query_vector is not None
         and active_store is not None
         and query.strip()
     ):
         try:
-            query_vector = active_provider.embed([query])[0]
             vector_filters = {
                 key: value for key, value in {
                     "topic": topic,

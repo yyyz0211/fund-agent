@@ -61,12 +61,9 @@ def _run_knowledge_pipeline_scheduled():
     创建一条 scheduled job 记录，拿到进程锁，执行 pipeline，最后写入
     状态。相比手动触发(reindex route)，这里复用同一张表方便统一观察。
 
-    锁窗口拆细：
-    - 段 1: `process_singleflight` 内只做 `create_job`（短事务，< 100ms）
-    - 段 2: 锁外启动后台线程跑 pipeline（pipeline 自身又会短事务拿锁
-      mark_running / mark_completed,见 `knowledge_reindex_jobs.run_job_in_background`）
-    - 这样 LLM + 向量化执行期间单飞锁是空闲的,CLS 同步、market
-      evidence 等其他 scheduler job 可并发跑。
+    调度器 key 只保护 pending job 创建；后台 runner 使用稳定业务 key
+    `knowledge_reindex:pipeline` 覆盖完整 pipeline 生命周期。相同知识重建
+    fast-fail，不同 key 的 CLS 同步、market evidence 等任务仍可并发。
     """
     from backend.services.knowledge import knowledge_reindex_jobs
     # 段 1: 拿锁 + 落 pending 行（< 100ms）
@@ -87,7 +84,7 @@ def _run_knowledge_pipeline_scheduled():
         logger.exception("[scheduler] knowledge pipeline failed to create job record")
         return
 
-    # 段 2: 在锁外启动后台线程
+    # 后台 runner 自己持有完整 pipeline 的稳定业务单飞锁。
     try:
         knowledge_reindex_jobs.run_job_in_background(
             job_id,

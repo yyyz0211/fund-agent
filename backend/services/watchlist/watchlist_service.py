@@ -255,7 +255,6 @@ def _set_initial_holding_impl(s, fund_code: str, attrs: dict) -> dict:
         "kind": data.get("kind", "buy"),
     })
     wl = _recalc(s, fund_code)
-    s.commit()
     return {"transaction": tx, "watchlist": wl}
 
 
@@ -284,10 +283,10 @@ def _remove_transaction_impl(s, fund_code: str, tx_id: int) -> dict | None:
     return {"removed": True, "transaction": snapshot, "watchlist": wl}
 
 
-def _recalc(s, fund_code: str, *, commit: bool = True) -> dict | None:
+def _recalc(s, fund_code: str) -> dict | None:
     """薄包装:在当前 session 上调 transaction_service.recalc_holding。"""
     from backend.services.watchlist.transaction_service import recalc_holding
-    return recalc_holding(fund_code, session=s, commit=commit)
+    return recalc_holding(fund_code, session=s)
 
 
 def _validate_transaction_nav(s, fund_code: str, attrs: dict) -> None:
@@ -468,7 +467,6 @@ def _confirm_pending_buy_impl(s, fund_code: str, pending_id: int,
         "transaction_id": tx.get("id"),
     })
     wl = _recalc(s, fund_code)
-    s.commit()
     return {
         "pending_buy": _with_pending_buy_stage(s, confirmed),
         "transaction": tx,

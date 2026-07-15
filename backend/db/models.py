@@ -19,6 +19,7 @@ from sqlalchemy import (DateTime, Float, Integer, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.db.session import Base
+from backend.db.types import JsonText
 
 
 class Fund(Base):
@@ -286,7 +287,7 @@ class MarketEvidence(Base):
     """证据表：政策/公告/海外披露/宏观/行业热点。
 
     唯一键 `(trade_date, brief_type, source_url)` 用于去重 upsert。
-    `symbols_json` / `metrics_json` 用 JSON 字符串保存，避免对 SQLite 强依赖 JSON 列。
+    `symbols_json` / `metrics_json` 在 service 层保持 JSON 字符串契约，数据库使用 JSONB。
     `category` 取值: policy / announcement / overseas_disclosure / macro / sector / news。
     `reliability` 取值: official / wire / rumor（默认 official）。
     `brief_type` 取值: pre_market / post_market。
@@ -306,8 +307,8 @@ class MarketEvidence(Base):
     category: Mapped[str] = mapped_column(String(32), index=True)
     title: Mapped[str] = mapped_column(String)
     summary: Mapped[Optional[str]] = mapped_column(String)
-    symbols_json: Mapped[Optional[str]] = mapped_column(String)
-    metrics_json: Mapped[Optional[str]] = mapped_column(String)
+    symbols_json: Mapped[Optional[str]] = mapped_column(JsonText)
+    metrics_json: Mapped[Optional[str]] = mapped_column(JsonText)
     source: Mapped[str] = mapped_column(String)
     source_url: Mapped[str] = mapped_column(String)
     published_at: Mapped[Optional[str]] = mapped_column(String)
@@ -332,8 +333,8 @@ class ClsTelegraphItem(Base):
     brief: Mapped[Optional[str]] = mapped_column(String)
     content: Mapped[Optional[str]] = mapped_column(String)
     category: Mapped[Optional[str]] = mapped_column(String(64), index=True)
-    subjects_json: Mapped[Optional[str]] = mapped_column(String)
-    symbols_json: Mapped[Optional[str]] = mapped_column(String)
+    subjects_json: Mapped[Optional[str]] = mapped_column(JsonText)
+    symbols_json: Mapped[Optional[str]] = mapped_column(JsonText)
     source_url: Mapped[str] = mapped_column(String)
     ctime: Mapped[Optional[int]] = mapped_column(Integer, index=True)
     published_at: Mapped[Optional[str]] = mapped_column(String, index=True)
@@ -384,12 +385,12 @@ class KnowledgeDocument(Base):
     normalized_text: Mapped[str] = mapped_column(String)
     primary_topic: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     topic_title: Mapped[Optional[str]] = mapped_column(String(128))
-    topics_json: Mapped[Optional[str]] = mapped_column(String)
-    topic_names_json: Mapped[Optional[str]] = mapped_column(String)
-    fund_theme_tags_json: Mapped[Optional[str]] = mapped_column(String)
-    fund_type_tags_json: Mapped[Optional[str]] = mapped_column(String)
-    markets_json: Mapped[Optional[str]] = mapped_column(String)
-    asset_classes_json: Mapped[Optional[str]] = mapped_column(String)
+    topics_json: Mapped[Optional[str]] = mapped_column(JsonText)
+    topic_names_json: Mapped[Optional[str]] = mapped_column(JsonText)
+    fund_theme_tags_json: Mapped[Optional[str]] = mapped_column(JsonText)
+    fund_type_tags_json: Mapped[Optional[str]] = mapped_column(JsonText)
+    markets_json: Mapped[Optional[str]] = mapped_column(JsonText)
+    asset_classes_json: Mapped[Optional[str]] = mapped_column(JsonText)
     impact_direction: Mapped[str] = mapped_column(String(16), default="unknown", index=True)
     published_at: Mapped[Optional[str]] = mapped_column(String, index=True)
     effective_until: Mapped[Optional[str]] = mapped_column(String, index=True)
@@ -481,7 +482,7 @@ class KnowledgeClassificationLog(Base):
     should_index: Mapped[Optional[bool]] = mapped_column()
     relevance_score: Mapped[Optional[float]] = mapped_column(Float)
     reason: Mapped[Optional[str]] = mapped_column(String)
-    raw_response_json: Mapped[Optional[str]] = mapped_column(String)
+    raw_response_json: Mapped[Optional[str]] = mapped_column(JsonText)
     error_message: Mapped[Optional[str]] = mapped_column(String)
     latency_ms: Mapped[Optional[int]] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -519,10 +520,10 @@ class FundWatchlistProfile(Base):
     holding_weight: Mapped[Optional[float]] = mapped_column(Float)
     fund_type: Mapped[Optional[str]] = mapped_column(String)
     peer_category: Mapped[Optional[str]] = mapped_column(String)
-    theme_tags_json: Mapped[Optional[str]] = mapped_column(String)
-    risk_tags_json: Mapped[Optional[str]] = mapped_column(String)
-    match_basis_json: Mapped[Optional[str]] = mapped_column(String)
-    manual_overrides_json: Mapped[Optional[str]] = mapped_column(String)
+    theme_tags_json: Mapped[Optional[str]] = mapped_column(JsonText)
+    risk_tags_json: Mapped[Optional[str]] = mapped_column(JsonText)
+    match_basis_json: Mapped[Optional[str]] = mapped_column(JsonText)
+    manual_overrides_json: Mapped[Optional[str]] = mapped_column(JsonText)
     profile_status: Mapped[str] = mapped_column(String(16), default="ready", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
@@ -539,7 +540,7 @@ class KnowledgeFundMatch(Base):
     document_id: Mapped[int] = mapped_column(Integer, index=True)
     fund_code: Mapped[str] = mapped_column(String, index=True)
     match_score: Mapped[float] = mapped_column(Float, default=0.0)
-    matched_topics_json: Mapped[Optional[str]] = mapped_column(String)
+    matched_topics_json: Mapped[Optional[str]] = mapped_column(JsonText)
     match_reason: Mapped[Optional[str]] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 

@@ -9,7 +9,7 @@ from backend.db.session_scope import session_scope
 from backend.services.market import data_collector as dc
 
 
-def refresh_profile(fund_code: str) -> dict:
+def refresh_profile(fund_code: str, session=None) -> dict:
     """刷新并持久化基金画像缓存。
 
     网络拉取先于短事务写入,避免等待 AkShare 时持有数据库事务。
@@ -20,8 +20,7 @@ def refresh_profile(fund_code: str) -> dict:
     payload = dc.fetch_fund_profile(fund_code)
     errors = payload.get("errors", [])
     missing_data = payload.get("missing_data", [])
-    with session_scope() as s:
-        profile = repo.upsert_fund_profile(s, fund_code, {
+    payload_to_persist = {
             "scale": payload.get("scale"),
             "scale_date": payload.get("scale_date"),
             "peer_category": payload.get("peer_category"),
@@ -37,7 +36,12 @@ def refresh_profile(fund_code: str) -> dict:
             "source": payload.get("source") or dc.SOURCE,
             "as_of": payload.get("as_of") or dc.today_str(),
             "raw_errors": json.dumps(errors, ensure_ascii=False),
-        })
+    }
+    if session is None:
+        with session_scope() as s:
+            profile = repo.upsert_fund_profile(s, fund_code, payload_to_persist)
+    else:
+        profile = repo.upsert_fund_profile(session, fund_code, payload_to_persist)
     return {
         "fund_code": fund_code,
         "profile": profile,

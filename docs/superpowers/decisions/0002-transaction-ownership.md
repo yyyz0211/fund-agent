@@ -38,14 +38,13 @@
 - 顶层入口用 `with session_scope() as s:` 显式声明事务
 - Scheduler job 函数不直接管理 session(通过 service 间接管理)
 
-### 白名单例外(已知保留 commit 边界的 service)
-- `backend/services/watchlist/watchlist_service.py`:
-  - `set_initial_holding` — 多表原子(Watchlist + FundTransaction + recalc)
-  - `confirm_pending_buy` — 多表原子(FundTransaction + FundPendingBuy status + recalc)
-- `backend/services/watchlist/transaction_service.py`:
-  - `recalc_holding` — 短事务重算
-- `backend/services/knowledge/knowledge_reindex_jobs.py`:
-  - `mark_running` / `mark_completed` / `mark_failed` — 已是正确的短事务模式,作为示范
+### Service 事务边界
+
+- 不保留整文件或函数级 commit 白名单。
+- `set_initial_holding`、`confirm_pending_buy` 等多表操作仍保持原子性，但提交由最外层
+  `session_scope()` 或调用方事务负责。
+- `knowledge_reindex_jobs` 的状态更新使用 `session_scope()` 短事务，不在 service 内直接
+  commit/rollback/close。
 
 ## 不变量测试
 
@@ -53,14 +52,14 @@
 - `test_service_does_not_commit_or_close_session[每个 service]` —— 扫描 service 函数体
 - `test_repository_does_not_commit_session` —— 扫描 `db/repository.py`
 
-契约测试结果:**54 passed, 3 skipped**(白名单)
+契约测试扫描所有 service 文件，不再跳过 watchlist、transaction 或 reindex job 文件。
 
 ## 改动范围
 
 | 范围 | 改动 |
 |---|---|
 | `backend/db/repository.py` | 17 处 `session.commit()` → `session.flush()`;5 个 `commit=` keyword 删除;docstring 更新 |
-| `backend/services/watchlist/watchlist_service.py` | 17 函数改写为 session_scope 模式;2 个白名单函数保留 |
+| `backend/services/watchlist/watchlist_service.py` | 写函数使用 session_scope 模式;多表操作由最外层事务提交 |
 | `backend/services/fund/fund_service.py` | `refresh_fund` 拆 fetch + write 并行;9 个只读函数简化 |
 | `backend/services/fund/fund_profile_service.py` | `refresh_profile` 拆 fetch + write;`get_profile` 简化 |
 | `backend/services/fund/pnl_service.py` | `calculate_pnl` 简化(无 close / commit) |
@@ -87,8 +86,10 @@
 
 ## 已知 follow-up(不在本 ADR 范围)
 
-- `backend/tests/test_fund_service.py` 等测试代码仍以旧 `session=session` 调用 `refresh_fund` / `refresh_profile`(签名变更后)。基线 SQLite 限制下未触发,但 PostgreSQL 启用后会 `TypeError`。后续 task 修复。
-- 部分 service 业务测试因 fixture 仍依赖 sqlite 跑不起来(Phase 0 收尾)。
+- `refresh_fund` / `refresh_profile` 已恢复 `session=None` 注入契约；网络抓取在事务外，
+  注入 session 时只执行持久化。
+- 部分历史 service 测试仍直接创建 SQLite engine，需按 PostgreSQL worker schema fixture
+  迁移计划处理；本 ADR 不恢复 SQLite 兼容分支。
 
 ## 后续约束
 

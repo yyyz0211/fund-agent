@@ -282,17 +282,29 @@ def get_market_snapshot(
     td = trade_date or _today()
     if session is None:
         with session_scope() as s:
-            return get_market_snapshot(td, snapshot_type, session=s)
+            row = _get_market_snapshot_row(s, td, snapshot_type)
+            if row is not None:
+                return _market_snapshot_to_dict(row)
+        return collect_market_intel(td, snapshot_type)
 
-    row = session.scalar(
+    row = _get_market_snapshot_row(session, td, snapshot_type)
+    if row is None:
+        # 外部 session 可能已经由 SELECT 启动事务，网络刷新必须独立执行。
+        return collect_market_intel(td, snapshot_type)
+    return _market_snapshot_to_dict(row)
+
+
+def _get_market_snapshot_row(session, trade_date: str, snapshot_type: str):
+    return session.scalar(
         select(MarketSnapshot).where(
-            MarketSnapshot.trade_date == td,
+            MarketSnapshot.trade_date == trade_date,
             MarketSnapshot.snapshot_type == snapshot_type,
         )
     )
-    if row is None:
-        # 不存在则触发采集,沿用本 session
-        return collect_market_intel(td, snapshot_type, session=session)
+
+
+def _market_snapshot_to_dict(row: MarketSnapshot) -> dict:
+    """把缓存 ORM 行转换为 API payload，不执行额外 SQL。"""
     # 从 DB 读出 path 不存 stale_fields — 在读出时基于 list 字段是否非空实时重算。
     # 这样即使写 path 是 1 周前的、当时 industry 没拉到,DB 命中时 UI 仍能提示"网络问题"。
     industry = json.loads(row.industry_sectors_json or "[]")

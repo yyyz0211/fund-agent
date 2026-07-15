@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 from typing import Iterable
 
+from backend.config.settings import get_settings
 from backend.services.market_sources.policy_page import PolicyPageAdapter
 from backend.services.market_sources.fred import FredSeriesAdapter
 from backend.services.market_sources.cninfo import CninfoAnnouncementAdapter
@@ -91,7 +92,6 @@ def build_default_adapters(*, client, brief_type: str = "post_market",
         if sector_snapshot is not None:
             adapters.append(SectorHeatAdapter(sector_snapshot=sector_snapshot))
         try:
-            from backend.config.settings import get_settings
             settings = get_settings()
             if settings.cls_enabled:
                 adapters.append(ClsTelegraphAdapter(

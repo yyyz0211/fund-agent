@@ -11,6 +11,7 @@ from datetime import date
 
 from backend.db import repository as repo
 from backend.db.session_scope import session_scope
+from backend.exceptions import InputValidationError
 from backend.services.market import data_collector as dc
 from backend.services.shared import metric_service as metrics
 from backend.services.fund import pnl_service as psvc
@@ -21,7 +22,7 @@ _REFRESH_FETCH_WORKERS = 2
 _AUTO_REFRESH_POLICIES = {"if_missing_or_stale", "always", "never"}
 
 
-def refresh_fund(fund_code: str) -> dict:
+def refresh_fund(fund_code: str, session=None) -> dict:
     """拉取一只基金的最新基础信息和净值走势并入库。
 
     网络拉取与数据库写入分为两个阶段,避免等待 AkShare 时持有事务。
@@ -45,14 +46,13 @@ def refresh_fund(fund_code: str) -> dict:
     if isinstance(navs, dict) and "error" in navs:
         return navs
 
-    fund_info_warn = None
-    with session_scope() as s:
-        inserted = repo.upsert_navs(s, fund_code, navs)
-        if isinstance(info, dict) and "error" in info:
-            fund_info_warn = info["error"]
-        else:
-            repo.upsert_fund(s, {k: info.get(k) for k in
-                                 ("fund_code", "fund_name", "fund_type", "manager", "company")})
+    if session is None:
+        with session_scope() as s:
+            inserted, fund_info_warn = _persist_refresh_data(s, fund_code, navs, info)
+    else:
+        inserted, fund_info_warn = _persist_refresh_data(
+            session, fund_code, navs, info,
+        )
 
     return {
         "fund_code": fund_code,
@@ -62,6 +62,23 @@ def refresh_fund(fund_code: str) -> dict:
         "source": dc.SOURCE,
         "as_of": dc.today_str(),
     }
+
+
+def _persist_refresh_data(
+    session,
+    fund_code: str,
+    navs: list[dict],
+    info: dict,
+) -> tuple[int, str | None]:
+    """写入已抓取的基金数据；调用方拥有事务。"""
+    inserted = repo.upsert_navs(session, fund_code, navs)
+    if isinstance(info, dict) and "error" in info:
+        return inserted, info["error"]
+    repo.upsert_fund(session, {
+        key: info.get(key)
+        for key in ("fund_code", "fund_name", "fund_type", "manager", "company")
+    })
+    return inserted, None
 
 
 def _collector_error(label: str, fund_code: str, exc: Exception) -> dict:
@@ -142,7 +159,7 @@ def get_metrics(fund_code: str, period: str = "1m", session=None) -> dict:
                 "source": dc.SOURCE}
     try:
         period_ret = metrics.period_return(navs, period)
-    except ValueError as e:
+    except (ValueError, InputValidationError) as e:
         return {"error": str(e), "source": dc.SOURCE}
     return {
         "fund_code": fund_code,
@@ -310,7 +327,7 @@ def lookup_fund_auto(
     if reason:
         refresh_meta["attempted"] = True
         try:
-            result = refresh_fund(fund_code)
+            result = refresh_fund(fund_code, session=session)
         except Exception as exc:  # noqa: BLE001
             result = {"error": str(exc), "source": dc.SOURCE}
         refresh_meta["result"] = result

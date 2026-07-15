@@ -229,54 +229,78 @@ def ingest_candidates(
         "retry_exhausted": 0,
     }
 
-    for raw_candidate in candidates:
-        candidate = {
-            **raw_candidate,
-            "source_id": str(raw_candidate.get("source_id")),
-            "source_type": str(raw_candidate.get("source_type")),
-        }
-        if not candidate.get("title"):
-            continue
-        result_counts["processed"] += 1
-        canonical_hash = canonical_content_hash(candidate)
-        state = _classification_state(session, candidate)
-        attempted_at = datetime.utcnow()
-        should_classify, decision = should_classify_candidate(
-            state,
+    prepared: list[dict] = []
+    with session_scope() as state_session:
+        for raw_candidate in candidates:
+            candidate = {
+                **raw_candidate,
+                "source_id": str(raw_candidate.get("source_id")),
+                "source_type": str(raw_candidate.get("source_type")),
+            }
+            if not candidate.get("title"):
+                continue
+            result_counts["processed"] += 1
+            canonical_hash = canonical_content_hash(candidate)
+            state = _classification_state(state_session, candidate)
+            attempted_at = datetime.utcnow()
+            should_classify, decision = should_classify_candidate(
+                state,
+                canonical_hash,
+                prompt_version,
+                attempted_at,
+                settings.knowledge_classification_max_attempts,
+            )
+            if not should_classify:
+                if decision == "unchanged":
+                    result_counts["skipped_unchanged"] += 1
+                elif decision == "retry_deferred":
+                    result_counts["retry_deferred"] += 1
+                else:
+                    result_counts["retry_exhausted"] += 1
+                continue
+            prepared.append({
+                "candidate": candidate,
+                "canonical_hash": canonical_hash,
+                "attempted_at": attempted_at,
+            })
+
+    # 所有 LLM 调用都发生在 state read 事务结束、write 事务开始之前。
+    for item in prepared:
+        item["outcome"] = _classify(classifier, item["candidate"])
+
+    for item in prepared:
+        candidate = item["candidate"]
+        canonical_hash = item["canonical_hash"]
+        attempted_at = item["attempted_at"]
+        outcome = item["outcome"]
+        latest_state = _classification_state(session, candidate)
+        still_current, _ = should_classify_candidate(
+            latest_state,
             canonical_hash,
             prompt_version,
             attempted_at,
             settings.knowledge_classification_max_attempts,
         )
-        if not should_classify:
-            if decision == "unchanged":
-                result_counts["skipped_unchanged"] += 1
-            elif decision == "retry_deferred":
-                result_counts["retry_deferred"] += 1
-            else:
-                result_counts["retry_exhausted"] += 1
+        if not still_current:
+            result_counts["skipped_unchanged"] += 1
             continue
-        attempt_no = _next_attempt_no(state, canonical_hash, prompt_version)
-        outcome = _classify(classifier, candidate)
 
+        write_kwargs = {
+            "attempt_no": _next_attempt_no(
+                latest_state, canonical_hash, prompt_version,
+            ),
+            "prompt_version": prompt_version,
+            "canonical_hash": canonical_hash,
+            "attempted_at": attempted_at,
+            "retry_seconds": settings.knowledge_classification_retry_seconds,
+        }
         if outcome.status == "failed" or outcome.result is None:
             result_counts["failed"] += 1
-            _write_classification(
-                session, candidate, outcome, attempt_no=attempt_no,
-                prompt_version=prompt_version, canonical_hash=canonical_hash,
-                attempted_at=attempted_at,
-                retry_seconds=settings.knowledge_classification_retry_seconds,
-            )
+            _write_classification(session, candidate, outcome, **write_kwargs)
             continue
-
         if not outcome.result.should_index:
             result_counts["rejected"] += 1
-            _write_classification(
-                session, candidate, outcome, attempt_no=attempt_no,
-                prompt_version=prompt_version, canonical_hash=canonical_hash,
-                attempted_at=attempted_at,
-                retry_seconds=settings.knowledge_classification_retry_seconds,
-            )
+            _write_classification(session, candidate, outcome, **write_kwargs)
             continue
 
         result_counts["accepted"] += 1
@@ -295,11 +319,7 @@ def ingest_candidates(
         })
         result_counts["documents_created" if created else "documents_reused"] += 1
         _write_classification(
-            session, candidate, outcome, attempt_no=attempt_no,
-            prompt_version=prompt_version, canonical_hash=canonical_hash,
-            document_id=document["id"],
-            attempted_at=attempted_at,
-            retry_seconds=settings.knowledge_classification_retry_seconds,
+            session, candidate, outcome, document_id=document["id"], **write_kwargs,
         )
 
     session.flush()

@@ -101,7 +101,7 @@ class PgVectorStore:
             where.append("kd.source_type = :source_type")
             params["source_type"] = filters["source_type"]
         if filters.get("topic"):
-            where.append("kd.topic_names_json LIKE :topic")
+            where.append("kd.topic_names_json::text LIKE :topic")
             params["topic"] = f'%"{filters["topic"]}"%'
         if filters.get("date_from"):
             where.append("kd.published_at >= :date_from")

@@ -1142,7 +1142,7 @@ def fetch_announcements(limit: int = 50) -> list[dict]:
         from backend.db.models import Watchlist
         from sqlalchemy import select
         with session_scope() as s:
-            codes = [r.fund_code for r in s.scalars(select(Watchlist.fund_code)).all()]
+            codes = list(s.scalars(select(Watchlist.fund_code)).all())
         rows = []
         for code in codes[:20]:
             try:
