@@ -51,3 +51,16 @@ npm run dev
 
 Information assistant only — no buy/sell advice, no return predictions, no trading.
 Numbers come from deterministic Python tools; the LLM only orchestrates and explains.
+
+## 后端测试
+
+测试数据库仅支持 PostgreSQL。启动可丢弃的 pgvector 测试服务后运行：
+
+```bash
+docker compose --profile test up -d postgres-test
+TEST_DATABASE_URL=postgresql+psycopg2://fund_test:fund_test@localhost:55432/fund_agent_test \
+  .venv/bin/python -m pytest -q backend/tests
+```
+
+数据库名必须以 `_test` 结尾。普通事务测试按 pytest worker 使用独立 schema；
+多连接和 DDL 测试也不会访问开发或生产 schema。

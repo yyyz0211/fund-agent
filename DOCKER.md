@@ -2,6 +2,9 @@
 
 把 Fund Agent 部署到一台闲置电脑上,**通过 Tailscale 让朋友访问**。整套设计:
 
+> 测试环境使用独立的 `postgres-test` Compose profile，默认映射宿主机
+> `55432` 端口；它与下文部署用的 PostgreSQL 服务和数据卷相互独立。
+
 - **零公网端口**:闲置电脑不开 80/443,所有访问走 Tailscale VPN(加密内网)
 - **零域名 / 零证书**:不需要 Cloudflare、Let's Encrypt、TLS 配置
 - **Docker 一键拉起**:4 个容器,Postgres / 后端 / LangGraph / 前端
