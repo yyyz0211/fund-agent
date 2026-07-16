@@ -15,52 +15,55 @@ def reset_settings_cache():
 
 @pytest.fixture(autouse=True)
 def reset_scheduler_module():
-    """每个测试前后重置 `backend.scheduler._scheduler` 状态。"""
-    from backend.scheduler import scheduler as sched_module
-    sched_module._scheduler = None
+    """每个测试前后重置 runtime Scheduler 状态。"""
+    import backend.scheduler as scheduler
+    from backend.scheduler import runtime
+
+    runtime._scheduler = None
     yield
-    if sched_module._scheduler is not None:
+    if scheduler.get_scheduler() is not None:
         try:
-            sched_module._scheduler.shutdown(wait=False)
+            scheduler.shutdown_scheduler()
         except Exception:
             pass
-        sched_module._scheduler = None
+        runtime._scheduler = None
 
 
 class TestSchedulerBriefing:
     def test_scheduler_registers_both_jobs(self):
-        from backend.scheduler import scheduler as sched_module
+        import backend.scheduler as scheduler
 
-        sched_module.start_scheduler(enabled=True)
-        scheduler = sched_module._scheduler
-        assert scheduler is not None
-        assert scheduler.get_job("daily_refresh") is not None
-        assert scheduler.get_job("daily_briefing") is not None
+        scheduler.start_scheduler(enabled=True)
+        active = scheduler.get_scheduler()
+        assert active is not None
+        assert active.get_job("daily_refresh") is not None
+        assert active.get_job("daily_briefing") is not None
 
     def test_briefing_job_disabled_when_setting_false(self, monkeypatch):
-        from backend.scheduler import scheduler as sched_module
+        import backend.scheduler as scheduler
 
         monkeypatch.setenv("SCHEDULER_BRIEFING_ENABLED", "false")
         from backend.config.settings import get_settings
         get_settings.cache_clear()
 
-        sched_module.start_scheduler(enabled=True)
-        scheduler = sched_module._scheduler
-        assert scheduler is not None
-        assert scheduler.get_job("daily_refresh") is not None
-        assert scheduler.get_job("daily_briefing") is None
+        scheduler.start_scheduler(enabled=True)
+        active = scheduler.get_scheduler()
+        assert active is not None
+        assert active.get_job("daily_refresh") is not None
+        assert active.get_job("daily_briefing") is None
 
     def test_briefing_job_uses_configured_hour_minute(self, monkeypatch):
-        from backend.scheduler import scheduler as sched_module
+        import backend.scheduler as scheduler
 
         monkeypatch.setenv("SCHEDULER_BRIEFING_CRON_HOUR", "18")
         monkeypatch.setenv("SCHEDULER_BRIEFING_CRON_MINUTE", "30")
         from backend.config.settings import get_settings
         get_settings.cache_clear()
 
-        sched_module.start_scheduler(enabled=True)
-        scheduler = sched_module._scheduler
-        job = scheduler.get_job("daily_briefing")
+        scheduler.start_scheduler(enabled=True)
+        active = scheduler.get_scheduler()
+        assert active is not None
+        job = active.get_job("daily_briefing")
         assert job is not None
         # APScheduler CronTrigger 在 hour/minute 字段直接暴露
         trigger = job.trigger
@@ -69,20 +72,21 @@ class TestSchedulerBriefing:
         assert "30" in str(fields["minute"])
 
     def test_registered_briefing_job_runs_workflow_with_scheduled_model(self):
-        from backend.scheduler import scheduler as sched_module
+        import backend.scheduler as scheduler
+        from backend.scheduler import task_functions
 
         model = object()
         with (
             patch("backend.graph.model.build_model", return_value=model) as build_model,
             patch.object(
-                sched_module.briefing_workflow,
+                task_functions.briefing_workflow,
                 "run_daily_briefing",
             ) as run_daily_briefing,
         ):
-            sched_module.start_scheduler(enabled=True)
-            scheduler = sched_module._scheduler
-            assert scheduler is not None
-            job = scheduler.get_job("daily_briefing")
+            scheduler.start_scheduler(enabled=True)
+            active = scheduler.get_scheduler()
+            assert active is not None
+            job = active.get_job("daily_briefing")
             assert job is not None
 
             job.func()

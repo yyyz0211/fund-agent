@@ -35,10 +35,14 @@ def test_health(monkeypatch):
 
 def test_health_reads_live_scheduler_state(monkeypatch):
     """health 必须读取 scheduler 实现模块的当前状态，而非导入时快照。"""
-    from backend.scheduler import scheduler as scheduler_impl
+    from backend.scheduler import runtime as scheduler_runtime
     from backend.services.knowledge import knowledge_pgvector
 
-    monkeypatch.setattr(scheduler_impl, "_scheduler", SimpleNamespace(running=True))
+    monkeypatch.setattr(
+        scheduler_runtime,
+        "_scheduler",
+        SimpleNamespace(running=True),
+    )
     monkeypatch.setattr(
         knowledge_pgvector,
         "database_health_snapshot",
