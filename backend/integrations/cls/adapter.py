@@ -1,11 +1,13 @@
-"""ClsTelegraphAdapter: 财联社电报 -> market_evidence news rows."""
+"""CLS telegraph rows to market-evidence rows."""
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import httpx
 
-from backend.services.knowledge import cls_telegraph_client as cls_client
+
+FetchClsRollList = Callable[..., list[dict[str, Any]]]
 
 
 def _parse_categories(value: str | list[str] | tuple[str, ...] | None) -> list[str]:
@@ -24,14 +26,16 @@ class ClsTelegraphAdapter:
     def __init__(
         self,
         *,
+        fetch_roll_list: FetchClsRollList,
+        app_version: str,
         client: Any | None = None,
         categories: str | list[str] | tuple[str, ...] | None = None,
         per_category_limit: int = 10,
         timeout_seconds: float = 15.0,
-        app_version: str = cls_client.DEFAULT_APP_VERSION,
         max_attempts: int = 1,
         retry_base_seconds: float = 1.0,
     ):
+        self._fetch_roll_list = fetch_roll_list
         self.client = client
         self.categories = _parse_categories(categories)
         self.per_category_limit = max(1, int(per_category_limit))
@@ -41,7 +45,13 @@ class ClsTelegraphAdapter:
         self.retry_base_seconds = float(retry_base_seconds)
         self.last_errors: list[dict] = []
 
-    def _to_evidence(self, row: dict, *, trade_date: str, brief_type: str) -> dict | None:
+    def _to_evidence(
+        self,
+        row: dict,
+        *,
+        trade_date: str,
+        brief_type: str,
+    ) -> dict | None:
         if not (row.get("source_url") and row.get("title")):
             return None
         return {
@@ -58,22 +68,27 @@ class ClsTelegraphAdapter:
             "reliability": self.reliability,
         }
 
-    def fetch(self, *, client=None, trade_date: str, brief_type: str = "post_market") -> list[dict]:
-        """Fetch configured CLS categories and return market evidence rows.
-
-        This method never raises. It isolates category failures and skips
-        malformed rows.
-        """
+    def fetch(
+        self,
+        *,
+        client=None,
+        trade_date: str,
+        brief_type: str = "post_market",
+    ) -> list[dict]:
+        """Fetch configured CLS categories without leaking source failures."""
         active_client = client or self.client
         owns_client = active_client is None
         if active_client is None:
-            active_client = httpx.Client(follow_redirects=True, timeout=self.timeout_seconds)
+            active_client = httpx.Client(
+                follow_redirects=True,
+                timeout=self.timeout_seconds,
+            )
         out: list[dict] = []
         self.last_errors = []
         try:
             for category in self.categories:
                 try:
-                    rows = cls_client.fetch_roll_list(
+                    rows = self._fetch_roll_list(
                         client=active_client,
                         category=category,
                         limit=self.per_category_limit,
@@ -90,7 +105,11 @@ class ClsTelegraphAdapter:
                     })
                     continue
                 for row in rows:
-                    evidence = self._to_evidence(row, trade_date=trade_date, brief_type=brief_type)
+                    evidence = self._to_evidence(
+                        row,
+                        trade_date=trade_date,
+                        brief_type=brief_type,
+                    )
                     if evidence is not None:
                         out.append(evidence)
             return out

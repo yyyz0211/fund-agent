@@ -16,8 +16,8 @@ from typing import Any
 from backend.config.settings import get_settings
 from backend.db.repositories.market import search_market_evidence
 from backend.db.session_scope import session_scope
+from backend.integrations.market_evidence import build_default_adapters
 from backend.services.market import market_evidence_ingestion as ing
-from backend.services.market_sources import build_default_adapters
 
 logger = logging.getLogger(__name__)
 
@@ -122,8 +122,15 @@ def collect_and_run_for_brief_type(
     except Exception as exc:  # noqa: BLE001  # httpx 缺失时降级到无 client 模式
         logger.warning("httpx unavailable, falling back to no-client adapters: %s", exc)
         client = None
+    from backend.services.knowledge import cls_telegraph_client
+    from backend.services.market import data_collector
+
     adapters = build_default_adapters(
-        client=client, brief_type=brief_type, sector_snapshot=sector_snapshot
+        client=client,
+        fetch_cls_roll_list=cls_telegraph_client.fetch_roll_list,
+        fetch_announcements=data_collector.fetch_announcements,
+        brief_type=brief_type,
+        sector_snapshot=sector_snapshot,
     )
     try:
         return ing.ingest_market_evidence(

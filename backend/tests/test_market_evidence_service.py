@@ -158,3 +158,34 @@ def test_refresh_market_evidence_status_records_adapter_errors():
     assert status["status"] == "failed"
     assert status["result"]["errors"][0]["adapter"] == "财联社"
     assert "connect failed" in status["result"]["errors"][0]["error"]
+
+
+def test_collect_injects_service_owned_fetchers_and_closes_client():
+    from unittest.mock import MagicMock, patch
+
+    import httpx
+
+    from backend.services.knowledge import cls_telegraph_client
+    from backend.services.market import data_collector
+    from backend.services.market import market_evidence_service as mes
+
+    client = MagicMock()
+    factory = MagicMock(return_value=[])
+    ingest = MagicMock(return_value={"inserted": 0, "fetched": 0, "errors": []})
+
+    with patch.object(httpx, "Client", return_value=client), \
+         patch.object(mes, "build_default_adapters", factory), \
+         patch.object(mes.ing, "ingest_market_evidence", ingest):
+        result = mes.collect_and_run_for_brief_type(
+            "post_market",
+            trade_date="2026-07-16",
+        )
+
+    assert result == {"inserted": 0, "fetched": 0, "errors": []}
+    assert factory.call_args.kwargs["fetch_cls_roll_list"] is (
+        cls_telegraph_client.fetch_roll_list
+    )
+    assert factory.call_args.kwargs["fetch_announcements"] is (
+        data_collector.fetch_announcements
+    )
+    client.close.assert_called_once_with()

@@ -828,7 +828,6 @@ class TestRunDailyBriefing:
         """
         from backend.db.models import Briefing, MarketEvidence
         from backend.services.briefing import briefing_service
-        from backend.services.market_sources import build_default_adapters
         from unittest.mock import MagicMock
 
         # 把所有 HTTP adapters 替换成返回空，让 ingest 快跑
@@ -840,7 +839,7 @@ class TestRunDailyBriefing:
         briefing_service.reset_for_tests()
 
         with patch(
-            "backend.services.market_sources.build_default_adapters",
+            "backend.services.market.market_evidence_service.build_default_adapters",
             noop_adapter_factory,
         ), patch.object(
             briefing_service, "collect_watchlist_snapshot", lambda **_: {
