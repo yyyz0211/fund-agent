@@ -209,8 +209,6 @@ def test_search_cls_telegraph_tool_respects_disable(monkeypatch):
 
 
 def test_get_market_briefing_passes_brief_type(monkeypatch):
-    from backend.services.briefing import briefing_service
-
     captured = {}
 
     def fake_read_briefing(brief_date=None, brief_type="post_market"):
@@ -218,7 +216,7 @@ def test_get_market_briefing_passes_brief_type(monkeypatch):
         captured["brief_type"] = brief_type
         return {"briefing_date": brief_date, "brief_type": brief_type}
 
-    monkeypatch.setattr(briefing_service, "read_briefing", fake_read_briefing)
+    monkeypatch.setattr(mt.briefing_persistence, "read_briefing", fake_read_briefing)
 
     out = mt.get_market_briefing.invoke({
         "brief_date": "2026-07-09",

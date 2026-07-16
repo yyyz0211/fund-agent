@@ -67,3 +67,28 @@ class TestSchedulerBriefing:
         fields = {f.name: f for f in trigger.fields}
         assert "18" in str(fields["hour"])
         assert "30" in str(fields["minute"])
+
+    def test_registered_briefing_job_runs_workflow_with_scheduled_model(self):
+        from backend.scheduler import scheduler as sched_module
+
+        model = object()
+        with (
+            patch("backend.graph.model.build_model", return_value=model) as build_model,
+            patch.object(
+                sched_module.briefing_workflow,
+                "run_daily_briefing",
+            ) as run_daily_briefing,
+        ):
+            sched_module.start_scheduler(enabled=True)
+            scheduler = sched_module._scheduler
+            assert scheduler is not None
+            job = scheduler.get_job("daily_briefing")
+            assert job is not None
+
+            job.func()
+
+        build_model.assert_called_once_with()
+        run_daily_briefing.assert_called_once_with(
+            trigger="scheduled",
+            model=model,
+        )

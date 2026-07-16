@@ -19,7 +19,7 @@ from backend.services.knowledge import cls_telegraph_client
 from backend.services.market import market_service as msvc
 from backend.services.market import market_intel_service
 from backend.services.market import market_evidence_service
-from backend.services.briefing import briefing_service
+from backend.services.briefing import persistence as briefing_persistence
 
 
 _CLS_TELEGRAPH_PUBLIC_KEYS = (
@@ -288,7 +288,7 @@ def get_market_briefing(brief_date: str = "", brief_type: str = "post_market") -
         或 partial 时简短告知"部分数据缺失",不要把"缺失"陈述为事实。
     """
     try:
-        snap = briefing_service.read_briefing(
+        snap = briefing_persistence.read_briefing(
             brief_date or None,
             brief_type=brief_type or "post_market",
         )

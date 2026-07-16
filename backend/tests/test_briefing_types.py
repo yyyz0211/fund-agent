@@ -28,23 +28,37 @@ def test_briefing_domain_types_remain_public_and_constructible():
     assert result.modules == [envelope]
 
 
-def test_briefing_profile_types_are_still_reexported():
-    """`BriefTypeProfile` / `ModuleSection` 在 module_briefing 定义,作为
-    briefing 领域的稳定 dataclass;`get_brief_type_profile` 是工厂函数。
-    `types` 模块通过 TYPE_CHECKING 暴露类型名,不在运行时 re-export,避免
-    与 module_briefing 形成循环 import。
-    """
-    from backend.services.briefing.module_briefing import (
-        BriefTypeProfile,
-        ModuleSection,
-        get_brief_type_profile,
-    )
+def test_briefing_profile_types_are_owned_by_types_module():
+    from backend.services.briefing import types
 
-    assert hasattr(BriefTypeProfile, "__dataclass_fields__")
-    assert hasattr(ModuleSection, "__dataclass_fields__")
-    profile, warnings = get_brief_type_profile("post_market")
+    assert types.BriefTypeProfile.__module__ == types.__name__
+    assert types.ModuleSection.__module__ == types.__name__
+    assert hasattr(types.BriefTypeProfile, "__dataclass_fields__")
+    assert hasattr(types.ModuleSection, "__dataclass_fields__")
+
+    profile = types.BriefTypeProfile.post_market()
+    section = types.ModuleSection(key="market_state", title="市场状态")
+
     assert profile.brief_type == "post_market"
-    assert warnings == []
+    assert section.to_dict()["status"] == "ready"
+
+
+def test_types_module_does_not_import_other_briefing_modules():
+    import ast
+    import inspect
+
+    from backend.services.briefing import types
+
+    tree = ast.parse(inspect.getsource(types))
+    imported = {
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module
+    }
+    assert not any(
+        name.startswith("backend.services.briefing.")
+        for name in imported
+    )
 
 
 def test_types_module_exposes_dataclass_signatures():

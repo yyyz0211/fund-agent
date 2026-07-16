@@ -11,6 +11,8 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
+from backend.api.routes import briefing as briefing_route
+
 pytestmark = pytest.mark.db_multiconnection
 
 
@@ -125,8 +127,7 @@ class TestRouteRun:
         def mock_run(**_kwargs):
             return {"status": "started", "trigger": "manual"}
 
-        from backend.services.briefing import briefing_service
-        with patch.object(briefing_service, "start_run_async", mock_run):
+        with patch.object(briefing_route.briefing_jobs, "start_run_async", mock_run):
             resp = client.post("/api/briefing/run", headers={"X-Local-Trigger": "1"})
         assert resp.status_code == 202
         body = resp.json()
@@ -140,8 +141,7 @@ class TestRouteRun:
             captured.update(kwargs)
             return {"status": "started", "trigger": "manual", "brief_type": kwargs["brief_type"]}
 
-        from backend.services.briefing import briefing_service
-        with patch.object(briefing_service, "start_run_async", mock_run):
+        with patch.object(briefing_route.briefing_jobs, "start_run_async", mock_run):
             resp = client.post(
                 "/api/briefing/run",
                 headers={"X-Local-Trigger": "1"},

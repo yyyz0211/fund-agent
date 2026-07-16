@@ -1,28 +1,85 @@
-"""Briefing 领域的稳定输入、输出类型和依赖注入端口。
-
-注意 `module_briefing` 仅在 `TYPE_CHECKING` 模式下导入 — 否则会与
-`module_briefing` 的顶层 import 形成循环:
-  types → module_briefing (获取 dataclass 类型)
-  module_briefing → types (获取 ChatModel Protocol)
-
-这是 Python dataclass + Protocol 跨文件的常见坑。运行时 dataclass 字段
-不需要从 `module_briefing` 导入也能工作(只要 dataclass 自己已经定义),
-所以这里只在类型检查时引入它。运行时 type hint 使用 `from __future__
-import annotations` 已经全部转为字符串解析。
-"""
+"""Briefing 领域的稳定输入、输出类型和依赖注入端口。"""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Optional, Protocol, TypeVar
-
-if TYPE_CHECKING:
-    from backend.services.briefing.module_briefing import (
-        BriefTypeProfile,
-        ModuleSection,
-    )
+from dataclasses import asdict, dataclass, field
+from typing import Any, Literal, Optional, Protocol, TypeVar
 
 InputT = TypeVar("InputT")
 OutputT = TypeVar("OutputT")
+
+
+@dataclass
+class BriefTypeProfile:
+    brief_type: str
+    title: str
+    required_modules: list[str]
+    optional_modules: list[str]
+    forbidden_modules: list[str]
+    data_window: str
+    max_markdown_words: int
+
+    @classmethod
+    def post_market(cls) -> "BriefTypeProfile":
+        return cls(
+            brief_type="post_market",
+            title="盘后简报",
+            required_modules=[
+                "quick_summary", "market_state", "themes_and_flows",
+                "watchlist_impact", "risk_radar", "key_evidence",
+                "data_statement",
+            ],
+            optional_modules=[],
+            forbidden_modules=["overnight", "intraday_anomaly"],
+            data_window="trade_date_full_day",
+            max_markdown_words=1000,
+        )
+
+    @classmethod
+    def pre_market(cls) -> "BriefTypeProfile":
+        return cls(
+            brief_type="pre_market",
+            title="盘前简报",
+            required_modules=[
+                "quick_summary", "overnight", "key_evidence",
+                "watchlist_impact", "risk_radar", "data_statement",
+            ],
+            optional_modules=["events"],
+            forbidden_modules=["themes_and_flows", "intraday_anomaly"],
+            data_window="pre_market",
+            max_markdown_words=800,
+        )
+
+    @classmethod
+    def intraday(cls) -> "BriefTypeProfile":
+        return cls(
+            brief_type="intraday",
+            title="盘中简报",
+            required_modules=[
+                "quick_summary", "market_state", "themes_and_flows",
+                "intraday_anomaly", "watchlist_impact", "risk_radar",
+                "data_statement",
+            ],
+            optional_modules=["key_evidence"],
+            forbidden_modules=["overnight"],
+            data_window="intraday",
+            max_markdown_words=600,
+        )
+
+
+@dataclass
+class ModuleSection:
+    key: str
+    title: str
+    status: Literal["ready", "partial", "missing", "failed"] = "ready"
+    summary: str = ""
+    content: dict = field(default_factory=dict)
+    evidence_ids: list[int] = field(default_factory=list)
+    missing_data: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    confidence: Literal["high", "medium", "low"] = "medium"
+
+    def to_dict(self) -> dict:
+        return asdict(self)
 
 
 class ChatModel(Protocol[InputT, OutputT]):

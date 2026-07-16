@@ -20,7 +20,7 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 from backend.config.settings import get_settings
-from backend.services.briefing import briefing_service
+from backend.services.briefing import workflow as briefing_workflow
 from backend.services.market import scheduled_refresh
 from backend.services.shared.process_singleflight import (
     SingleflightBusy,
@@ -206,7 +206,7 @@ def start_scheduler(*, enabled: bool | None = None,
                     exc,
                 )
                 return
-            briefing_service.run_daily_briefing(trigger="scheduled", model=model)
+            briefing_workflow.run_daily_briefing(trigger="scheduled", model=model)
 
         scheduler.add_job(
             _run_scheduled_briefing,

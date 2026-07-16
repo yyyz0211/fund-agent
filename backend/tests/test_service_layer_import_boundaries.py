@@ -10,7 +10,7 @@
   1) 通过 `compose_*` 函数的显式参数注入(已经为 model 留好了接口);
   2) 把共用的纯函数/类型挪到 `backend.services.briefing.types` 这类稳定端口。
 
-历史背景: 之前 `briefing_service.compose_briefing()` 在内部
+历史背景: 之前 Briefing 合成逻辑在内部
 `from backend.graph import model as _model_module` 形成反向依赖;
 测试这条规则确保 Phase 1 完成度不退化。
 """
@@ -22,8 +22,7 @@ from pathlib import Path
 
 
 # 反向导入白名单（service 因为合理原因确实需要 graph 内部符号时,在此登记）。
-# 当前为空 — Phase 1.1 完成时,briefing_service / module_briefing 都已不再
-# 直接 import backend.graph。
+# 当前为空 — Phase 1.1 完成时,Briefing 领域模块已不再直接 import backend.graph。
 _ALLOWED_OFFENDERS: dict[str, str] = {
     # 例: "backend/services/foo/foo_service.py:13: from backend.graph.x import Y — see ADR-xxx"
 }
@@ -90,9 +89,9 @@ def test_run_daily_briefing_accepts_model_kwarg():
     """`run_daily_briefing` 必须接受 `model` 参数以便上层注入。"""
     import inspect
 
-    from backend.services.briefing import briefing_service
+    from backend.services.briefing import workflow
 
-    sig = inspect.signature(briefing_service.run_daily_briefing)
+    sig = inspect.signature(workflow.run_daily_briefing)
     assert "model" in sig.parameters, (
         "run_daily_briefing() must accept a `model` parameter so the "
         "composition root can inject the chat model explicitly."
@@ -103,9 +102,9 @@ def test_compose_briefing_accepts_model_kwarg():
     """`compose_briefing` 必须接受 `model` 参数。"""
     import inspect
 
-    from backend.services.briefing import briefing_service
+    from backend.services.briefing import composer
 
-    sig = inspect.signature(briefing_service.compose_briefing)
+    sig = inspect.signature(composer.compose_briefing)
     assert "model" in sig.parameters
 
 
@@ -113,9 +112,9 @@ def test_compose_briefing_v2_accepts_model_kwarg():
     """`compose_briefing_v2` 必须接受 `model` 参数。"""
     import inspect
 
-    from backend.services.briefing import module_briefing
+    from backend.services.briefing import composer
 
-    sig = inspect.signature(module_briefing.compose_briefing_v2)
+    sig = inspect.signature(composer.compose_briefing_v2)
     assert "model" in sig.parameters
 
 

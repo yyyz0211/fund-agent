@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 from backend.api.deps import get_db_session
 from backend.db.models import Briefing, BriefingFeedback
 from backend.db.session_scope import session_scope
-from backend.services.briefing import briefing_service
+from backend.services.briefing import jobs as briefing_jobs
 
 
 router = APIRouter(prefix="/api/briefing", tags=["briefing"])
@@ -145,7 +145,11 @@ def run_now(
         model = build_model()
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=f"briefing_model_unavailable: {exc}")
-    return briefing_service.start_run_async(trigger="manual", brief_type=brief_type, model=model)
+    return briefing_jobs.start_run_async(
+        trigger="manual",
+        brief_type=brief_type,
+        model=model,
+    )
 
 
 # ---------------------------------------------------------------------------

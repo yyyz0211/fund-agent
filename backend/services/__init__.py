@@ -24,8 +24,6 @@ from backend.services import shared
 
 
 _LEGACY_MODULE_ALIASES = {
-    "briefing_service": "briefing.briefing_service",
-    "module_briefing": "briefing.module_briefing",
     "fund_code_parser": "fund.fund_code_parser",
     "fund_profile_service": "fund.fund_profile_service",
     "fund_service": "fund.fund_service",
