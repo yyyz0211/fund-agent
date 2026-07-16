@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 from backend.api.app import app
 from backend.api.routes import watchlist as watchlist_routes
 from backend.db.models import Fund, FundNav, MarketData, Watchlist
-from backend.db import repository as repo
+from backend.db.repositories import watchlist as watchlist_repo
 from backend.services.watchlist import watchlist_service as ws
 
 client = TestClient(app)
@@ -30,18 +30,18 @@ def test_watchlist_empty(session):
 
 
 def test_watchlist_with_rows(session):
-    repo.add_to_watchlist_full(session, "110011", {
+    watchlist_repo.add_to_watchlist_full(session, "110011", {
         "note": "hold",
         "is_holding": True,
         "holding_share": 1000.0,
         "cost_nav": 1.0,
     })
-    repo.update_watchlist_preload(
+    watchlist_repo.update_watchlist_preload(
         session,
         "110011",
         status="done",
     )
-    repo.add_to_watchlist(session, "000001", note="watch")
+    watchlist_repo.add_to_watchlist(session, "000001", note="watch")
     session.add_all([
         Fund(fund_code="110011", fund_name="易方达优质精选",
              fund_type="QDII", manager="张坤", company="易方达基金"),
@@ -123,7 +123,7 @@ def test_post_is_idempotent_and_does_not_overwrite(session, monkeypatch):
         "preload_jobs",
         SimpleNamespace(start_preload_job=lambda fund_code: calls.append(fund_code)),
     )
-    repo.add_to_watchlist(session, "110011", note="original")
+    watchlist_repo.add_to_watchlist(session, "110011", note="original")
     r = client.post("/api/watchlist", json={"fund_code": "110011", "note": "new"})
     assert r.status_code == 200
     assert r.json()["note"] == "original"  # 幂等,不覆盖
@@ -132,8 +132,8 @@ def test_post_is_idempotent_and_does_not_overwrite(session, monkeypatch):
 
 
 def test_patch_updates_only_supplied_fields(session):
-    repo.add_to_watchlist(session, "110011", note="note-1")
-    repo.add_to_watchlist(session, "110011")  # idempotent noop
+    watchlist_repo.add_to_watchlist(session, "110011", note="note-1")
+    watchlist_repo.add_to_watchlist(session, "110011")  # idempotent noop
     r = client.patch(
         "/api/watchlist/110011",
         json={"holding_amount": 5000.0, "cost_nav": 1.05, "is_holding": True},
@@ -152,13 +152,13 @@ def test_patch_404_when_absent(session):
 
 
 def test_patch_rejects_bad_date(session):
-    repo.add_to_watchlist(session, "110011")
+    watchlist_repo.add_to_watchlist(session, "110011")
     r = client.patch("/api/watchlist/110011", json={"buy_date": "2026/01/15"})
     assert r.status_code == 422
 
 
 def test_delete_removes_row(session):
-    repo.add_to_watchlist(session, "110011")
+    watchlist_repo.add_to_watchlist(session, "110011")
     r = client.delete("/api/watchlist/110011")
     assert r.status_code == 200
     assert r.json() == {"fund_code": "110011", "removed": True}
@@ -222,7 +222,7 @@ def test_delete_cascade_is_idempotent(session):
     之前实现删 Watchlist 一行就够 —— 这里保证加级联后,空缓存的场景
     跟原来等价(returned True, Watchlist 行被删, 不抛异常)。
     """
-    repo.add_to_watchlist(session, "000001")
+    watchlist_repo.add_to_watchlist(session, "000001")
     r = client.delete("/api/watchlist/000001")
     assert r.status_code == 200
     assert r.json() == {"fund_code": "000001", "removed": True}

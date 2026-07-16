@@ -2,8 +2,7 @@ import pytest
 from sqlalchemy.orm import sessionmaker
 
 import backend.db.models  # noqa: F401
-from backend.db import repository as repo
-
+from backend.db.repositories import watchlist as watchlist_repo
 pytestmark = pytest.mark.db_multiconnection
 
 def test_preload_job_refreshes_data_without_backfilling_peer_category(
@@ -13,7 +12,7 @@ def test_preload_job_refreshes_data_without_backfilling_peer_category(
 
     Session = sessionmaker(bind=db_multiconnection_engine, expire_on_commit=False)
     s = Session()
-    repo.add_to_watchlist(s, "110011")
+    watchlist_repo.add_to_watchlist(s, "110011")
     s.commit()
     s.close()
 
@@ -41,7 +40,7 @@ def test_preload_job_refreshes_data_without_backfilling_peer_category(
     assert result["status"] == "done"
     s = Session()
     try:
-        row = repo.get_watchlist_row(s, "110011")
+        row = watchlist_repo.get_watchlist_row(s, "110011")
         assert "peer_category" not in row
         assert row["preload_status"] == "done"
     finally:
@@ -55,7 +54,7 @@ def test_preload_job_marks_partial_when_profile_missing_data(
 
     Session = sessionmaker(bind=db_multiconnection_engine, expire_on_commit=False)
     s = Session()
-    repo.add_to_watchlist(s, "110011")
+    watchlist_repo.add_to_watchlist(s, "110011")
     s.commit()
     s.close()
 
@@ -86,7 +85,7 @@ def test_preload_job_marks_partial_when_profile_missing_data(
     assert "peer_category" not in result["missing_data"]
     s = Session()
     try:
-        row = repo.get_watchlist_row(s, "110011")
+        row = watchlist_repo.get_watchlist_row(s, "110011")
         assert "peer_category" not in row
         assert row["preload_status"] == "partial"
     finally:

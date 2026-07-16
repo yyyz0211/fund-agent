@@ -3,7 +3,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.api.app import app
-from backend.db import repository as repo
+from backend.db.repositories import watchlist as watchlist_repo
 from backend.db.models import Fund, FundNav
 from backend.services.fund import fund_service as fs
 
@@ -116,7 +116,7 @@ class TestFundSummaryEndpoint:
                     source_updated_at="2026-06-30"),
         ])
         session.commit()
-        repo.add_to_watchlist_full(session, "110011", {
+        watchlist_repo.add_to_watchlist_full(session, "110011", {
             "is_holding": True,
             "holding_share": 1000.0,
             "cost_nav": 1.0,

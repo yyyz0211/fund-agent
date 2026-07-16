@@ -14,7 +14,7 @@ from threading import Lock
 from typing import Any
 
 from backend.config.settings import get_settings
-from backend.db.repository import search_market_evidence
+from backend.db.repositories.market import search_market_evidence
 from backend.db.session_scope import session_scope
 from backend.services.market import market_evidence_ingestion as ing
 from backend.services.market_sources import build_default_adapters

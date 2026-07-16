@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from backend.db.repository import upsert_market_evidence
+from backend.db.repositories.market import upsert_market_evidence
 from backend.db.session_scope import session_scope
 
 

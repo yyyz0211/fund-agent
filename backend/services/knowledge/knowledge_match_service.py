@@ -5,7 +5,7 @@ from datetime import datetime
 
 from sqlalchemy import or_, select
 
-from backend.db import repository as repo
+from backend.db.repositories import knowledge as knowledge_repo
 from backend.db.models import FundWatchlistProfile, KnowledgeDocument, KnowledgeFundMatch
 from backend.db.session_scope import session_scope
 
@@ -124,7 +124,7 @@ def _compute_and_upsert_matches(*, session, document_limit: int | None) -> dict:
             score, topics, reason = calculate_match_score(doc_dict, _profile_dict(profile))
             if score <= 0:
                 continue
-            repo.upsert_knowledge_fund_match(session, {
+            knowledge_repo.upsert_knowledge_fund_match(session, {
                 "document_id": doc.id,
                 "fund_code": profile.fund_code,
                 "match_score": score,

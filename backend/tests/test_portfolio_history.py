@@ -2,7 +2,7 @@
 import pytest
 
 import backend.db.models  # noqa: F401
-from backend.db import repository as repo
+from backend.db.repositories import fund as fund_repo
 from backend.db.models import Watchlist
 
 pytestmark = pytest.mark.db
@@ -15,13 +15,13 @@ def session(db_session):
 
 def _seed_fund(session, code, nav_rows, tx_rows, *, fund_name=None):
     """给一只基金写入基础信息、NAV 历史、买入交易,并标记为持仓。"""
-    repo.upsert_fund(session, {"fund_code": code, "fund_name": fund_name or f"Fund {code}"})
+    fund_repo.upsert_fund(session, {"fund_code": code, "fund_name": fund_name or f"Fund {code}"})
     if nav_rows:
-        repo.upsert_navs(session, code, nav_rows)
+        fund_repo.upsert_navs(session, code, nav_rows)
     session.add(Watchlist(fund_code=code, is_holding=True))
     session.commit()
     for tx in tx_rows:
-        repo.add_transaction(session, code, tx)
+        fund_repo.add_transaction(session, code, tx)
     session.commit()
 
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta
 
-from backend.db import repository as repo
+from backend.db.repositories import fund as fund_repo
 from backend.db.session_scope import session_scope
 from backend.services.market import data_collector as dc
 
@@ -39,9 +39,9 @@ def refresh_profile(fund_code: str, session=None) -> dict:
     }
     if session is None:
         with session_scope() as s:
-            profile = repo.upsert_fund_profile(s, fund_code, payload_to_persist)
+            profile = fund_repo.upsert_fund_profile(s, fund_code, payload_to_persist)
     else:
-        profile = repo.upsert_fund_profile(session, fund_code, payload_to_persist)
+        profile = fund_repo.upsert_fund_profile(session, fund_code, payload_to_persist)
     return {
         "fund_code": fund_code,
         "profile": profile,
@@ -57,7 +57,7 @@ def get_profile(fund_code: str, session=None) -> dict | None:
     if session is None:
         with session_scope() as s:
             return get_profile(fund_code, session=s)
-    return repo.get_fund_profile(session, fund_code)
+    return fund_repo.get_fund_profile(session, fund_code)
 
 
 def is_profile_fresh(fund_code: str, ttl_hours: int = 24, session=None) -> bool:

@@ -42,8 +42,7 @@ def test_normalize_sync_record_preserves_raw_content_and_metadata():
 
 
 def test_cls_telegraph_repository_upserts_and_filters_items(db_session):
-    from backend.db import repository as repo
-
+    from backend.db.repositories import knowledge as knowledge_repo
     session = db_session
     row = {
         "cls_id": "2421001",
@@ -59,10 +58,10 @@ def test_cls_telegraph_repository_upserts_and_filters_items(db_session):
         "raw_json": {"id": 2421001, "title": "基金市场回暖"},
     }
 
-    assert repo.upsert_cls_telegraph_item(session, row) is True
-    assert repo.upsert_cls_telegraph_item(session, row) is False
+    assert knowledge_repo.upsert_cls_telegraph_item(session, row) is True
+    assert knowledge_repo.upsert_cls_telegraph_item(session, row) is False
 
-    rows = repo.search_cls_telegraph_items(
+    rows = knowledge_repo.search_cls_telegraph_items(
         session,
         limit=10,
         category="fund",
@@ -76,7 +75,7 @@ def test_cls_telegraph_repository_upserts_and_filters_items(db_session):
 
 
 def test_sync_once_writes_telegraph_items_and_derives_market_evidence(db_session):
-    from backend.db import repository as repo
+    from backend.db.repositories import knowledge as knowledge_repo
     from backend.services.knowledge.cls_telegraph_sync_service import sync_cls_telegraph_once
 
     session = db_session
@@ -103,10 +102,10 @@ def test_sync_once_writes_telegraph_items_and_derives_market_evidence(db_session
     # 已移除双写，evidence 由 ClsTelegraphAdapter 独立采集
     assert result["evidence_inserted"] == 0
 
-    rows = repo.search_cls_telegraph_items(session, limit=10)
+    rows = knowledge_repo.search_cls_telegraph_items(session, limit=10)
     assert [row["cls_id"] for row in rows] == ["2421002", "2421001"]
 
-    status = repo.get_cls_telegraph_sync_state(session)
+    status = knowledge_repo.get_cls_telegraph_sync_state(session)
     assert status["last_seen_cls_id"] == "2421002"
     assert status["last_seen_ctime"] == 1783564494
     assert status["last_success_at"]
@@ -114,11 +113,11 @@ def test_sync_once_writes_telegraph_items_and_derives_market_evidence(db_session
 
 
 def test_sync_once_records_error_without_clearing_existing_state(db_session):
-    from backend.db import repository as repo
+    from backend.db.repositories import knowledge as knowledge_repo
     from backend.services.knowledge.cls_telegraph_sync_service import sync_cls_telegraph_once
 
     session = db_session
-    repo.update_cls_telegraph_sync_state(
+    knowledge_repo.update_cls_telegraph_sync_state(
         session,
         last_seen_ctime=1783564494,
         last_seen_cls_id="2421002",
@@ -141,7 +140,7 @@ def test_sync_once_records_error_without_clearing_existing_state(db_session):
     assert result["status"] == "failed"
     assert "remote failed" in result["last_error"]
 
-    status = repo.get_cls_telegraph_sync_state(session)
+    status = knowledge_repo.get_cls_telegraph_sync_state(session)
     assert status["last_seen_cls_id"] == "2421002"
     assert status["last_success_at"] == "2026-07-09T10:35:00+08:00"
     assert "remote failed" in status["last_error"]

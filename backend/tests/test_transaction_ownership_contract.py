@@ -68,12 +68,16 @@ def test_service_does_not_commit_or_close_session(service_path: Path) -> None:
             )
 
 
-def test_repository_does_not_commit_session() -> None:
-    repo_path = Path("backend/db/repository.py")
+@pytest.mark.parametrize(
+    "repo_path",
+    sorted(Path("backend/db/repositories").glob("*.py")),
+    ids=str,
+)
+def test_repository_does_not_commit_session(repo_path: Path) -> None:
     source = repo_path.read_text(encoding="utf-8")
     tree = ast.parse(source, filename=str(repo_path))
     for fn in _method_bodies(tree):
         violation = _has_forbidden_call(fn.body)
         assert violation is None, (
-            f"repository.{fn.name}() calls {violation}; repository 仅允许 flush"
+            f"{repo_path}:{fn.name}() calls {violation}; repository 仅允许 flush"
         )

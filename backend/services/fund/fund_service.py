@@ -9,7 +9,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 
-from backend.db import repository as repo
+from backend.db.repositories import fund as fund_repo
 from backend.db.session_scope import session_scope
 from backend.exceptions import InputValidationError
 from backend.services.market import data_collector as dc
@@ -71,10 +71,10 @@ def _persist_refresh_data(
     info: dict,
 ) -> tuple[int, str | None]:
     """写入已抓取的基金数据；调用方拥有事务。"""
-    inserted = repo.upsert_navs(session, fund_code, navs)
+    inserted = fund_repo.upsert_navs(session, fund_code, navs)
     if isinstance(info, dict) and "error" in info:
         return inserted, info["error"]
-    repo.upsert_fund(session, {
+    fund_repo.upsert_fund(session, {
         key: info.get(key)
         for key in ("fund_code", "fund_name", "fund_type", "manager", "company")
     })
@@ -134,7 +134,7 @@ def get_nav_by_date(fund_code: str, nav_date: str, session=None) -> dict:
         with session_scope() as s:
             return get_nav_by_date(fund_code, nav_date, session=s)
 
-    row = repo.get_nav_by_date(session, fund_code, nav_date)
+    row = fund_repo.get_nav_by_date(session, fund_code, nav_date)
     if row is None:
         return {
             "error": f"no nav data for {fund_code} on date {nav_date}; call refresh_fund first",
@@ -153,7 +153,7 @@ def get_metrics(fund_code: str, period: str = "1m", session=None) -> dict:
         with session_scope() as s:
             return get_metrics(fund_code, period=period, session=s)
 
-    navs = repo.get_accumulated_navs(session, fund_code)
+    navs = fund_repo.get_accumulated_navs(session, fund_code)
     if len(navs) < 2:
         return {"error": f"insufficient nav data for {fund_code}; call refresh_fund first",
                 "source": dc.SOURCE}

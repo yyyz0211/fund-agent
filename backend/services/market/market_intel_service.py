@@ -21,7 +21,7 @@ from typing import Any
 from sqlalchemy import select
 
 from backend.db.models import MarketSnapshot
-from backend.db.repository import upsert_market_snapshot
+from backend.db.repositories.market import upsert_market_snapshot
 from backend.db.session_scope import session_scope
 from backend.services.market import data_collector as dc
 from backend.services.market import market_service

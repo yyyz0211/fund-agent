@@ -11,7 +11,7 @@ from datetime import datetime
 from threading import Lock
 from uuid import uuid4
 
-from backend.db import repository as repo
+from backend.db.repositories import watchlist as watchlist_repo
 from backend.db.session import get_session
 from backend.services.fund import fund_profile_service as profile_service
 from backend.services.fund import fund_service as fs
@@ -36,7 +36,7 @@ def _set_watchlist_preload(fund_code: str, *,
     from backend.db.session_scope import session_scope
 
     with session_scope() as s:
-        repo.update_watchlist_preload(
+        watchlist_repo.update_watchlist_preload(
             s,
             fund_code,
             status=status,

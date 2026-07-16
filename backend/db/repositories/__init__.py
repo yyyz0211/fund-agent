@@ -8,18 +8,17 @@
 - knowledge.py: 知识库、RAG 相关
 - jobs.py: 后台任务状态相关
 
-每个模块从 backend.db.repository 重新导出兼容函数。
-新代码应直接从这些模块导入,旧代码继续使用 backend.db.repository。
+六个领域模块是持久化实现的唯一公开入口。
 """
 from __future__ import annotations
 
-from backend.db.repositories import fund, watchlist, market, briefing, knowledge, jobs
+from backend.db.repositories import briefing, fund, jobs, knowledge, market, watchlist
 
 __all__ = [
-    "fund",
-    "watchlist",
-    "market",
     "briefing",
-    "knowledge",
+    "fund",
     "jobs",
+    "knowledge",
+    "market",
+    "watchlist",
 ]

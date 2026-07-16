@@ -22,7 +22,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 import backend.db.models  # noqa: F401
 from backend.config.settings import get_settings
-from backend.db.repository import backfill_watchlist_fund_names
+from backend.db.repositories.watchlist import backfill_watchlist_fund_names
 from backend.db.session import engine as default_engine
 from backend.db.session import get_session
 

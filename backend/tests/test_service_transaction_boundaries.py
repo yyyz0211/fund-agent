@@ -12,11 +12,11 @@ def test_refresh_fund_accepts_injected_session_and_only_persists_there(monkeypat
         {"fund_code": code, "fund_name": "Test"},
     ))
     monkeypatch.setattr(
-        service.repo, "upsert_navs",
+        service.fund_repo, "upsert_navs",
         lambda session, code, navs: calls.append(("navs", session, code)) or 1,
     )
     monkeypatch.setattr(
-        service.repo, "upsert_fund",
+        service.fund_repo, "upsert_fund",
         lambda session, payload: calls.append(("fund", session, payload["fund_code"])),
     )
 
@@ -43,7 +43,7 @@ def test_refresh_profile_accepts_injected_session_and_only_persists_there(monkey
         "as_of": "2026-07-15",
     })
     monkeypatch.setattr(
-        service.repo, "upsert_fund_profile",
+        service.fund_repo, "upsert_fund_profile",
         lambda session, code, payload: calls.append((session, code)) or payload,
     )
 

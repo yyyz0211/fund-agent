@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from backend.config.settings import get_settings
-from backend.db import repository as repo
+from backend.db.repositories import knowledge as knowledge_repo
 from backend.db.session_scope import session_scope
 from backend.services.knowledge import cls_telegraph_client as cls_client
 
@@ -264,7 +264,7 @@ def _sync_pages_with_external_session(
 
     调用方拥有 commit/rollback；service 仅 flush、不 commit/rollback/close。
     """
-    previous_state = repo.get_cls_telegraph_sync_state(session) or {}
+    previous_state = knowledge_repo.get_cls_telegraph_sync_state(session) or {}
     last_time, _ = _load_last_time_for_page()
     newest_ctime: int | None = None
     newest_cls_id: str | None = None
@@ -291,7 +291,7 @@ def _sync_pages_with_external_session(
                 if row is None:
                     continue
                 fetched += 1
-                if repo.upsert_cls_telegraph_item(session, row):
+                if knowledge_repo.upsert_cls_telegraph_item(session, row):
                     inserted += 1
                 ctime = row.get("ctime")
                 if ctime is not None:
@@ -305,7 +305,7 @@ def _sync_pages_with_external_session(
                 break
             last_time = max(0, page_min_ctime - 1)
 
-        repo.update_cls_telegraph_sync_state(
+        knowledge_repo.update_cls_telegraph_sync_state(
             session,
             last_seen_ctime=newest_ctime,
             last_seen_cls_id=newest_cls_id,
@@ -317,7 +317,7 @@ def _sync_pages_with_external_session(
         error = f"{type(exc).__name__}: {exc}"
         prev = previous_state or {}
         try:
-            repo.update_cls_telegraph_sync_state(
+            knowledge_repo.update_cls_telegraph_sync_state(
                 session,
                 last_seen_ctime=prev.get("last_seen_ctime"),
                 last_seen_cls_id=prev.get("last_seen_cls_id"),
@@ -352,7 +352,7 @@ def _sync_pages_with_external_session(
 def _load_last_time_for_page() -> tuple[int, dict | None]:
     """读 sync state,返回 (last_time_for_next_page, previous_state_snapshot)。"""
     with session_scope() as s:
-        state = repo.get_cls_telegraph_sync_state(s) or {}
+        state = knowledge_repo.get_cls_telegraph_sync_state(s) or {}
     last_seen = state.get("last_seen_ctime")
     if last_seen:
         try:
@@ -380,7 +380,7 @@ def _persist_page(
             row = normalize_cls_telegraph_record(raw)
             if row is None:
                 continue
-            if repo.upsert_cls_telegraph_item(s, row):
+            if knowledge_repo.upsert_cls_telegraph_item(s, row):
                 inserted += 1
             ctime = row.get("ctime")
             if ctime is not None:
@@ -394,7 +394,7 @@ def _persist_page(
 
 def _record_success(*, newest_ctime: int | None, newest_cls_id: str | None) -> None:
     with session_scope() as s:
-        repo.update_cls_telegraph_sync_state(
+        knowledge_repo.update_cls_telegraph_sync_state(
             s,
             last_seen_ctime=newest_ctime,
             last_seen_cls_id=newest_cls_id,
@@ -407,7 +407,7 @@ def _record_failure(*, error: str, previous_state: dict | None) -> None:
     prev = previous_state or {}
     try:
         with session_scope() as s:
-            repo.update_cls_telegraph_sync_state(
+            knowledge_repo.update_cls_telegraph_sync_state(
                 s,
                 last_seen_ctime=prev.get("last_seen_ctime"),
                 last_seen_cls_id=prev.get("last_seen_cls_id"),
@@ -431,7 +431,7 @@ def list_cls_telegraph_items(
 ) -> list[dict]:
     """只读视图。owning 时 short-tx；caller-provided 时沿用其 session。"""
     if session is not None:
-        return repo.search_cls_telegraph_items(
+        return knowledge_repo.search_cls_telegraph_items(
             session,
             limit=limit,
             category=(category or "").strip() or None,
@@ -439,7 +439,7 @@ def list_cls_telegraph_items(
             keyword=(keyword or "").strip() or None,
         )
     with session_scope() as s:
-        return repo.search_cls_telegraph_items(
+        return knowledge_repo.search_cls_telegraph_items(
             s,
             limit=limit,
             category=(category or "").strip() or None,
@@ -451,10 +451,10 @@ def list_cls_telegraph_items(
 def get_cls_telegraph_sync_status(*, session=None) -> dict:
     """只读视图。owning 时 short-tx；caller-provided 时沿用其 session。"""
     if session is not None:
-        state = repo.get_cls_telegraph_sync_state(session) or {}
+        state = knowledge_repo.get_cls_telegraph_sync_state(session) or {}
     else:
         with session_scope() as s:
-            state = repo.get_cls_telegraph_sync_state(s) or {}
+            state = knowledge_repo.get_cls_telegraph_sync_state(s) or {}
     latest_ctime = state.get("last_seen_ctime")
     lag_seconds = None
     if latest_ctime is not None:

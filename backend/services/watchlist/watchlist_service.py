@@ -12,7 +12,8 @@ Session 管理约定：
 from sqlalchemy import func, select
 
 from backend.db.session_scope import session_scope
-from backend.db import repository as repo
+from backend.db.repositories import fund as fund_repo
+from backend.db.repositories import watchlist as watchlist_repo
 from backend.db.models import FundTransaction, Watchlist
 
 
@@ -68,7 +69,7 @@ def list_watchlist(session=None) -> list[dict]:
 
 def _list_watchlist_impl(s) -> list[dict]:
     """纯业务,只 flush。事务由调用方决定。"""
-    return repo.get_watchlist(s)
+    return watchlist_repo.get_watchlist(s)
 
 
 def add(fund_code: str, note: str = "", session=None) -> dict:
@@ -85,7 +86,7 @@ def add(fund_code: str, note: str = "", session=None) -> dict:
 
 def _add_impl(s, fund_code: str, note: str) -> dict:
     """纯业务,只 flush。事务由调用方决定。"""
-    return repo.add_to_watchlist(s, fund_code, note=note or None)
+    return watchlist_repo.add_to_watchlist(s, fund_code, note=note or None)
 
 
 def add_full(fund_code: str, attrs: dict, session=None) -> dict:
@@ -103,7 +104,7 @@ def add_full(fund_code: str, attrs: dict, session=None) -> dict:
 
 def _add_full_impl(s, fund_code: str, attrs: dict) -> dict:
     """纯业务,只 flush。事务由调用方决定。"""
-    return repo.add_to_watchlist_full(s, fund_code, attrs or {})
+    return watchlist_repo.add_to_watchlist_full(s, fund_code, attrs or {})
 
 
 def remove(fund_code: str, session=None) -> dict:
@@ -116,7 +117,7 @@ def remove(fund_code: str, session=None) -> dict:
 
 def _remove_impl(s, fund_code: str) -> dict:
     """纯业务,只 flush。事务由调用方决定。"""
-    removed = repo.remove_from_watchlist(s, fund_code)
+    removed = watchlist_repo.remove_from_watchlist(s, fund_code)
     return {"fund_code": fund_code, "removed": removed}
 
 
@@ -130,7 +131,7 @@ def update_note(fund_code: str, note: str, session=None) -> dict:
 
 def _update_note_impl(s, fund_code: str, note: str) -> dict:
     """纯业务,只 flush。事务由调用方决定。"""
-    row = repo.update_watchlist_note(s, fund_code, note)
+    row = watchlist_repo.update_watchlist_note(s, fund_code, note)
     if row is None:
         return {"error": f"{fund_code} 不在自选池中"}
     return row
@@ -146,7 +147,7 @@ def get_one(fund_code: str, session=None) -> dict | None:
 
 def _get_one_impl(s, fund_code: str) -> dict | None:
     """纯业务,只 flush。事务由调用方决定。"""
-    return repo.get_watchlist_row(s, fund_code)
+    return watchlist_repo.get_watchlist_row(s, fund_code)
 
 
 def update(fund_code: str, patch: dict, session=None) -> dict | None:
@@ -164,7 +165,7 @@ def update(fund_code: str, patch: dict, session=None) -> dict | None:
 
 def _update_impl(s, fund_code: str, patch: dict) -> dict | None:
     """纯业务,只 flush。事务由调用方决定。"""
-    return repo.update_watchlist(s, fund_code, patch or {})
+    return watchlist_repo.update_watchlist(s, fund_code, patch or {})
 
 
 def list_transactions(fund_code: str, session=None) -> list[dict]:
@@ -177,7 +178,7 @@ def list_transactions(fund_code: str, session=None) -> list[dict]:
 
 def _list_transactions_impl(s, fund_code: str) -> list[dict]:
     """纯业务,只 flush。事务由调用方决定。"""
-    return repo.list_transactions(s, fund_code)
+    return fund_repo.list_transactions(s, fund_code)
 
 
 def add_transaction(fund_code: str, attrs: dict, session=None) -> dict | None:
@@ -194,10 +195,10 @@ def add_transaction(fund_code: str, attrs: dict, session=None) -> dict | None:
 
 def _add_transaction_impl(s, fund_code: str, attrs: dict) -> dict | None:
     """纯业务,只 flush。事务由调用方决定。"""
-    if repo.get_watchlist_row(s, fund_code) is None:
+    if watchlist_repo.get_watchlist_row(s, fund_code) is None:
         return None
     _validate_transaction_nav(s, fund_code, attrs or {})
-    tx = repo.add_transaction(s, fund_code, attrs or {})
+    tx = fund_repo.add_transaction(s, fund_code, attrs or {})
     wl = _recalc(s, fund_code)
     return {"transaction": tx, "watchlist": wl}
 
@@ -246,7 +247,7 @@ def _set_initial_holding_impl(s, fund_code: str, attrs: dict) -> dict:
     if data.get("amount") is not None:
         w.holding_amount = float(data["amount"])
 
-    tx = repo.add_transaction(s, fund_code, {
+    tx = fund_repo.add_transaction(s, fund_code, {
         "tx_date": data["tx_date"],
         "amount": data["amount"],
         "nav": data["nav"],
@@ -273,12 +274,12 @@ def remove_transaction(fund_code: str, tx_id: int, session=None) -> dict | None:
 
 def _remove_transaction_impl(s, fund_code: str, tx_id: int) -> dict | None:
     """纯业务,只 flush。事务由调用方决定。"""
-    existing = repo.get_transaction(s, tx_id)
+    existing = fund_repo.get_transaction(s, tx_id)
     if existing is None:
         return None
     if existing["fund_code"] != fund_code:
         return {"error": "fund_mismatch", "transaction": existing}
-    snapshot = repo.delete_transaction(s, tx_id)
+    snapshot = fund_repo.delete_transaction(s, tx_id)
     wl = _recalc(s, fund_code)
     return {"removed": True, "transaction": snapshot, "watchlist": wl}
 
@@ -298,7 +299,7 @@ def _validate_transaction_nav(s, fund_code: str, attrs: dict) -> None:
     tx_date = attrs.get("tx_date")
     if not tx_date or attrs.get("nav") is None:
         return
-    nav = repo.get_nav_by_date(s, fund_code, tx_date)
+    nav = fund_repo.get_nav_by_date(s, fund_code, tx_date)
     if nav is None or nav.get("accumulated_nav") is None:
         return
     expected = float(nav["accumulated_nav"])
@@ -317,9 +318,9 @@ def list_investment_plans(fund_code: str, session=None) -> list[dict] | None:
 
 def _list_investment_plans_impl(s, fund_code: str) -> list[dict] | None:
     """纯业务,只 flush。事务由调用方决定。"""
-    if repo.get_watchlist_row(s, fund_code) is None:
+    if watchlist_repo.get_watchlist_row(s, fund_code) is None:
         return None
-    return repo.list_investment_plans(s, fund_code)
+    return watchlist_repo.list_investment_plans(s, fund_code)
 
 
 def add_investment_plan(fund_code: str, attrs: dict, session=None) -> dict | None:
@@ -332,9 +333,9 @@ def add_investment_plan(fund_code: str, attrs: dict, session=None) -> dict | Non
 
 def _add_investment_plan_impl(s, fund_code: str, attrs: dict) -> dict | None:
     """纯业务,只 flush。事务由调用方决定。"""
-    if repo.get_watchlist_row(s, fund_code) is None:
+    if watchlist_repo.get_watchlist_row(s, fund_code) is None:
         return None
-    return repo.add_investment_plan(s, fund_code, attrs or {})
+    return watchlist_repo.add_investment_plan(s, fund_code, attrs or {})
 
 
 def update_investment_plan(fund_code: str, plan_id: int, patch: dict,
@@ -348,9 +349,9 @@ def update_investment_plan(fund_code: str, plan_id: int, patch: dict,
 
 def _update_investment_plan_impl(s, fund_code: str, plan_id: int, patch: dict) -> dict | None:
     """纯业务,只 flush。事务由调用方决定。"""
-    if repo.get_watchlist_row(s, fund_code) is None:
+    if watchlist_repo.get_watchlist_row(s, fund_code) is None:
         return None
-    return repo.update_investment_plan(s, fund_code, plan_id, patch or {})
+    return watchlist_repo.update_investment_plan(s, fund_code, plan_id, patch or {})
 
 
 def remove_investment_plan(fund_code: str, plan_id: int, session=None) -> dict | None:
@@ -363,9 +364,9 @@ def remove_investment_plan(fund_code: str, plan_id: int, session=None) -> dict |
 
 def _remove_investment_plan_impl(s, fund_code: str, plan_id: int) -> dict | None:
     """纯业务,只 flush。事务由调用方决定。"""
-    if repo.get_watchlist_row(s, fund_code) is None:
+    if watchlist_repo.get_watchlist_row(s, fund_code) is None:
         return None
-    plan = repo.delete_investment_plan(s, fund_code, plan_id)
+    plan = watchlist_repo.delete_investment_plan(s, fund_code, plan_id)
     if plan is None:
         return None
     return {"removed": True, "plan": plan}
@@ -381,9 +382,9 @@ def list_pending_buys(fund_code: str, session=None) -> list[dict] | None:
 
 def _list_pending_buys_impl(s, fund_code: str) -> list[dict] | None:
     """纯业务,只 flush。事务由调用方决定。"""
-    if repo.get_watchlist_row(s, fund_code) is None:
+    if watchlist_repo.get_watchlist_row(s, fund_code) is None:
         return None
-    return [_with_pending_buy_stage(s, row) for row in repo.list_pending_buys(s, fund_code)]
+    return [_with_pending_buy_stage(s, row) for row in watchlist_repo.list_pending_buys(s, fund_code)]
 
 
 def add_pending_buy(fund_code: str, attrs: dict, session=None) -> dict | None:
@@ -396,9 +397,9 @@ def add_pending_buy(fund_code: str, attrs: dict, session=None) -> dict | None:
 
 def _add_pending_buy_impl(s, fund_code: str, attrs: dict) -> dict | None:
     """纯业务,只 flush。事务由调用方决定。"""
-    if repo.get_watchlist_row(s, fund_code) is None:
+    if watchlist_repo.get_watchlist_row(s, fund_code) is None:
         return None
-    row = repo.add_pending_buy(s, fund_code, attrs or {})
+    row = watchlist_repo.add_pending_buy(s, fund_code, attrs or {})
     return _with_pending_buy_stage(s, row)
 
 
@@ -412,12 +413,12 @@ def cancel_pending_buy(fund_code: str, pending_id: int, session=None) -> dict | 
 
 def _cancel_pending_buy_impl(s, fund_code: str, pending_id: int) -> dict | None:
     """纯业务,只 flush。事务由调用方决定。"""
-    if repo.get_watchlist_row(s, fund_code) is None:
+    if watchlist_repo.get_watchlist_row(s, fund_code) is None:
         return None
-    current = repo.get_pending_buy(s, fund_code, pending_id)
+    current = watchlist_repo.get_pending_buy(s, fund_code, pending_id)
     if current is None:
         return None
-    row = repo.update_pending_buy(s, fund_code, pending_id, {"status": "cancelled"})
+    row = watchlist_repo.update_pending_buy(s, fund_code, pending_id, {"status": "cancelled"})
     return _with_pending_buy_stage(s, row) if row else None
 
 
@@ -437,21 +438,21 @@ def confirm_pending_buy(fund_code: str, pending_id: int, tx_date: str,
 def _confirm_pending_buy_impl(s, fund_code: str, pending_id: int,
                                tx_date: str) -> dict | None:
     """纯业务,只 flush。事务由调用方决定。"""
-    if repo.get_watchlist_row(s, fund_code) is None:
+    if watchlist_repo.get_watchlist_row(s, fund_code) is None:
         return None
-    pending = repo.get_pending_buy(s, fund_code, pending_id)
+    pending = watchlist_repo.get_pending_buy(s, fund_code, pending_id)
     if pending is None:
         return None
     if pending["status"] != "pending":
         raise PendingBuyConflict(fund_code, pending_id, pending["status"])
-    nav = repo.get_nav_by_date(s, fund_code, tx_date)
+    nav = fund_repo.get_nav_by_date(s, fund_code, tx_date)
     if nav is None or nav.get("accumulated_nav") is None:
         raise PendingBuyNavMissing(fund_code, tx_date)
     nav_value = float(nav["accumulated_nav"])
     if nav_value <= 0:
         raise PendingBuyNavMissing(fund_code, tx_date)
 
-    tx = repo.add_transaction(s, fund_code, {
+    tx = fund_repo.add_transaction(s, fund_code, {
         "tx_date": tx_date,
         "amount": pending["amount"],
         "nav": nav_value,
@@ -459,7 +460,7 @@ def _confirm_pending_buy_impl(s, fund_code: str, pending_id: int,
         "note": pending.get("note"),
         "kind": "buy",
     })
-    confirmed = repo.update_pending_buy(s, fund_code, pending_id, {
+    confirmed = watchlist_repo.update_pending_buy(s, fund_code, pending_id, {
         "status": "confirmed",
         "nav_date": tx_date,
         "nav": nav_value,
@@ -500,7 +501,7 @@ def _with_pending_buy_stage(s, row: dict) -> dict:
         result["message"] = "已取消,不计入持仓盈亏。"
         return result
 
-    expected = repo.get_next_nav_date_after(
+    expected = fund_repo.get_next_nav_date_after(
         s,
         str(result["fund_code"]),
         str(result["request_date"]),

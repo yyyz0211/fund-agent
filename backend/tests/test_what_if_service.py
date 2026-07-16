@@ -11,7 +11,7 @@
 import pytest
 
 import backend.db.models  # noqa: F401  (ensure ORM mapping registered)
-from backend.db import repository as repo
+from backend.db.repositories import fund as fund_repo
 from backend.services.fund import what_if_service as wsvc
 
 pytestmark = pytest.mark.db
@@ -25,9 +25,9 @@ def session(db_session):
 
 def _seed(session, *, fund_code: str, nav_rows: list[tuple[str, float]]):
     """插入 FundNav 行 + 必要的 Fund 行(避免外键)。"""
-    from backend.db import repository as repo
-    repo.upsert_fund(session, {"fund_code": fund_code, "fund_name": f"Fund {fund_code}"})
-    repo.upsert_navs(session, fund_code, [
+    from backend.db.repositories import fund as fund_repo
+    fund_repo.upsert_fund(session, {"fund_code": fund_code, "fund_name": f"Fund {fund_code}"})
+    fund_repo.upsert_navs(session, fund_code, [
         {"nav_date": d, "accumulated_nav": nv}
         for d, nv in nav_rows
     ])

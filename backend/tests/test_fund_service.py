@@ -2,9 +2,7 @@ import pytest
 from threading import Event
 from backend.services.fund import fund_service as fs
 from backend.services.market import data_collector as dc
-from backend.db import repository as repo
-
-
+from backend.db.repositories import fund as fund_repo
 pytestmark = pytest.mark.db
 
 
@@ -46,7 +44,7 @@ def test_get_metrics_invalid_period_returns_error(session, monkeypatch):
              "accumulated_nav": 1.0 + d * 0.01, "daily_return": 0.0,
              "source": "akshare", "source_updated_at": "2026-06-30"}
             for d in range(1, 4)]
-    repo.upsert_navs(session, "110011", navs)
+    fund_repo.upsert_navs(session, "110011", navs)
 
     out = fs.get_metrics("110011", period="bad", session=session)
 
@@ -144,7 +142,7 @@ def test_lookup_fund_auto_refreshes_when_nav_missing(session, monkeypatch):
     monkeypatch.setattr(dc, "today_str", lambda: "2026-07-07")
 
     def fake_refresh(code, session=None):
-        repo.upsert_fund(session, {
+        fund_repo.upsert_fund(session, {
             "fund_code": code,
             "fund_name": "FundA",
             "fund_type": "混合型",
@@ -157,7 +155,7 @@ def test_lookup_fund_auto_refreshes_when_nav_missing(session, monkeypatch):
              "source": "akshare", "source_updated_at": "2026-07-07"}
             for d in range(1, 8)
         ]
-        repo.upsert_navs(session, code, navs)
+        fund_repo.upsert_navs(session, code, navs)
         return {"fund_code": code, "navs_inserted": 7,
                 "source": "akshare", "as_of": "2026-07-07"}
 
@@ -177,8 +175,8 @@ def test_lookup_fund_auto_refreshes_when_nav_missing(session, monkeypatch):
 def test_lookup_fund_auto_skips_refresh_when_nav_fresh(session, monkeypatch):
     """本地 NAV 足够新时,auto 入口不应重复联网刷新。"""
     monkeypatch.setattr(dc, "today_str", lambda: "2026-07-07")
-    repo.upsert_fund(session, {"fund_code": "110011", "fund_name": "FundA"})
-    repo.upsert_navs(session, "110011", [
+    fund_repo.upsert_fund(session, {"fund_code": "110011", "fund_name": "FundA"})
+    fund_repo.upsert_navs(session, "110011", [
         {"nav_date": f"2026-07-{d:02d}", "unit_nav": None,
          "accumulated_nav": 1.0 + d * 0.01, "daily_return": 0.01,
          "source": "akshare", "source_updated_at": "2026-07-07"}
@@ -254,7 +252,7 @@ def test_get_basic_info_no_data(session):
 
 
 def test_get_basic_info_returns_row(session):
-    repo.upsert_fund(session, {"fund_code": "110011", "fund_name": "FundA",
+    fund_repo.upsert_fund(session, {"fund_code": "110011", "fund_name": "FundA",
                                "fund_type": "混合型", "manager": "X", "company": "Y"})
     out = fs.get_basic_info("110011", session=session)
     assert out["fund_name"] == "FundA"
@@ -271,7 +269,7 @@ def test_get_nav_history_full_and_range(session):
              "accumulated_nav": 1.0 + d * 0.01, "daily_return": 0.0,
              "source": "akshare", "source_updated_at": "2026-06-30"}
             for d in range(1, 11)]
-    repo.upsert_navs(session, "110011", rows)
+    fund_repo.upsert_navs(session, "110011", rows)
 
     full = fs.get_nav_history("110011", session=session)
     assert full["count"] == 10

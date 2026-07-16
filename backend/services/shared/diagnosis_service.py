@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 
-from backend.db import repository as repo
+from backend.db.repositories import fund as fund_repo
 from backend.db.session import get_session
 from backend.services.shared import diagnosis_rules as rules
 from backend.services.fund import fund_profile_service as profile_service
@@ -47,7 +47,7 @@ def _get_peers_impl(fund_code, period, limit, s):
         code = str(candidate.get("fund_code") or "")
         if not code:
             continue
-        navs = repo.get_accumulated_navs(s, code)
+        navs = fund_repo.get_accumulated_navs(s, code)
         has_local_nav = len(navs) >= 2
         period_return = None
         max_drawdown = None

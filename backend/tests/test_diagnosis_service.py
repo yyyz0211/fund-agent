@@ -3,8 +3,7 @@ import json
 import pytest
 
 import backend.db.models  # noqa: F401
-from backend.db import repository as repo
-
+from backend.db.repositories import fund as fund_repo
 pytestmark = pytest.mark.db
 
 
@@ -111,20 +110,20 @@ def test_diagnosis_uses_basic_manager_when_profile_manager_missing(session, monk
 def test_get_peers_returns_candidates_without_local_nav(session):
     from backend.services.shared import diagnosis_service as ds
 
-    repo.upsert_fund_profile(session, "110011", {
+    fund_repo.upsert_fund_profile(session, "110011", {
         "peer_candidates_json": json.dumps([
             {"fund_code": "000001", "fund_name": "PeerA", "fund_type": "偏股混合"},
             {"fund_code": "000002", "fund_name": "PeerB", "fund_type": "偏股混合"},
         ], ensure_ascii=False),
     })
-    repo.upsert_fund_profile(session, "000001", {"scale": 20.0})
+    fund_repo.upsert_fund_profile(session, "000001", {"scale": 20.0})
     navs = [
         {"nav_date": f"2026-06-{day:02d}", "unit_nav": None,
          "accumulated_nav": 1 + day * 0.01, "daily_return": 0.0,
          "source": "akshare", "source_updated_at": "2026-07-02"}
         for day in range(1, 8)
     ]
-    repo.upsert_navs(session, "000001", navs)
+    fund_repo.upsert_navs(session, "000001", navs)
 
     peers = ds.get_peers("110011", limit=5, period="1w", session=session)
 

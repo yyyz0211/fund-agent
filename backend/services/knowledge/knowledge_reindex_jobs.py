@@ -18,7 +18,7 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
-from backend.db import repository as repo
+from backend.db.repositories import jobs as jobs_repo
 from backend.db.models import KnowledgeReindexJob
 from backend.db.session_scope import session_scope
 
@@ -108,7 +108,7 @@ def list_jobs(*, limit: int = 20, session: Optional[Session] = None) -> list[dic
     if session is None:
         with session_scope() as s:
             return list_jobs(limit=limit, session=s)
-    rows = repo.list_knowledge_reindex_jobs(session, limit=limit)
+    rows = jobs_repo.list_knowledge_reindex_jobs(session, limit=limit)
     return [
         {
             "job_id": int(r.id),

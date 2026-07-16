@@ -17,9 +17,8 @@ from sqlalchemy import select
 
 from backend.db.models import FundTransaction, Watchlist
 from backend.db.session_scope import session_scope
-from backend.db import repository as repo
-
-
+from backend.db.repositories import fund as fund_repo
+from backend.db.repositories import watchlist as watchlist_repo
 # Watchlist 表里 holding/cost 写库的精度 —— 6 位小数够精确,不与 PnL
 # 服务(round 4 位)冲突。
 _Q = Decimal("0.000001")
@@ -56,7 +55,7 @@ def _recalc_holding_impl(s, fund_code: str) -> dict | None:
     if w is None:
         return None
 
-    txs = repo.list_transactions(s, fund_code)
+    txs = fund_repo.list_transactions(s, fund_code)
     if not txs:
         # 没交易记录:
         # - basis=legacy(从未进过交易表): 保留手工录入,不动。
@@ -69,7 +68,7 @@ def _recalc_holding_impl(s, fund_code: str) -> dict | None:
         elif w.cost_nav_basis is None:
             w.cost_nav_basis = "legacy"
         s.flush()
-        return repo.get_watchlist_row(s, fund_code)
+        return watchlist_repo.get_watchlist_row(s, fund_code)
 
     # 初始仓位: 已被交易表接管 → 直接从交易表算,不与已经
     # 合并过的 holding 再次合并;首次接管则优先使用现有字段。
@@ -103,4 +102,4 @@ def _recalc_holding_impl(s, fund_code: str) -> dict | None:
     if not w.buy_date and txs:
         w.buy_date = txs[0]["tx_date"]
     s.flush()
-    return repo.get_watchlist_row(s, fund_code)
+    return watchlist_repo.get_watchlist_row(s, fund_code)

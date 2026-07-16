@@ -6,7 +6,8 @@ from datetime import date, datetime, timedelta
 from sqlalchemy import select
 
 from backend.config.settings import get_settings
-from backend.db import repository as repo
+from backend.db.repositories import knowledge as knowledge_repo
+from backend.db.repositories import market as market_repo
 from backend.db.models import KnowledgeClassificationState
 from backend.db.session_scope import session_scope
 from backend.services.knowledge import knowledge_classifier
@@ -170,7 +171,7 @@ def _write_classification(
     retry_seconds: int,
 ) -> None:
     result = outcome.result
-    repo.append_classification_log(session, {
+    knowledge_repo.append_classification_log(session, {
         "source_type": candidate["source_type"],
         "source_id": candidate["source_id"],
         "canonical_content_hash": canonical_hash,
@@ -184,7 +185,7 @@ def _write_classification(
         "error_message": outcome.error_message,
         "latency_ms": outcome.latency_ms,
     })
-    repo.upsert_classification_state(session, {
+    knowledge_repo.upsert_classification_state(session, {
         "source_type": candidate["source_type"],
         "source_id": candidate["source_id"],
         "canonical_content_hash": canonical_hash,
@@ -309,8 +310,8 @@ def ingest_candidates(
             outcome.result,
             default_ttl_days=settings.knowledge_default_ttl_days,
         )
-        document, created = repo.upsert_knowledge_document(session, doc_payload)
-        repo.upsert_knowledge_source_link(session, {
+        document, created = knowledge_repo.upsert_knowledge_document(session, doc_payload)
+        knowledge_repo.upsert_knowledge_source_link(session, {
             "document_id": document["id"],
             "source_type": candidate["source_type"],
             "source_id": candidate["source_id"],
@@ -329,8 +330,8 @@ def ingest_candidates(
 def _fetch_recent_candidates(*, limit: int) -> list[dict]:
     """读最近候选 — 独立 short-tx,与 LLM/写阶段分离。"""
     with session_scope() as s:
-        cls_rows = repo.search_cls_telegraph_items(s, limit=limit)
-        evidence_rows = repo.search_market_evidence(
+        cls_rows = knowledge_repo.search_cls_telegraph_items(s, limit=limit)
+        evidence_rows = market_repo.search_market_evidence(
             s, trade_date=date.today().isoformat(), limit=limit,
         )
     candidates = [candidate_from_cls(row) for row in cls_rows]

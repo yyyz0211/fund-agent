@@ -226,7 +226,7 @@ def collect_watchlist_snapshot(*, fund_codes: list[str] | None = None,
     # 3) 每只基金 metrics
     for row in rows:
         fund_code = row["fund_code"]
-        # watchlist.fund_name 由 repository._watchlist_to_dict 返回,
+        # watchlist.fund_name 由 watchlist repository 投影返回,
         # 启动时 init_db() 自动从 funds.fund_name 回填, 这里只需 .get 兜底。
         # 极端情况下(用户 sync 进 watchlist 但 fund 表还没数据)再走一次 inline 查找,
         # 避免简报里出现 fund_code 占位。
@@ -523,7 +523,7 @@ def run_daily_briefing(
             `compose_briefing` 会立即 `RuntimeError`,本函数捕获后记入
             failures 列表,继续走"无 LLM 输出"的降级路径。
     """
-    from backend.db.repository import upsert_briefing
+    from backend.db.repositories.briefing import upsert_briefing
     from backend.services.briefing import module_briefing as mb
 
     today = _today()

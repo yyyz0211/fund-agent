@@ -4,7 +4,7 @@ import json
 
 from sqlalchemy import select
 
-from backend.db import repository as repo
+from backend.db.repositories import fund as fund_repo
 from backend.db.models import Fund, FundProfile, FundWatchlistProfile, Watchlist
 from backend.db.session_scope import session_scope
 
@@ -113,7 +113,7 @@ def _recompute_profiles(*, session) -> dict:
             peer_category,
             row.note,
         )
-        repo.upsert_fund_watchlist_profile(session, {
+        fund_repo.upsert_fund_watchlist_profile(session, {
             "fund_code": row.fund_code,
             "fund_name": fund_name,
             "priority": _priority(row),

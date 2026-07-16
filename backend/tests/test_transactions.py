@@ -13,7 +13,8 @@ from sqlalchemy import func, select
 
 from backend.api.app import app
 from backend.api.routes import watchlist as watchlist_routes
-from backend.db import repository as repo
+from backend.db.repositories import fund as fund_repo
+from backend.db.repositories import watchlist as watchlist_repo
 from backend.db.models import FundNav, FundTransaction, Watchlist
 from backend.services.watchlist import transaction_service as ts
 from backend.services.watchlist import watchlist_service as ws
@@ -41,7 +42,7 @@ def session(db_session, monkeypatch):
 class TestRecalcEmpty:
     def test_no_transactions_leaves_watchlist_alone(self, session):
         """没有任何交易时,recalc 不改 holding/cost,只把 basis 标 legacy。"""
-        repo.add_to_watchlist_full(
+        watchlist_repo.add_to_watchlist_full(
             session, "110011",
             {"is_holding": True, "holding_share": 1000, "cost_nav": 1.5},
         )
@@ -58,11 +59,11 @@ class TestRecalcEmpty:
 class TestRecalcSingleBuy:
     def test_single_buy_overrides_initial_holding(self, session):
         """老数据里已有 holding,新增第一笔 buy,recalc 用现有 holding 当种子 + 该笔合并。"""
-        repo.add_to_watchlist_full(
+        watchlist_repo.add_to_watchlist_full(
             session, "110011",
             {"is_holding": True, "holding_share": 1000, "cost_nav": 1.5},
         )
-        repo.add_transaction(session, "110011", {
+        fund_repo.add_transaction(session, "110011", {
             "tx_date": "2026-03-01",
             "amount": 500.0,
             "nav": 2.0,
@@ -76,8 +77,8 @@ class TestRecalcSingleBuy:
 
     def test_single_buy_without_seed_starts_from_zero(self, session):
         """Watchlist 没有 holding 时,从第一笔 buy 开始建仓。"""
-        repo.add_to_watchlist(session, "110011")
-        repo.add_transaction(session, "110011", {
+        watchlist_repo.add_to_watchlist(session, "110011")
+        fund_repo.add_transaction(session, "110011", {
             "tx_date": "2026-03-01",
             "amount": 1000.0,
             "nav": 2.0,
@@ -93,11 +94,11 @@ class TestRecalcMultiBuy:
     def test_weighted_average_two_buys(self, session):
         """两笔买入加权平均:第一笔 1000@1.0 = 1000;第二笔 2000@2.0 = 2000;
         share = 1000 + 1000 = 2000; cost = 3000 / 2000 = 1.5。"""
-        repo.add_to_watchlist(session, "110011")
-        repo.add_transaction(session, "110011", {
+        watchlist_repo.add_to_watchlist(session, "110011")
+        fund_repo.add_transaction(session, "110011", {
             "tx_date": "2026-01-01", "amount": 1000.0, "nav": 1.0,
         })
-        repo.add_transaction(session, "110011", {
+        fund_repo.add_transaction(session, "110011", {
             "tx_date": "2026-06-01", "amount": 2000.0, "nav": 2.0,
         })
         result = ts.recalc_holding("110011", session=session)
@@ -111,13 +112,13 @@ class TestRecalcMultiBuy:
         3: +3000 / 3.0 = 1000 share @ (2000*1.5 + 3000)/3000 = 2.0
         最终 share=3000, cost=2.0
         """
-        repo.add_to_watchlist(session, "110011")
+        watchlist_repo.add_to_watchlist(session, "110011")
         for d, amt, n in [
             ("2026-01-01", 1000.0, 1.0),
             ("2026-02-01", 2000.0, 2.0),
             ("2026-03-01", 3000.0, 3.0),
         ]:
-            repo.add_transaction(session, "110011", {
+            fund_repo.add_transaction(session, "110011", {
                 "tx_date": d, "amount": amt, "nav": n,
             })
         result = ts.recalc_holding("110011", session=session)
@@ -137,20 +138,20 @@ class TestRecalcDelete:
         - None 也让 pnl_service.calculate_pnl 自动 skip(见
           `test_missing_holding_share`)。
         """
-        repo.add_to_watchlist_full(
+        watchlist_repo.add_to_watchlist_full(
             session, "110011",
             {"is_holding": True, "holding_share": 1000, "cost_nav": 1.5},
         )
-        repo.add_transaction(session, "110011", {
+        fund_repo.add_transaction(session, "110011", {
             "tx_date": "2026-03-01", "amount": 500.0, "nav": 2.0,
         })
         # 第一次 recalc 合并 → 1250 / 1.6
         ts.recalc_holding("110011", session=session)
-        txs = repo.list_transactions(session, "110011")
-        repo.delete_transaction(session, txs[0]["id"])
+        txs = fund_repo.list_transactions(session, "110011")
+        fund_repo.delete_transaction(session, txs[0]["id"])
         # 删完后已经没有交易 → 应当清空 holding,让 PnL skip
         ts.recalc_holding("110011", session=session)
-        result = repo.get_watchlist_row(session, "110011")
+        result = watchlist_repo.get_watchlist_row(session, "110011")
         assert result["holding_share"] is None
         assert result["cost_nav"] is None
 
@@ -162,14 +163,14 @@ class TestRecalcDelete:
 
 class TestListEndpoint:
     def test_list_includes_transaction_count(self, session):
-        repo.add_to_watchlist_full(session, "110011", {"is_holding": True})
-        repo.add_transaction(session, "110011", {
+        watchlist_repo.add_to_watchlist_full(session, "110011", {"is_holding": True})
+        fund_repo.add_transaction(session, "110011", {
             "tx_date": "2026-01-01", "amount": 1000.0, "nav": 1.0,
         })
-        repo.add_transaction(session, "110011", {
+        fund_repo.add_transaction(session, "110011", {
             "tx_date": "2026-02-01", "amount": 500.0, "nav": 1.5,
         })
-        repo.add_to_watchlist(session, "000001")
+        watchlist_repo.add_to_watchlist(session, "000001")
         r = client.get("/api/watchlist")
         assert r.status_code == 200
         body = r.json()
@@ -210,10 +211,10 @@ class TestInitialHoldingApi:
         assert wl["holding_amount"] == pytest.approx(1000.0)
         assert wl["buy_date"] == "2026-03-01"
         assert wl["cost_nav_basis"] == "transactions"
-        assert repo.count_transactions(session, "110011") == 1
+        assert fund_repo.count_transactions(session, "110011") == 1
 
     def test_initial_holding_converts_existing_watchlist_without_duplicate_row(self, session):
-        repo.add_to_watchlist_full(session, "110011", {
+        watchlist_repo.add_to_watchlist_full(session, "110011", {
             "is_focus": True,
             "note": "old note",
         })
@@ -236,7 +237,7 @@ class TestInitialHoldingApi:
         assert wl["note"] == "converted"
         assert wl["holding_share"] == pytest.approx(400.0)
         assert wl["cost_nav"] == pytest.approx(3.0)
-        assert repo.count_transactions(session, "110011") == 1
+        assert fund_repo.count_transactions(session, "110011") == 1
 
     def test_initial_holding_starts_preload_after_success(self, session, monkeypatch):
         calls = []
@@ -307,8 +308,8 @@ class TestInitialHoldingApi:
 
     def test_initial_holding_409s_when_fund_already_has_transactions(self, session):
         """已有交易历史的基金不能再走 initial-holding;要追加请用 /transactions。"""
-        repo.add_to_watchlist_full(session, "110011", {"is_holding": True})
-        repo.add_transaction(session, "110011", {
+        watchlist_repo.add_to_watchlist_full(session, "110011", {"is_holding": True})
+        fund_repo.add_transaction(session, "110011", {
             "tx_date": "2026-01-01",
             "amount": 500.0,
             "nav": 2.0,
@@ -324,18 +325,18 @@ class TestInitialHoldingApi:
         assert r.status_code == 409, r.text
         assert "transactions" in r.json()["detail"].lower()
         # 老交易不被破坏
-        assert repo.count_transactions(session, "110011") == 1
+        assert fund_repo.count_transactions(session, "110011") == 1
 
 
 class TestTransactionApi:
     def test_get_transactions_empty(self, session):
-        repo.add_to_watchlist(session, "110011")
+        watchlist_repo.add_to_watchlist(session, "110011")
         r = client.get("/api/watchlist/110011/transactions")
         assert r.status_code == 200
         assert r.json() == []
 
     def test_post_transaction_recalcs_watchlist(self, session):
-        repo.add_to_watchlist(session, "110011")
+        watchlist_repo.add_to_watchlist(session, "110011")
         r = client.post("/api/watchlist/110011/transactions", json={
             "tx_date": "2026-03-01", "amount": 1000.0, "nav": 2.0,
         })
@@ -351,7 +352,7 @@ class TestTransactionApi:
         assert wl["holding_amount"] == pytest.approx(1000.0)
 
     def test_post_rejects_zero_amount_or_nav(self, session):
-        repo.add_to_watchlist(session, "110011")
+        watchlist_repo.add_to_watchlist(session, "110011")
         r = client.post("/api/watchlist/110011/transactions", json={
             "tx_date": "2026-03-01", "amount": 0, "nav": 2.0,
         })
@@ -362,7 +363,7 @@ class TestTransactionApi:
         assert r.status_code == 422
 
     def test_post_rejects_bad_date(self, session):
-        repo.add_to_watchlist(session, "110011")
+        watchlist_repo.add_to_watchlist(session, "110011")
         r = client.post("/api/watchlist/110011/transactions", json={
             "tx_date": "2026/03/01", "amount": 1000.0, "nav": 2.0,
         })
@@ -378,7 +379,7 @@ class TestTransactionApi:
         ) == 0
 
     def test_post_rejects_nav_that_does_not_match_local_nav_date(self, session):
-        repo.add_to_watchlist(session, "110011")
+        watchlist_repo.add_to_watchlist(session, "110011")
         session.add(FundNav(
             fund_code="110011",
             nav_date="2026-03-01",
@@ -395,10 +396,10 @@ class TestTransactionApi:
 
         assert r.status_code == 400
         assert "NAV" in r.json()["detail"]
-        assert repo.list_transactions(session, "110011") == []
+        assert fund_repo.list_transactions(session, "110011") == []
 
     def test_post_rejects_unsupported_kind(self, session):
-        repo.add_to_watchlist(session, "110011")
+        watchlist_repo.add_to_watchlist(session, "110011")
         r = client.post("/api/watchlist/110011/transactions", json={
             "tx_date": "2026-03-01",
             "amount": 1000.0,
@@ -406,10 +407,10 @@ class TestTransactionApi:
             "kind": "sell",
         })
         assert r.status_code == 422
-        assert repo.list_transactions(session, "110011") == []
+        assert fund_repo.list_transactions(session, "110011") == []
 
     def test_delete_transaction_recalcs(self, session):
-        repo.add_to_watchlist(session, "110011")
+        watchlist_repo.add_to_watchlist(session, "110011")
         # 加两笔
         client.post("/api/watchlist/110011/transactions", json={
             "tx_date": "2026-01-01", "amount": 1000.0, "nav": 1.0,
@@ -432,8 +433,8 @@ class TestTransactionApi:
         assert r.status_code == 404
 
     def test_delete_rejects_wrong_fund_without_deleting(self, session):
-        repo.add_to_watchlist(session, "110011")
-        repo.add_to_watchlist(session, "000001")
+        watchlist_repo.add_to_watchlist(session, "110011")
+        watchlist_repo.add_to_watchlist(session, "000001")
         r = client.post("/api/watchlist/110011/transactions", json={
             "tx_date": "2026-01-01", "amount": 1000.0, "nav": 1.0,
         })
@@ -445,7 +446,7 @@ class TestTransactionApi:
         assert session.get(FundTransaction, tx_id) is not None
 
     def test_delete_watchlist_removes_transactions(self, session):
-        repo.add_to_watchlist(session, "110011")
+        watchlist_repo.add_to_watchlist(session, "110011")
         client.post("/api/watchlist/110011/transactions", json={
             "tx_date": "2026-01-01", "amount": 1000.0, "nav": 1.0,
         })
@@ -460,7 +461,7 @@ class TestTransactionApi:
         ) == 0
 
     def test_get_transactions_returns_in_order(self, session):
-        repo.add_to_watchlist(session, "110011")
+        watchlist_repo.add_to_watchlist(session, "110011")
         for d, amt in [("2026-03-01", 1000.0), ("2026-01-01", 500.0)]:
             client.post("/api/watchlist/110011/transactions", json={
                 "tx_date": d, "amount": amt, "nav": 2.0,
@@ -474,7 +475,7 @@ class TestTransactionApi:
 
 class TestInvestmentPlanApi:
     def test_create_and_list_investment_plan(self, session):
-        repo.add_to_watchlist(session, "110011")
+        watchlist_repo.add_to_watchlist(session, "110011")
 
         r = client.post("/api/watchlist/110011/investment-plans", json={
             "amount": 1000.0,
@@ -498,7 +499,7 @@ class TestInvestmentPlanApi:
         assert listed.json() == [body]
 
     def test_daily_investment_plan_is_supported(self, session):
-        repo.add_to_watchlist(session, "110011")
+        watchlist_repo.add_to_watchlist(session, "110011")
 
         r = client.post("/api/watchlist/110011/investment-plans", json={
             "amount": 100.0,
@@ -511,7 +512,7 @@ class TestInvestmentPlanApi:
         assert r.json()["frequency"] == "daily"
 
     def test_update_pause_and_delete_investment_plan(self, session):
-        repo.add_to_watchlist(session, "110011")
+        watchlist_repo.add_to_watchlist(session, "110011")
         created = client.post("/api/watchlist/110011/investment-plans", json={
             "amount": 1000.0,
             "frequency": "monthly",
@@ -546,7 +547,7 @@ class TestInvestmentPlanApi:
         assert r.status_code == 404
 
     def test_investment_plan_rejects_bad_payload(self, session):
-        repo.add_to_watchlist(session, "110011")
+        watchlist_repo.add_to_watchlist(session, "110011")
 
         r = client.post("/api/watchlist/110011/investment-plans", json={
             "amount": 0,
@@ -560,7 +561,7 @@ class TestInvestmentPlanApi:
 
 class TestPendingBuyApi:
     def test_create_pending_buy_returns_t_day_confirmable_metadata(self, session):
-        repo.add_to_watchlist(session, "110011")
+        watchlist_repo.add_to_watchlist(session, "110011")
         session.add_all([
             FundNav(
                 fund_code="110011",
@@ -595,7 +596,7 @@ class TestPendingBuyApi:
         assert listed[0]["expected_confirm_date"] == "2026-07-02"
 
     def test_create_pending_buy_waits_when_next_nav_is_missing(self, session):
-        repo.add_to_watchlist(session, "110011")
+        watchlist_repo.add_to_watchlist(session, "110011")
         session.add(FundNav(
             fund_code="110011",
             nav_date="2026-07-01",
@@ -619,7 +620,7 @@ class TestPendingBuyApi:
     def test_create_and_list_pending_buy_without_affecting_pnl(self, session):
         from backend.services.fund import pnl_service as psvc
 
-        repo.add_to_watchlist_full(session, "110011", {"is_holding": True})
+        watchlist_repo.add_to_watchlist_full(session, "110011", {"is_holding": True})
         session.add(FundNav(
             fund_code="110011",
             nav_date="2026-07-01",
@@ -644,14 +645,14 @@ class TestPendingBuyApi:
         listed = client.get("/api/watchlist/110011/pending-buys")
         assert listed.status_code == 200
         assert listed.json() == [body]
-        assert repo.list_transactions(session, "110011") == []
+        assert fund_repo.list_transactions(session, "110011") == []
 
         pnl = psvc.calculate_pnl(session=session)
         assert pnl["items"] == []
         assert pnl["totals"]["market_value"] == 0
 
     def test_confirm_pending_buy_creates_transaction_and_recalcs(self, session):
-        repo.add_to_watchlist_full(session, "110011", {"is_holding": True})
+        watchlist_repo.add_to_watchlist_full(session, "110011", {"is_holding": True})
         session.add(FundNav(
             fund_code="110011",
             nav_date="2026-07-02",
@@ -682,7 +683,7 @@ class TestPendingBuyApi:
         assert body["watchlist"]["cost_nav"] == pytest.approx(2.5)
 
     def test_confirm_pending_buy_requires_local_nav_for_confirm_date(self, session):
-        repo.add_to_watchlist(session, "110011")
+        watchlist_repo.add_to_watchlist(session, "110011")
         created = client.post("/api/watchlist/110011/pending-buys", json={
             "request_date": "2026-07-01",
             "amount": 1000.0,
@@ -694,10 +695,10 @@ class TestPendingBuyApi:
         )
 
         assert r.status_code == 404
-        assert repo.list_transactions(session, "110011") == []
+        assert fund_repo.list_transactions(session, "110011") == []
 
     def test_cancel_pending_buy_does_not_create_transaction(self, session):
-        repo.add_to_watchlist(session, "110011")
+        watchlist_repo.add_to_watchlist(session, "110011")
         created = client.post("/api/watchlist/110011/pending-buys", json={
             "request_date": "2026-07-01",
             "amount": 1000.0,
@@ -708,10 +709,10 @@ class TestPendingBuyApi:
         assert r.status_code == 200
         assert r.json()["status"] == "cancelled"
         assert r.json()["stage"] == "cancelled"
-        assert repo.list_transactions(session, "110011") == []
+        assert fund_repo.list_transactions(session, "110011") == []
 
     def test_confirmed_pending_buy_cannot_be_confirmed_twice(self, session):
-        repo.add_to_watchlist_full(session, "110011", {"is_holding": True})
+        watchlist_repo.add_to_watchlist_full(session, "110011", {"is_holding": True})
         session.add(FundNav(
             fund_code="110011",
             nav_date="2026-07-02",
@@ -735,7 +736,7 @@ class TestPendingBuyApi:
         )
 
         assert second.status_code == 409
-        assert repo.count_transactions(session, "110011") == 1
+        assert fund_repo.count_transactions(session, "110011") == 1
 
 
 # --------------------------------------------------------------------------- #
@@ -749,7 +750,7 @@ class TestPnlCompatibility:
         from backend.db.models import Fund, FundNav
         from backend.services.fund import pnl_service as psvc
 
-        repo.add_to_watchlist_full(
+        watchlist_repo.add_to_watchlist_full(
             session, "110011", {"is_holding": True},
         )
         client.post("/api/watchlist/110011/transactions", json={

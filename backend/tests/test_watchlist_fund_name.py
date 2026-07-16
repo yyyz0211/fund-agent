@@ -5,7 +5,7 @@ import pytest
 from sqlalchemy import inspect
 
 from backend.db.models import Fund, Watchlist
-from backend.db.repository import (
+from backend.db.repositories.watchlist import (
     add_to_watchlist_full,
     backfill_watchlist_fund_names,
     get_watchlist,

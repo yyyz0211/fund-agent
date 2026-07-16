@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from sqlalchemy import select
 
-from backend.db import repository as repo
+from backend.db.repositories import fund as fund_repo
 from backend.db.models import Fund, Watchlist
 from backend.services.market import data_collector as dc
 
@@ -122,8 +122,8 @@ def _calculate_pnl_impl(fund_codes, s):
         name_rows = s.scalars(select(Fund).where(Fund.fund_code.in_(codes))).all()
         names = {f.fund_code: f.fund_name for f in name_rows}
 
-        latest = repo.get_latest_navs_for_funds(s, codes)
-        tx_counts = repo.count_transactions_for_funds(s, codes)
+        latest = fund_repo.get_latest_navs_for_funds(s, codes)
+        tx_counts = fund_repo.count_transactions_for_funds(s, codes)
 
     for r in rows:
         if r.holding_share is None or r.cost_nav is None:

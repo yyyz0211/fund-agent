@@ -41,7 +41,7 @@ def test_market_snapshot_model_import():
 @pytest.mark.db
 def test_upsert_market_snapshot_idempotent(in_memory_session):
     from backend.db.models import MarketSnapshot
-    from backend.db.repository import upsert_market_snapshot
+    from backend.db.repositories.market import upsert_market_snapshot
 
     payload = {
         "trade_date": "2026-07-07",

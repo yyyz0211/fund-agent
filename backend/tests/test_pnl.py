@@ -5,7 +5,9 @@
 """
 import pytest
 
-from backend.db import repository as repo
+from backend.db.repositories import fund as fund_repo
+
+from backend.db.repositories import watchlist as watchlist_repo
 from backend.services.fund import pnl_service as psvc
 
 pytestmark = pytest.mark.db
@@ -19,7 +21,7 @@ def session(db_session):
 def _seed_holding(s, fund_code, share, cost, fund_name=None, current_nav=None,
                   nav_date="2026-06-30", daily_return=None):
     """把 watchlist + Fund + FundNav 一次性塞满,准备好 PnL 计算。"""
-    repo.add_to_watchlist_full(
+    watchlist_repo.add_to_watchlist_full(
         s, fund_code,
         {"is_holding": True, "holding_share": share, "cost_nav": cost},
     )
@@ -114,13 +116,13 @@ class TestMultiFund:
     def test_transaction_count_is_returned_for_each_holding(self, session):
         _seed_holding(session, "110011", share=1000, cost=2.0, current_nav=2.5)
         _seed_holding(session, "000001", share=500, cost=3.0, current_nav=2.4)
-        repo.add_transaction(session, "110011", {
+        fund_repo.add_transaction(session, "110011", {
             "tx_date": "2026-01-01", "amount": 1000.0, "nav": 2.0,
         })
-        repo.add_transaction(session, "110011", {
+        fund_repo.add_transaction(session, "110011", {
             "tx_date": "2026-02-01", "amount": 500.0, "nav": 2.5,
         })
-        repo.add_transaction(session, "000001", {
+        fund_repo.add_transaction(session, "000001", {
             "tx_date": "2026-03-01", "amount": 300.0, "nav": 2.4,
         })
 
@@ -142,7 +144,7 @@ class TestMultiFund:
         """`is_holding=False` 的行根本不进 PnL 计算。"""
         _seed_holding(session, "110011", share=1000, cost=2.0, current_nav=2.5)
         # 加一个 is_holding=False 的行
-        repo.add_to_watchlist_full(
+        watchlist_repo.add_to_watchlist_full(
             session, "000001",
             {"is_holding": False, "holding_share": 100, "cost_nav": 1.0},
         )
@@ -153,7 +155,7 @@ class TestMultiFund:
 
 class TestSkipped:
     def test_missing_holding_share(self, session):
-        repo.add_to_watchlist_full(
+        watchlist_repo.add_to_watchlist_full(
             session, "110011",
             {"is_holding": True, "holding_share": None, "cost_nav": 2.0},
         )
@@ -164,7 +166,7 @@ class TestSkipped:
         assert "holding_share" in result["skipped"][0]["reason"]
 
     def test_missing_cost_nav(self, session):
-        repo.add_to_watchlist_full(
+        watchlist_repo.add_to_watchlist_full(
             session, "110011",
             {"is_holding": True, "holding_share": 1000, "cost_nav": None},
         )
@@ -174,7 +176,7 @@ class TestSkipped:
 
     def test_no_nav_data(self, session):
         """watchlist 行齐了,但 FundNav 缺失 → 跳进 skipped。"""
-        repo.add_to_watchlist_full(
+        watchlist_repo.add_to_watchlist_full(
             session, "110011",
             {"is_holding": True, "holding_share": 1000, "cost_nav": 2.0},
         )
@@ -184,7 +186,7 @@ class TestSkipped:
 
     def test_zero_share_or_cost(self, session):
         """share=0 / cost=0 不应该进 PnL(投资额是 0,百分比无意义)。"""
-        repo.add_to_watchlist_full(
+        watchlist_repo.add_to_watchlist_full(
             session, "110011",
             {"is_holding": True, "holding_share": 0, "cost_nav": 2.0},
         )
@@ -196,7 +198,7 @@ class TestSkipped:
     def test_skipped_does_not_distort_totals(self, session):
         """一只正常 + 一只 skipped, totals 只算正常那只。"""
         _seed_holding(session, "110011", share=1000, cost=2.0, current_nav=2.5)
-        repo.add_to_watchlist_full(
+        watchlist_repo.add_to_watchlist_full(
             session, "000001",
             {"is_holding": True, "holding_share": 100, "cost_nav": None},
         )

@@ -447,15 +447,15 @@ def _patch_payload(payload: WatchlistPatch) -> dict:
 @router.get("")
 def list_watchlist(session: Session = Depends(get_db_session)) -> list[dict]:
     """列出全部自选行,批量附带展示字段,避免前端逐行补数据。"""
-    from backend.db import repository as repo
+    from backend.db.repositories import fund as fund_repo
     from backend.db.models import Fund
 
     rows = ws.list_watchlist(session=session)
     if not rows:
         return rows
     codes = [r["fund_code"] for r in rows]
-    counts = repo.count_transactions_for_funds(session, codes)
-    latest_navs = repo.get_latest_navs_for_funds(session, codes)
+    counts = fund_repo.count_transactions_for_funds(session, codes)
+    latest_navs = fund_repo.get_latest_navs_for_funds(session, codes)
     fund_rows = session.scalars(select(Fund).where(Fund.fund_code.in_(codes))).all()
     fund_names = {fund.fund_code: fund.fund_name for fund in fund_rows}
     for r in rows:

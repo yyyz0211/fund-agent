@@ -8,7 +8,7 @@ from datetime import datetime
 from sqlalchemy import String, cast, or_, select
 
 from backend.config.settings import get_settings
-from backend.db import repository as repo
+from backend.db.repositories import knowledge as knowledge_repo
 from backend.db.models import KnowledgeDocument, KnowledgeFundMatch, KnowledgeRetrievalLog
 from backend.db.session_scope import session_scope
 from backend.services.knowledge import (
@@ -358,7 +358,7 @@ def get_queue_status(
 ) -> dict:
     """知识队列状态读视图。调用方未提供 session 时走独立 short-tx。"""
     if session is not None:
-        return repo.queue_status(
+        return knowledge_repo.queue_status(
             session,
             source_type=source_type,
             classification_status=classification_status,
@@ -367,7 +367,7 @@ def get_queue_status(
             limit=limit,
         )
     with session_scope() as s:
-        return repo.queue_status(
+        return knowledge_repo.queue_status(
             s,
             source_type=source_type,
             classification_status=classification_status,

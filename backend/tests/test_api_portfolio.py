@@ -3,7 +3,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.api.app import app
-from backend.db import repository as repo
+from backend.db.repositories import fund as fund_repo
+from backend.db.repositories import watchlist as watchlist_repo
 from backend.db.models import Fund, FundNav
 
 client = TestClient(app)
@@ -17,7 +18,7 @@ def session(db_session):
 
 def _seed(s, fund_code, share, cost, current_nav, nav_date="2026-06-30",
           fund_name=None):
-    repo.add_to_watchlist_full(
+    watchlist_repo.add_to_watchlist_full(
         s, fund_code,
         {"is_holding": True, "holding_share": share, "cost_nav": cost},
     )
@@ -108,14 +109,14 @@ class TestCompareEndpoint:
 
 class TestPnlSeriesEndpoint:
     def _seed_holding_with_history(self, s, code, dates, navs, tx_date, amount):
-        repo.add_to_watchlist_full(s, code, {"is_holding": True})
+        watchlist_repo.add_to_watchlist_full(s, code, {"is_holding": True})
         if not s.get(Fund, code):
             s.add(Fund(fund_code=code, fund_name=code))
             s.commit()
         for d, n in zip(dates, navs):
             s.add(FundNav(fund_code=code, nav_date=d, accumulated_nav=n, source="akshare"))
         s.commit()
-        repo.add_transaction(s, code, {"tx_date": tx_date, "amount": amount, "nav": navs[0]})
+        fund_repo.add_transaction(s, code, {"tx_date": tx_date, "amount": amount, "nav": navs[0]})
 
     def test_empty_portfolio_returns_zero_summary(self, session):
         r = client.get("/api/portfolio/pnl-series")

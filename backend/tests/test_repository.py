@@ -1,5 +1,6 @@
 import pytest
-from backend.db import repository as repo
+from backend.db.repositories import fund as fund_repo
+from backend.db.repositories import watchlist as watchlist_repo
 from backend.db.models import FundNav
 
 
@@ -12,15 +13,15 @@ def session(db_session):
 
 
 def test_watchlist_crud(session):
-    row = repo.add_to_watchlist(session, "110011", note="hold")
+    row = watchlist_repo.add_to_watchlist(session, "110011", note="hold")
     assert row["fund_code"] == "110011"
-    assert repo.add_to_watchlist(session, "110011")["fund_code"] == "110011"  # idempotent
-    assert len(repo.get_watchlist(session)) == 1
-    repo.update_watchlist_note(session, "110011", "watch")
-    assert repo.get_watchlist(session)[0]["note"] == "watch"
-    assert repo.remove_from_watchlist(session, "110011") is True
-    assert repo.remove_from_watchlist(session, "110011") is False
-    assert repo.get_watchlist(session) == []
+    assert watchlist_repo.add_to_watchlist(session, "110011")["fund_code"] == "110011"  # idempotent
+    assert len(watchlist_repo.get_watchlist(session)) == 1
+    watchlist_repo.update_watchlist_note(session, "110011", "watch")
+    assert watchlist_repo.get_watchlist(session)[0]["note"] == "watch"
+    assert watchlist_repo.remove_from_watchlist(session, "110011") is True
+    assert watchlist_repo.remove_from_watchlist(session, "110011") is False
+    assert watchlist_repo.get_watchlist(session) == []
 
 
 def test_upsert_navs_dedup_and_read(session):
@@ -30,20 +31,20 @@ def test_upsert_navs_dedup_and_read(session):
         {"nav_date": "2026-06-02", "unit_nav": 1.1, "accumulated_nav": 2.1,
          "daily_return": 0.05, "source": "akshare", "source_updated_at": "2026-06-30"},
     ]
-    assert repo.upsert_navs(session, "110011", rows) == 2
-    assert repo.upsert_navs(session, "110011", rows) == 0  # dedup
-    assert repo.get_accumulated_navs(session, "110011") == [2.0, 2.1]
+    assert fund_repo.upsert_navs(session, "110011", rows) == 2
+    assert fund_repo.upsert_navs(session, "110011", rows) == 0  # dedup
+    assert fund_repo.get_accumulated_navs(session, "110011") == [2.0, 2.1]
 
 
 def test_upsert_fund(session):
-    repo.upsert_fund(session, {"fund_code": "110011", "fund_name": "FundA"})
-    repo.upsert_fund(session, {"fund_code": "110011", "fund_name": "FundA v2"})
+    fund_repo.upsert_fund(session, {"fund_code": "110011", "fund_name": "FundA"})
+    fund_repo.upsert_fund(session, {"fund_code": "110011", "fund_name": "FundA v2"})
     from backend.db.models import Fund
     assert session.get(Fund, "110011").fund_name == "FundA v2"
 
 
 def test_upsert_and_get_fund_profile(session):
-    repo.upsert_fund_profile(session, "110011", {
+    fund_repo.upsert_fund_profile(session, "110011", {
         "scale": 12.5,
         "scale_date": "2026-06-30",
         "peer_category": "混合型",
@@ -57,13 +58,13 @@ def test_upsert_and_get_fund_profile(session):
         "as_of": "2026-07-02",
         "raw_errors": "[]",
     })
-    repo.upsert_fund_profile(session, "110011", {
+    fund_repo.upsert_fund_profile(session, "110011", {
         "scale": 13.5,
         "rank_position": 8,
         "raw_errors": '["scale stale"]',
     })
 
-    profile = repo.get_fund_profile(session, "110011")
+    profile = fund_repo.get_fund_profile(session, "110011")
 
     assert profile["fund_code"] == "110011"
     assert profile["scale"] == pytest.approx(13.5)
@@ -81,28 +82,28 @@ def test_upsert_and_get_fund_profile(session):
 
 
 def test_remove_from_watchlist_cleans_fund_profile(session):
-    repo.add_to_watchlist(session, "110011")
-    repo.upsert_fund_profile(session, "110011", {"scale": 12.5})
+    watchlist_repo.add_to_watchlist(session, "110011")
+    fund_repo.upsert_fund_profile(session, "110011", {"scale": 12.5})
 
-    assert repo.remove_from_watchlist(session, "110011") is True
+    assert watchlist_repo.remove_from_watchlist(session, "110011") is True
 
-    assert repo.get_fund_profile(session, "110011") is None
+    assert fund_repo.get_fund_profile(session, "110011") is None
 
 
 def test_count_transactions_for_funds_returns_counts_and_zero_defaults(session):
-    repo.add_to_watchlist(session, "110011")
-    repo.add_to_watchlist(session, "000001")
-    repo.add_transaction(session, "110011", {
+    watchlist_repo.add_to_watchlist(session, "110011")
+    watchlist_repo.add_to_watchlist(session, "000001")
+    fund_repo.add_transaction(session, "110011", {
         "tx_date": "2026-01-01", "amount": 1000.0, "nav": 1.0,
     })
-    repo.add_transaction(session, "110011", {
+    fund_repo.add_transaction(session, "110011", {
         "tx_date": "2026-02-01", "amount": 500.0, "nav": 1.5,
     })
-    repo.add_transaction(session, "000001", {
+    fund_repo.add_transaction(session, "000001", {
         "tx_date": "2026-02-01", "amount": 300.0, "nav": 1.0,
     })
 
-    counts = repo.count_transactions_for_funds(session, ["110011", "000001", "999999"])
+    counts = fund_repo.count_transactions_for_funds(session, ["110011", "000001", "999999"])
 
     assert counts == {"110011": 2, "000001": 1, "999999": 0}
 
@@ -118,7 +119,7 @@ def test_get_latest_navs_for_funds_returns_latest_nav_per_fund(session):
     ])
     session.commit()
 
-    latest = repo.get_latest_navs_for_funds(session, ["110011", "000001", "999999"])
+    latest = fund_repo.get_latest_navs_for_funds(session, ["110011", "000001", "999999"])
 
     assert latest["110011"]["nav_date"] == "2026-06-30"
     assert latest["110011"]["accumulated_nav"] == pytest.approx(1.3)
