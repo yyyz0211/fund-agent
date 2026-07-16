@@ -11,7 +11,7 @@ import { PageHeader, SectionHeader } from "@/components/PageHeader";
 import { HoldingCard } from "@/components/HoldingCard";
 import { FundDiagnosisCard } from "@/components/FundDiagnosisCard";
 import { StateBlock } from "@/components/StateBlock";
-import { WatchlistDrawer } from "@/components/WatchlistDrawer";
+import { WatchlistDrawer } from "@/components/watchlist-drawer";
 import { useToast } from "@/components/Toast";
 import { api } from "@/lib/api";
 import { formatPct, formatNav, formatDate } from "@/lib/format";

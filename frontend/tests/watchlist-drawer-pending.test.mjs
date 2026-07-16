@@ -4,7 +4,10 @@ import test from "node:test";
 
 test("watchlist drawer exposes pending buy tab and market value disclaimer", async () => {
   const source = await fs.readFile(
-    new URL("../src/components/WatchlistDrawer.tsx", import.meta.url),
+    new URL(
+      "../src/components/watchlist-drawer/tabs/PendingBuysTab.tsx",
+      import.meta.url,
+    ),
     "utf8",
   );
 
@@ -15,7 +18,10 @@ test("watchlist drawer exposes pending buy tab and market value disclaimer", asy
 
 test("watchlist drawer explains T-day pending buy confirmation states", async () => {
   const source = await fs.readFile(
-    new URL("../src/components/WatchlistDrawer.tsx", import.meta.url),
+    new URL(
+      "../src/components/watchlist-drawer/tabs/PendingBuysTab.tsx",
+      import.meta.url,
+    ),
     "utf8",
   );
 
@@ -25,10 +31,21 @@ test("watchlist drawer explains T-day pending buy confirmation states", async ()
 });
 
 test("investment plan tab can create a pending buy from one plan occurrence", async () => {
-  const source = await fs.readFile(
-    new URL("../src/components/WatchlistDrawer.tsx", import.meta.url),
+  const plansTab = await fs.readFile(
+    new URL(
+      "../src/components/watchlist-drawer/tabs/InvestmentPlansTab.tsx",
+      import.meta.url,
+    ),
     "utf8",
   );
+  const planActions = await fs.readFile(
+    new URL(
+      "../src/components/watchlist-drawer/hooks/useInvestmentPlanActions.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const source = `${plansTab}\n${planActions}`;
 
   assert.match(source, /记录本次申购/);
   assert.match(source, /startPendingBuyFromPlan/);

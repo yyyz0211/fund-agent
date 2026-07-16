@@ -4,7 +4,7 @@ import Link from "next/link";
 import { Plus, RefreshCw, Search, Wallet } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageHeader } from "@/components/PageHeader";
-import { WatchlistDrawer } from "@/components/WatchlistDrawer";
+import { WatchlistDrawer } from "@/components/watchlist-drawer";
 import { WatchlistTable } from "@/components/WatchlistTable";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
