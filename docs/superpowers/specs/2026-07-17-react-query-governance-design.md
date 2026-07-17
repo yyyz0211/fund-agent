@@ -219,6 +219,8 @@ export const queryDefaults = {
 
 `query-policy.ts` 导出命名 policy object；调用方不得重新写这些数值。`gcTime=5 分钟` 和
 `retry=3` 是 TanStack Query 当前有效默认值，本次将其显式化，不改变运行行为。
+从裸 timer 迁移的三个 observer 显式设置 `refetchIntervalInBackground: true`，保持标签页进入
+后台时仍继续计时；页面真正卸载时 observer 才停止。
 
 ## 7. Polling 纯函数
 
