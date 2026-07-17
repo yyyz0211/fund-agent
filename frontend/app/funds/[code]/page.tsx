@@ -15,6 +15,8 @@ import { WatchlistDrawer } from "@/components/watchlist-drawer";
 import { useToast } from "@/components/Toast";
 import { api } from "@/lib/api";
 import { formatPct, formatNav, formatDate } from "@/lib/format";
+import { queryKeys } from "@/lib/query-keys";
+import { queryPolicy } from "@/lib/query-policy";
 import {
   periodDailyReturnRows,
   summarizePeriodReturns,
@@ -41,7 +43,7 @@ export default function FundDetail({ params }: { params: { code: string } }) {
   const start = periodToStart(period);
 
   const summary = useQuery({
-    queryKey: ["fundSummary", code, period, start],
+    queryKey: queryKeys.fund.summary(code, period, start),
     queryFn: () => api.fundSummary(code, period, start),
   });
   const summaryData = summary.data;
@@ -54,15 +56,15 @@ export default function FundDetail({ params }: { params: { code: string } }) {
   const dailyReturnRows = periodDailyReturnRows(summaryData?.nav_history);
 
   const diagnosis = useQuery({
-    queryKey: ["fundDiagnosis", code, period],
+    queryKey: queryKeys.fund.diagnosis(code, period),
     queryFn: () => api.fundDiagnosis(code, period),
   });
 
   const refreshDiagnosisJob = useQuery({
-    queryKey: ["fundDiagnosisRefreshJob", code, refreshJobId],
+    queryKey: queryKeys.fund.diagnosisRefreshJob(code, refreshJobId),
     queryFn: () => api.fundDiagnosisRefreshJob(code, refreshJobId!),
     enabled: Boolean(refreshJobId),
-    refetchInterval: refreshJobId ? 1000 : false,
+    refetchInterval: refreshJobId ? queryPolicy.diagnosisRefreshJob.intervalMs : false,
   });
 
   // 当本地无 Fund 数据时,提供"立即拉取"按钮 —— 用户从自选池进来
@@ -71,14 +73,14 @@ export default function FundDetail({ params }: { params: { code: string } }) {
   const refreshFund = useMutation({
     mutationFn: () => api.refreshFund(code),
     onSuccess: (res) => {
-      qc.invalidateQueries({ queryKey: ["fundSummary", code] });
-      qc.invalidateQueries({ queryKey: ["fund", code] });
-      qc.invalidateQueries({ queryKey: ["nav", code] });
-      qc.invalidateQueries({ queryKey: ["navHistory", code] });
-      qc.invalidateQueries({ queryKey: ["metrics", code] });
-      qc.invalidateQueries({ queryKey: ["portfolioPnl", [code]] });
-      qc.invalidateQueries({ queryKey: ["portfolioPnl", []] });
-      qc.invalidateQueries({ queryKey: ["fundDiagnosis", code] });
+      qc.invalidateQueries({ queryKey: queryKeys.fund.summaryForFund(code) });
+      qc.invalidateQueries({ queryKey: queryKeys.fund.detail(code) });
+      qc.invalidateQueries({ queryKey: queryKeys.fund.navForFund(code) });
+      qc.invalidateQueries({ queryKey: queryKeys.fund.navHistoryForFund(code) });
+      qc.invalidateQueries({ queryKey: queryKeys.fund.metrics(code) });
+      qc.invalidateQueries({ queryKey: queryKeys.portfolio.pnl([code]) });
+      qc.invalidateQueries({ queryKey: queryKeys.portfolio.pnl([]) });
+      qc.invalidateQueries({ queryKey: queryKeys.fund.diagnosisForFund(code) });
       if (res.already_up_to_date) {
         toast.push(`${code} 本地已是最新`, "success");
       } else {
@@ -107,15 +109,15 @@ export default function FundDetail({ params }: { params: { code: string } }) {
       // fund / nav / navHistory / metrics / portfolioPnl 缓存必须一并
       // 失效 —— 后端 `remove_from_watchlist` 已经级联删 Fund 和 FundNav,
       // 详情页留在 React Query 里的旧数据会显示"幽灵信息"。
-      qc.invalidateQueries({ queryKey: ["fundSummary", code] });
-      qc.invalidateQueries({ queryKey: ["watchlist"] });
-      qc.invalidateQueries({ queryKey: ["fund", code] });
-      qc.invalidateQueries({ queryKey: ["nav", code] });
-      qc.invalidateQueries({ queryKey: ["navHistory", code] });
-      qc.invalidateQueries({ queryKey: ["metrics", code] });
-      qc.invalidateQueries({ queryKey: ["portfolioPnl", [code]] });
-      qc.invalidateQueries({ queryKey: ["portfolioPnl", []] });
-      qc.invalidateQueries({ queryKey: ["fundDiagnosis", code] });
+      qc.invalidateQueries({ queryKey: queryKeys.fund.summaryForFund(code) });
+      qc.invalidateQueries({ queryKey: queryKeys.watchlist.all });
+      qc.invalidateQueries({ queryKey: queryKeys.fund.detail(code) });
+      qc.invalidateQueries({ queryKey: queryKeys.fund.navForFund(code) });
+      qc.invalidateQueries({ queryKey: queryKeys.fund.navHistoryForFund(code) });
+      qc.invalidateQueries({ queryKey: queryKeys.fund.metrics(code) });
+      qc.invalidateQueries({ queryKey: queryKeys.portfolio.pnl([code]) });
+      qc.invalidateQueries({ queryKey: queryKeys.portfolio.pnl([]) });
+      qc.invalidateQueries({ queryKey: queryKeys.fund.diagnosisForFund(code) });
       toast.push(`已从自选池移除 ${code}`, "success");
     } catch (err) {
       toast.push(`移除失败：${String(err)}`, "error");
@@ -126,7 +128,7 @@ export default function FundDetail({ params }: { params: { code: string } }) {
     mutationFn: () => api.refreshFundDiagnosis(code),
     onSuccess: (job) => {
       if (job.status === "done") {
-        qc.invalidateQueries({ queryKey: ["fundDiagnosis", code] });
+        qc.invalidateQueries({ queryKey: queryKeys.fund.diagnosisForFund(code) });
         toast.push("体检数据已是最新", "success");
         return;
       }
@@ -143,7 +145,7 @@ export default function FundDetail({ params }: { params: { code: string } }) {
     if (!job) return;
     if (job.status === "done") {
       setRefreshJobId(null);
-      qc.invalidateQueries({ queryKey: ["fundDiagnosis", code] });
+      qc.invalidateQueries({ queryKey: queryKeys.fund.diagnosisForFund(code) });
       toast.push(
         job.missing_data.length > 0
           ? `体检数据已刷新，仍缺失 ${job.missing_data.slice(0, 3).join(", ")}`
@@ -325,11 +327,11 @@ export default function FundDetail({ params }: { params: { code: string } }) {
       <WatchlistDrawer
         onClose={() => setDrawerOpen(false)}
         onSaved={() => {
-          qc.invalidateQueries({ queryKey: ["fundSummary", code] });
-          qc.invalidateQueries({ queryKey: ["watchlist"] });
-          qc.invalidateQueries({ queryKey: ["portfolioPnl", [code]] });
-          qc.invalidateQueries({ queryKey: ["portfolioPnl", []] });
-          qc.invalidateQueries({ queryKey: ["fundDiagnosis", code] });
+          qc.invalidateQueries({ queryKey: queryKeys.fund.summaryForFund(code) });
+          qc.invalidateQueries({ queryKey: queryKeys.watchlist.all });
+          qc.invalidateQueries({ queryKey: queryKeys.portfolio.pnl([code]) });
+          qc.invalidateQueries({ queryKey: queryKeys.portfolio.pnl([]) });
+          qc.invalidateQueries({ queryKey: queryKeys.fund.diagnosisForFund(code) });
         }}
         open={drawerOpen}
         prefillFundCode={code}

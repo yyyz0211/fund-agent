@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { StateBlock } from "@/components/StateBlock";
 import { api } from "@/lib/api";
+import { queryKeys } from "@/lib/query-keys";
 import { formatMoney, formatNav, formatPct, formatDate } from "@/lib/format";
 import type { PnlItem } from "@/types/api";
 
@@ -20,12 +21,12 @@ export function HoldingCard({
   fundCode: string;
 }) {
   const pnl = useQuery({
-    queryKey: ["portfolioPnl", [fundCode]],
+    queryKey: queryKeys.portfolio.pnl([fundCode]),
     queryFn: () => api.portfolioPnl([fundCode]),
     refetchOnMount: "always",
   });
   const pendingBuys = useQuery({
-    queryKey: ["pendingBuys", fundCode],
+    queryKey: queryKeys.watchlist.pendingBuys(fundCode),
     queryFn: () => api.pendingBuys(fundCode),
     refetchOnMount: "always",
   });

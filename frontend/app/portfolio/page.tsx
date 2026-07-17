@@ -22,6 +22,7 @@ import { PageHeader, SectionHeader } from "@/components/PageHeader";
 import { StateBlock } from "@/components/StateBlock";
 import { MetricCards, type MetricItem } from "@/components/MetricCard";
 import { api } from "@/lib/api";
+import { queryKeys } from "@/lib/query-keys";
 import { formatDate, formatMoney, formatPct } from "@/lib/format";
 import {
   PORTFOLIO_PERIODS,
@@ -52,7 +53,7 @@ export default function PortfolioPage({
   const start = useMemo(() => periodStartForEnd(period, today), [period, today]);
 
   const query = useQuery({
-    queryKey: ["portfolioPnlSeries", { period, start, end: today, codes: initialCodes }],
+    queryKey: queryKeys.portfolio.pnlSeries({ period, start, end: today, codes: initialCodes }),
     queryFn: () => api.portfolioPnlSeries(initialCodes, start, today),
   });
 

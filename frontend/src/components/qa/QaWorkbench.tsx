@@ -6,6 +6,8 @@ import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { LANGGRAPH_ASSISTANT, LANGGRAPH_URL } from "@/lib/langgraph";
+import { queryKeys } from "@/lib/query-keys";
+import { queryPolicy } from "@/lib/query-policy";
 import { Composer } from "./Composer";
 import { useQaStream } from "./hooks/useQaStream";
 import { useQaThreads } from "./hooks/useQaThreads";
@@ -25,7 +27,7 @@ export function QaWorkbench({ prefill }: QaWorkbenchProps) {
   });
 
   const health = useQuery({
-    queryKey: ["langgraph", "health"],
+    queryKey: queryKeys.langgraph.health,
     queryFn: async () => {
       try {
         const response = await fetch(`${LANGGRAPH_URL}/ok`);
@@ -34,7 +36,7 @@ export function QaWorkbench({ prefill }: QaWorkbenchProps) {
         return false;
       }
     },
-    retry: false,
+    ...queryPolicy.langgraphHealth,
   });
 
   function switchThread(id: string) {

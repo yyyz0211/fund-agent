@@ -6,6 +6,7 @@ import {
 } from "recharts";
 import { StateBlock } from "@/components/StateBlock";
 import { api } from "@/lib/api";
+import { queryKeys } from "@/lib/query-keys";
 import { formatNav, formatPct } from "@/lib/format";
 import { toNavChartPoints, type NavDailyReturnPoint } from "@/lib/nav-daily-return";
 import type { NavHistory } from "@/types/api";
@@ -44,7 +45,7 @@ export function NavChart({
   const shouldFetch = navHistory === undefined && navError === undefined && navLoading === undefined;
 
   const query = useQuery({
-    queryKey: ["navHistory", code, start],
+    queryKey: queryKeys.fund.navHistory(code, start),
     queryFn: () => api.navHistory(code, start),
     enabled: shouldFetch,
   });

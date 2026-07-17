@@ -1,4 +1,13 @@
+import { useEffect, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { queryKeys } from "@/lib/query-keys";
+import { queryPolicy } from "@/lib/query-policy";
+import {
+  hasFingerprintChanged,
+  hasPollingTimedOut,
+  marketEvidenceFingerprint,
+  marketSnapshotFingerprint,
+} from "@/lib/polling";
 import type {
   EvidenceCategory,
   MarketEvidenceItem,
@@ -104,20 +113,19 @@ export function isMarketDateToday(date: string, now: Date = new Date()): boolean
 
 export function useMarketSnapshot(date: string, type: string) {
   return useQuery<MarketSnapshot>({
-    queryKey: ["market", "snapshot", date, type],
+    queryKey: queryKeys.market.snapshot(date, type),
     queryFn: () =>
       fetch(`/api/market/snapshot?date=${encodeURIComponent(date)}&type=${encodeURIComponent(type)}`).then(r => {
         if (!r.ok) throw new Error("failed");
         return r.json();
       }),
-    staleTime: 5 * 60 * 1000,
-    retry: 1,
+    ...queryPolicy.marketData,
   });
 }
 
 export function useMarketEvidence(date: string, category?: EvidenceCategory, limit: number = 20) {
   return useQuery<MarketEvidenceResponse>({
-    queryKey: ["market", "evidence", date, category ?? "", limit],
+    queryKey: queryKeys.market.evidence.list(date, category ?? "", limit),
     queryFn: () => {
       const url = new URL("/api/market/evidence", window.location.origin);
       url.searchParams.set("date", date);
@@ -128,70 +136,167 @@ export function useMarketEvidence(date: string, category?: EvidenceCategory, lim
         return r.json();
       });
     },
-    staleTime: 5 * 60 * 1000,
-    retry: 1,
+    ...queryPolicy.marketData,
   });
 }
 
 export function useEvidenceRefreshStatus(briefType: string = "post_market") {
   return useQuery<MarketEvidenceRefreshStatus>({
-    queryKey: ["market", "evidence", "refresh-status", briefType],
+    queryKey: queryKeys.market.evidence.refreshStatus(briefType),
     queryFn: () =>
       fetch(`/api/market/evidence/refresh/status?brief_type=${encodeURIComponent(briefType)}`).then((r) => {
         if (!r.ok) throw new Error("failed");
         return r.json();
       }),
-    staleTime: 5 * 1000,
-    refetchInterval: 5 * 1000,
-    retry: 1,
+    ...queryPolicy.evidenceStatus,
   });
 }
 
+interface RefreshPollingState {
+  active: boolean;
+  startedAt: number;
+  baseline: string;
+  target: string | undefined;
+}
+
+interface RefreshPollingTick {
+  startedAt: number;
+  fingerprint: string;
+}
+
+const idlePolling: RefreshPollingState = {
+  active: false,
+  startedAt: 0,
+  baseline: "",
+  target: undefined,
+};
+
 export function useRefreshMarket(date?: string) {
   const qc = useQueryClient();
-  return useMutation({
-    mutationFn: () =>
-      fetch(`/api/market/refresh${date ? `?date=${encodeURIComponent(date)}` : ""}`, {
+  const snapshotTargetRef = useRef<string | undefined>(date);
+  const [polling, setPolling] = useState<RefreshPollingState>(idlePolling);
+  const targetDate = polling.active ? polling.target : date;
+  const resourceKey = targetDate
+    ? queryKeys.market.snapshot(targetDate, "post_market")
+    : queryKeys.market.snapshots;
+  const pollingKey = queryKeys.market.refreshPolling.snapshot(targetDate);
+  const poll = useQuery<RefreshPollingTick>({
+    queryKey: pollingKey,
+    enabled: polling.active,
+    queryFn: async () => {
+      if (Date.now() - polling.startedAt < queryPolicy.marketSnapshotRefresh.intervalMs) {
+        return { startedAt: polling.startedAt, fingerprint: polling.baseline };
+      }
+      try {
+        await qc.refetchQueries({ queryKey: resourceKey });
+      } catch {
+        // 单次失败忽略，下一次 observer tick 继续轮询。
+      }
+      return {
+        startedAt: polling.startedAt,
+        fingerprint: marketSnapshotFingerprint(qc.getQueryData<MarketSnapshot>(resourceKey)),
+      };
+    },
+    refetchInterval: polling.active ? queryPolicy.marketSnapshotRefresh.intervalMs : false,
+    ...queryPolicy.pollingObserver,
+  });
+
+  useEffect(() => {
+    if (!polling.active || !poll.data || poll.data.startedAt !== polling.startedAt) return;
+    const completed = hasFingerprintChanged(polling.baseline, poll.data.fingerprint);
+    const timedOut = hasPollingTimedOut(
+      polling.startedAt,
+      Date.now(),
+      queryPolicy.marketSnapshotRefresh.timeoutMs,
+    );
+    if (!completed && !timedOut) return;
+    setPolling(idlePolling);
+    qc.invalidateQueries({ queryKey: queryKeys.market.all });
+  }, [poll.data, poll.dataUpdatedAt, polling, qc]);
+
+  const mutation = useMutation({
+    mutationFn: () => {
+      snapshotTargetRef.current = date;
+      const target = snapshotTargetRef.current;
+      return fetch(`/api/market/refresh${target ? `?date=${encodeURIComponent(target)}` : ""}`, {
         method: "POST",
         headers: { "X-Local-Trigger": "1" },
       }).then((r) => {
         if (!r.ok) throw new Error("failed");
         return r.json();
-      }),
-    // 后端 refresh 是后台异步任务(串行采集 12+ 接口,通常 15-60s)。
-    // 用轮询代替固定 setTimeout:每隔 4s 触发 refetch,直到拿到新数据
-    // (以 trade_date 哈希判断)为止,最多 30s。轮询的是当前 UI 选中的 date,
-    // 因为切到"昨日"刷新,采集目标是昨天,不能盯着今天的 query。
-    onSuccess: async () => {
-      const startTime = Date.now();
-      const TIMEOUT_MS = 30_000;
-      const POLL_MS = 4_000;
-      // 选中 date 时,queryKey 包含 date;没传 = 走 ["market", "snapshot"] 全量 invalidate
-      const baseKey = date
-        ? (["market", "snapshot", date, "post_market"] as const)
-        : (["market", "snapshot"] as const);
-      const before = qc.getQueryData<MarketSnapshot>(baseKey);
-      const baselineKey = JSON.stringify(before?.trade_date ?? "");
-      while (Date.now() - startTime < TIMEOUT_MS) {
-        await new Promise((r) => window.setTimeout(r, POLL_MS));
-        try {
-          await qc.refetchQueries({ queryKey: baseKey });
-          const latest = qc.getQueryData<MarketSnapshot>(baseKey);
-          if (latest && JSON.stringify(latest.trade_date) !== baselineKey) break;
-        } catch {
-          // 单次失败忽略,继续轮询
-        }
-      }
-      qc.invalidateQueries({ queryKey: ["market"] });
+      });
+    },
+    onSuccess: () => {
+      const target = snapshotTargetRef.current;
+      const startedAt = Date.now();
+      const targetResourceKey = target
+        ? queryKeys.market.snapshot(target, "post_market")
+        : queryKeys.market.snapshots;
+      qc.removeQueries({
+        queryKey: queryKeys.market.refreshPolling.snapshot(target),
+        exact: true,
+      });
+      setPolling({
+        active: true,
+        startedAt,
+        baseline: marketSnapshotFingerprint(qc.getQueryData<MarketSnapshot>(targetResourceKey)),
+        target,
+      });
     },
   });
+
+  return { ...mutation, isPending: mutation.isPending || polling.active };
 }
 
 export function useRefreshEvidence(date: string) {
   const qc = useQueryClient();
-  return useMutation({
-    mutationFn: () =>
-      fetch(
+  const evidenceTargetRef = useRef(date);
+  const [polling, setPolling] = useState<RefreshPollingState>(idlePolling);
+  const targetDate = polling.active ? polling.target ?? date : date;
+  const resourceKey = queryKeys.market.evidence.list(targetDate, "", 20);
+  const pollingKey = queryKeys.market.refreshPolling.evidence(targetDate);
+  const poll = useQuery<RefreshPollingTick>({
+    queryKey: pollingKey,
+    enabled: polling.active,
+    queryFn: async () => {
+      if (Date.now() - polling.startedAt < queryPolicy.marketEvidenceRefresh.intervalMs) {
+        return { startedAt: polling.startedAt, fingerprint: polling.baseline };
+      }
+      try {
+        await qc.refetchQueries({ queryKey: resourceKey });
+        await qc.refetchQueries({
+          queryKey: queryKeys.market.evidence.refreshStatus("post_market"),
+        });
+      } catch {
+        // 单次失败忽略，下一次 observer tick 继续轮询。
+      }
+      return {
+        startedAt: polling.startedAt,
+        fingerprint: marketEvidenceFingerprint(qc.getQueryData<MarketEvidenceResponse>(resourceKey)),
+      };
+    },
+    refetchInterval: polling.active ? queryPolicy.marketEvidenceRefresh.intervalMs : false,
+    ...queryPolicy.pollingObserver,
+  });
+
+  useEffect(() => {
+    if (!polling.active || !poll.data || poll.data.startedAt !== polling.startedAt) return;
+    const completed = hasFingerprintChanged(polling.baseline, poll.data.fingerprint);
+    const timedOut = hasPollingTimedOut(
+      polling.startedAt,
+      Date.now(),
+      queryPolicy.marketEvidenceRefresh.timeoutMs,
+    );
+    if (!completed && !timedOut) return;
+    setPolling(idlePolling);
+    qc.invalidateQueries({ queryKey: queryKeys.market.evidence.all });
+    qc.invalidateQueries({ queryKey: queryKeys.market.evidence.refreshStatuses });
+  }, [poll.data, poll.dataUpdatedAt, polling, qc]);
+
+  const mutation = useMutation({
+    mutationFn: () => {
+      evidenceTargetRef.current = date;
+      return fetch(
         `/api/market/evidence/refresh?brief_type=post_market`,
         {
           method: "POST",
@@ -200,31 +305,26 @@ export function useRefreshEvidence(date: string) {
       ).then((r) => {
         if (!r.ok) throw new Error("failed");
         return r.json();
-      }),
-    // evidence 是后台异步任务 — 后端单飞 + DB 去重保证安全。
-    // 轮询当前 UI 选中的 date 的 evidence 查询, 直到 id 上限变化 / 列表条数
-    // 增加 / 列表内容有变化为止(任一即停), 最多 60s, 间隔 3s。
-    onSuccess: async () => {
-      const startTime = Date.now();
-      const TIMEOUT_MS = 60_000;
-      const POLL_MS = 3_000;
-      const baseKey = ["market", "evidence", date, "", 20] as const;
-      const before = qc.getQueryData<MarketEvidenceResponse>(baseKey);
-      const baseline = JSON.stringify(before?.items ?? before?.groups ?? null);
-      while (Date.now() - startTime < TIMEOUT_MS) {
-        await new Promise((r) => window.setTimeout(r, POLL_MS));
-        try {
-          await qc.refetchQueries({ queryKey: baseKey });
-          await qc.refetchQueries({ queryKey: ["market", "evidence", "refresh-status", "post_market"] });
-          const latest = qc.getQueryData<MarketEvidenceResponse>(baseKey);
-          const cur = JSON.stringify(latest?.items ?? latest?.groups ?? null);
-          if (cur !== baseline) break;
-        } catch {
-          // 单次失败忽略,继续轮询
-        }
-      }
-      qc.invalidateQueries({ queryKey: ["market", "evidence"] });
-      qc.invalidateQueries({ queryKey: ["market", "evidence", "refresh-status"] });
+      });
+    },
+    onSuccess: () => {
+      const target = evidenceTargetRef.current;
+      const startedAt = Date.now();
+      const targetResourceKey = queryKeys.market.evidence.list(target, "", 20);
+      qc.removeQueries({
+        queryKey: queryKeys.market.refreshPolling.evidence(target),
+        exact: true,
+      });
+      setPolling({
+        active: true,
+        startedAt,
+        baseline: marketEvidenceFingerprint(
+          qc.getQueryData<MarketEvidenceResponse>(targetResourceKey),
+        ),
+        target,
+      });
     },
   });
+
+  return { ...mutation, isPending: mutation.isPending || polling.active };
 }

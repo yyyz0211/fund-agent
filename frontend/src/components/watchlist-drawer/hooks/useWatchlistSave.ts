@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/components/Toast";
 import { api } from "@/lib/api";
 import type { AutoTransactionDraft } from "@/lib/auto-transaction";
+import { queryKeys } from "@/lib/query-keys";
 import type {
   WatchlistPatchPayload,
   WatchlistPreloadJob,
@@ -10,6 +11,7 @@ import type {
   WatchlistUpsertPayload,
 } from "@/types/api";
 import type { Mode, WatchlistFormState } from "../types";
+import { useWatchlistPreloadPolling } from "./useWatchlistPreloadPolling";
 
 export function useWatchlistSave({
   mode,
@@ -34,46 +36,7 @@ export function useWatchlistSave({
 }) {
   const toast = useToast();
   const qc = useQueryClient();
-
-  function invalidateFundCaches(code: string) {
-    qc.invalidateQueries({ queryKey: ["watchlist"] });
-    qc.invalidateQueries({ queryKey: ["fundSummary", code] });
-    qc.invalidateQueries({ queryKey: ["fund", code] });
-    qc.invalidateQueries({ queryKey: ["nav", code] });
-    qc.invalidateQueries({ queryKey: ["navHistory", code] });
-    qc.invalidateQueries({ queryKey: ["metrics", code] });
-    qc.invalidateQueries({ queryKey: ["portfolioPnl", [code]] });
-    qc.invalidateQueries({ queryKey: ["portfolioPnl", []] });
-    qc.invalidateQueries({ queryKey: ["fundDiagnosis", code] });
-  }
-
-  function startPreloadPolling(job: WatchlistPreloadJob | null | undefined) {
-    if (!job || typeof window === "undefined") return;
-    const terminal = new Set(["done", "partial", "failed", "missing"]);
-    let attempts = 0;
-    const maxAttempts = 120;
-    const code = job.fund_code;
-    const timer = window.setInterval(async () => {
-      attempts += 1;
-      try {
-        const snapshot = await api.watchlistPreloadJob(code, job.job_id);
-        if (!terminal.has(snapshot.status) && attempts < maxAttempts) return;
-        window.clearInterval(timer);
-        invalidateFundCaches(code);
-        if (snapshot.status === "done") {
-          toast.push(`${code} 基金数据已同步`, "success");
-        } else if (snapshot.status === "partial") {
-          toast.push(`${code} 基金数据部分同步完成，仍有字段缺失`, "info");
-        } else if (snapshot.status === "failed") {
-          toast.push(`${code} 自动同步失败，可稍后刷新`, "error");
-        }
-      } catch (err) {
-        window.clearInterval(timer);
-        invalidateFundCaches(code);
-        toast.push(`同步状态查询失败：${String(err)}`, "error");
-      }
-    }, 1500);
-  }
+  const { startPreloadPolling } = useWatchlistPreloadPolling();
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -104,10 +67,10 @@ export function useWatchlistSave({
           });
           saved = txResult.watchlist;
           preloadJob = txResult.preload_job;
-          qc.invalidateQueries({ queryKey: ["watchlistTransactions", fundCode] });
-          qc.invalidateQueries({ queryKey: ["fundSummary", fundCode] });
-          qc.invalidateQueries({ queryKey: ["portfolioPnl", [fundCode]] });
-          qc.invalidateQueries({ queryKey: ["portfolioPnl", []] });
+          qc.invalidateQueries({ queryKey: queryKeys.watchlist.transactions(fundCode) });
+          qc.invalidateQueries({ queryKey: queryKeys.fund.summaryForFund(fundCode) });
+          qc.invalidateQueries({ queryKey: queryKeys.portfolio.pnl([fundCode]) });
+          qc.invalidateQueries({ queryKey: queryKeys.portfolio.pnl([]) });
         } else {
           const payload: WatchlistUpsertPayload = {
             fund_code: fundCode,
@@ -130,10 +93,10 @@ export function useWatchlistSave({
           });
           saved = txResult.watchlist;
           preloadJob = txResult.preload_job;
-          qc.invalidateQueries({ queryKey: ["watchlistTransactions", fundCode] });
-          qc.invalidateQueries({ queryKey: ["fundSummary", fundCode] });
-          qc.invalidateQueries({ queryKey: ["portfolioPnl", [fundCode]] });
-          qc.invalidateQueries({ queryKey: ["portfolioPnl", []] });
+          qc.invalidateQueries({ queryKey: queryKeys.watchlist.transactions(fundCode) });
+          qc.invalidateQueries({ queryKey: queryKeys.fund.summaryForFund(fundCode) });
+          qc.invalidateQueries({ queryKey: queryKeys.portfolio.pnl([fundCode]) });
+          qc.invalidateQueries({ queryKey: queryKeys.portfolio.pnl([]) });
         } else {
           const patch: WatchlistPatchPayload = {
             note: form.note || null,

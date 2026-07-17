@@ -2,6 +2,7 @@ import type { Dispatch, SetStateAction } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/components/Toast";
 import { api } from "@/lib/api";
+import { queryKeys } from "@/lib/query-keys";
 import {
   blankInvestmentPlanForm,
   validateInvestmentPlanDraft,
@@ -42,7 +43,7 @@ export function useInvestmentPlanActions({
       return api.investmentPlanAdd(fundCode, planDraft.payload);
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["investmentPlans", fundCode] });
+      qc.invalidateQueries({ queryKey: queryKeys.watchlist.investmentPlans(fundCode) });
       setPlanForm(blankInvestmentPlanForm());
       setEditingPlanId(null);
       toast.push("定投计划已保存", "success");
@@ -57,7 +58,7 @@ export function useInvestmentPlanActions({
       return api.investmentPlanUpdate(fundCode, planId, patch);
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["investmentPlans", fundCode] });
+      qc.invalidateQueries({ queryKey: queryKeys.watchlist.investmentPlans(fundCode) });
       setPlanForm(blankInvestmentPlanForm());
       setEditingPlanId(null);
       toast.push("定投计划已更新", "success");
@@ -68,7 +69,7 @@ export function useInvestmentPlanActions({
   const removePlan = useMutation({
     mutationFn: (planId: number) => api.investmentPlanRemove(fundCode, planId),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["investmentPlans", fundCode] });
+      qc.invalidateQueries({ queryKey: queryKeys.watchlist.investmentPlans(fundCode) });
       toast.push("定投计划已删除", "success");
     },
     onError: (err) => toast.push(`删除定投计划失败：${String(err)}`, "error"),
@@ -80,7 +81,7 @@ export function useInvestmentPlanActions({
         status: plan.status === "active" ? "paused" : "active",
       }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["investmentPlans", fundCode] });
+      qc.invalidateQueries({ queryKey: queryKeys.watchlist.investmentPlans(fundCode) });
       toast.push("定投计划状态已更新", "success");
     },
     onError: (err) => toast.push(`更新定投计划状态失败：${String(err)}`, "error"),

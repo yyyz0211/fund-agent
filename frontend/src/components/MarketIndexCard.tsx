@@ -4,11 +4,12 @@ import { Activity, TrendingDown, TrendingUp } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { StateBlock } from "@/components/StateBlock";
 import { api } from "@/lib/api";
+import { queryKeys } from "@/lib/query-keys";
 import { formatPct } from "@/lib/format";
 
 export function MarketIndexCard() {
   const { data, isLoading, error } = useQuery({
-    queryKey: ["market", "latest"], queryFn: api.marketLatest,
+    queryKey: queryKeys.market.latest, queryFn: api.marketLatest,
   });
   if (isLoading) return <StateBlock title="加载市场数据" tone="loading">正在读取本地缓存的指数数据。</StateBlock>;
   if (error) return (

@@ -2,6 +2,7 @@ import type { Dispatch, SetStateAction } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/components/Toast";
 import { api } from "@/lib/api";
+import { queryKeys } from "@/lib/query-keys";
 import type { WatchlistRow } from "@/types/api";
 import {
   blankPendingBuyForm,
@@ -42,7 +43,7 @@ export function usePendingBuyActions({
       });
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["pendingBuys", fundCode] });
+      qc.invalidateQueries({ queryKey: queryKeys.watchlist.pendingBuys(fundCode) });
       setPendingForm(blankPendingBuyForm());
       setPendingFormOpen(false);
       toast.push("已记录申购中金额", "success");
@@ -54,18 +55,18 @@ export function usePendingBuyActions({
     mutationFn: ({ pendingId, txDate }: { pendingId: number; txDate: string }) =>
       api.pendingBuyConfirm(fundCode, pendingId, { tx_date: txDate }),
     onSuccess: (res) => {
-      qc.setQueryData<WatchlistRow[]>(["watchlist"], (prev) => {
+      qc.setQueryData<WatchlistRow[]>(queryKeys.watchlist.all, (prev) => {
         if (!prev) return prev;
         return prev.map((row) =>
           row.fund_code === res.watchlist.fund_code ? res.watchlist : row,
         );
       });
-      qc.invalidateQueries({ queryKey: ["pendingBuys", fundCode] });
-      qc.invalidateQueries({ queryKey: ["watchlistTransactions", fundCode] });
-      qc.invalidateQueries({ queryKey: ["watchlist"] });
-      qc.invalidateQueries({ queryKey: ["fundSummary", fundCode] });
-      qc.invalidateQueries({ queryKey: ["portfolioPnl", [fundCode]] });
-      qc.invalidateQueries({ queryKey: ["portfolioPnl", []] });
+      qc.invalidateQueries({ queryKey: queryKeys.watchlist.pendingBuys(fundCode) });
+      qc.invalidateQueries({ queryKey: queryKeys.watchlist.transactions(fundCode) });
+      qc.invalidateQueries({ queryKey: queryKeys.watchlist.all });
+      qc.invalidateQueries({ queryKey: queryKeys.fund.summaryForFund(fundCode) });
+      qc.invalidateQueries({ queryKey: queryKeys.portfolio.pnl([fundCode]) });
+      qc.invalidateQueries({ queryKey: queryKeys.portfolio.pnl([]) });
       setConfirmDates((prev) => {
         const next = { ...prev };
         delete next[res.pending_buy.id];
@@ -79,7 +80,7 @@ export function usePendingBuyActions({
   const cancelPendingBuy = useMutation({
     mutationFn: (pendingId: number) => api.pendingBuyCancel(fundCode, pendingId),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["pendingBuys", fundCode] });
+      qc.invalidateQueries({ queryKey: queryKeys.watchlist.pendingBuys(fundCode) });
       toast.push("申购中记录已取消", "success");
     },
     onError: (err) => toast.push(`取消申购失败：${String(err)}`, "error"),

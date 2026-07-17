@@ -14,6 +14,9 @@ async function loadMarketModule() {
   }).outputText;
   const exports = {};
   const require = (specifier) => {
+    if (specifier === "react") {
+      return { useEffect: () => undefined, useState: () => [undefined, () => undefined] };
+    }
     if (specifier === "@tanstack/react-query") {
       return {
         useMutation: () => undefined,
@@ -21,6 +24,9 @@ async function loadMarketModule() {
         useQueryClient: () => ({ invalidateQueries: () => undefined }),
       };
     }
+    if (specifier === "@/lib/query-keys") return { queryKeys: {} };
+    if (specifier === "@/lib/query-policy") return { queryPolicy: {} };
+    if (specifier === "@/lib/polling") return {};
     throw new Error(`unexpected require: ${specifier}`);
   };
   const context = {

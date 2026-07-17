@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/components/Toast";
 import { api } from "@/lib/api";
+import { queryKeys } from "@/lib/query-keys";
 import { filterWatchlistRows } from "@/lib/watchlist-filter";
 import { formatMoney, formatPct } from "@/lib/format";
 import type { WatchlistRow } from "@/types/api";
@@ -24,11 +25,11 @@ export default function WatchlistPage() {
   const toast = useToast();
 
   const { data, error, isLoading } = useQuery({
-    queryKey: ["watchlist"],
+    queryKey: queryKeys.watchlist.all,
     queryFn: api.watchlist,
   });
   const portfolioPnl = useQuery({
-    queryKey: ["portfolioPnl", []],
+    queryKey: queryKeys.portfolio.pnl([]),
     queryFn: () => api.portfolioPnl(),
   });
 
@@ -76,8 +77,8 @@ export default function WatchlistPage() {
           setRefreshAllProgress({ done: success + failed, total: rowsToRefresh.length });
         }
       }
-      qc.invalidateQueries({ queryKey: ["watchlist"] });
-      qc.invalidateQueries({ queryKey: ["portfolioPnl", []] });
+      qc.invalidateQueries({ queryKey: queryKeys.watchlist.all });
+      qc.invalidateQueries({ queryKey: queryKeys.portfolio.pnl([]) });
       toast.push(
         failed > 0
           ? `全量更新完成：成功 ${success} 只，失败 ${failed} 只`
@@ -91,14 +92,14 @@ export default function WatchlistPage() {
   }
 
   function invalidateFundQueries(code: string) {
-    qc.invalidateQueries({ queryKey: ["fund", code] });
-    qc.invalidateQueries({ queryKey: ["nav", code] });
-    qc.invalidateQueries({ queryKey: ["navHistory", code] });
-    qc.invalidateQueries({ queryKey: ["metrics", code] });
-    qc.invalidateQueries({ queryKey: ["fundSummary", code] });
-    qc.invalidateQueries({ queryKey: ["fundDiagnosis", code] });
-    qc.invalidateQueries({ queryKey: ["portfolioPnl", [code]] });
-    qc.invalidateQueries({ queryKey: ["portfolioPnl", []] });
+    qc.invalidateQueries({ queryKey: queryKeys.fund.detail(code) });
+    qc.invalidateQueries({ queryKey: queryKeys.fund.navForFund(code) });
+    qc.invalidateQueries({ queryKey: queryKeys.fund.navHistoryForFund(code) });
+    qc.invalidateQueries({ queryKey: queryKeys.fund.metrics(code) });
+    qc.invalidateQueries({ queryKey: queryKeys.fund.summaryForFund(code) });
+    qc.invalidateQueries({ queryKey: queryKeys.fund.diagnosisForFund(code) });
+    qc.invalidateQueries({ queryKey: queryKeys.portfolio.pnl([code]) });
+    qc.invalidateQueries({ queryKey: queryKeys.portfolio.pnl([]) });
   }
 
   const totals = portfolioPnl.data?.totals;

@@ -7,6 +7,7 @@ import { StateBlock } from "@/components/StateBlock";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
+import { queryKeys } from "@/lib/query-keys";
 import { useToast } from "@/components/Toast";
 import { cn } from "@/lib/cn";
 import { formatDate, formatPct } from "@/lib/format";
@@ -33,7 +34,7 @@ export function WatchlistTable({
   const router = useRouter();
   const shouldFetch = externalRows === undefined;
   const { data, isLoading, error } = useQuery({
-    queryKey: ["watchlist"],
+    queryKey: queryKeys.watchlist.all,
     queryFn: api.watchlist,
     enabled: shouldFetch,
   });
@@ -277,15 +278,15 @@ function RowActions({
     const code = row.fund_code;
     try {
       const result = await api.refreshFund(row.fund_code);
-      qc.invalidateQueries({ queryKey: ["watchlist"] });
-      qc.invalidateQueries({ queryKey: ["fund", code] });
-      qc.invalidateQueries({ queryKey: ["nav", code] });
-      qc.invalidateQueries({ queryKey: ["navHistory", code] });
-      qc.invalidateQueries({ queryKey: ["metrics", code] });
-      qc.invalidateQueries({ queryKey: ["fundSummary", code] });
-      qc.invalidateQueries({ queryKey: ["fundDiagnosis", code] });
-      qc.invalidateQueries({ queryKey: ["portfolioPnl", [code]] });
-      qc.invalidateQueries({ queryKey: ["portfolioPnl", []] });
+      qc.invalidateQueries({ queryKey: queryKeys.watchlist.all });
+      qc.invalidateQueries({ queryKey: queryKeys.fund.detail(code) });
+      qc.invalidateQueries({ queryKey: queryKeys.fund.navForFund(code) });
+      qc.invalidateQueries({ queryKey: queryKeys.fund.navHistoryForFund(code) });
+      qc.invalidateQueries({ queryKey: queryKeys.fund.metrics(code) });
+      qc.invalidateQueries({ queryKey: queryKeys.fund.summaryForFund(code) });
+      qc.invalidateQueries({ queryKey: queryKeys.fund.diagnosisForFund(code) });
+      qc.invalidateQueries({ queryKey: queryKeys.portfolio.pnl([code]) });
+      qc.invalidateQueries({ queryKey: queryKeys.portfolio.pnl([]) });
       if (result.already_up_to_date) {
         toast.push(`${row.fund_code} 已是最新`, "success");
       } else {
@@ -309,13 +310,13 @@ function RowActions({
       // 后,前端也要把可能正显示在详情页的缓存一并失效,否则用户
       // 走到 `/funds/{fund_code}` 会看到"幽灵数据"。
       const code = row.fund_code;
-      qc.invalidateQueries({ queryKey: ["watchlist"] });
-      qc.invalidateQueries({ queryKey: ["fund", code] });
-      qc.invalidateQueries({ queryKey: ["nav", code] });
-      qc.invalidateQueries({ queryKey: ["navHistory", code] });
-      qc.invalidateQueries({ queryKey: ["metrics", code] });
-      qc.invalidateQueries({ queryKey: ["portfolioPnl", [code]] });
-      qc.invalidateQueries({ queryKey: ["portfolioPnl", []] });
+      qc.invalidateQueries({ queryKey: queryKeys.watchlist.all });
+      qc.invalidateQueries({ queryKey: queryKeys.fund.detail(code) });
+      qc.invalidateQueries({ queryKey: queryKeys.fund.navForFund(code) });
+      qc.invalidateQueries({ queryKey: queryKeys.fund.navHistoryForFund(code) });
+      qc.invalidateQueries({ queryKey: queryKeys.fund.metrics(code) });
+      qc.invalidateQueries({ queryKey: queryKeys.portfolio.pnl([code]) });
+      qc.invalidateQueries({ queryKey: queryKeys.portfolio.pnl([]) });
       toast.push(`已从自选池移除 ${row.fund_code}`, "success");
     } catch (err) {
       toast.push(`移除失败：${String(err)}`, "error");

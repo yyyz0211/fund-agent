@@ -11,6 +11,7 @@ const requiredFiles = [
   "hooks/useWatchlistDrawerState.ts",
   "hooks/useWatchlistDrawerData.ts",
   "hooks/useWatchlistSave.ts",
+  "hooks/useWatchlistPreloadPolling.ts",
   "hooks/useTransactionActions.ts",
   "hooks/useInvestmentPlanActions.ts",
   "hooks/usePendingBuyActions.ts",
@@ -70,4 +71,14 @@ test("new hooks do not depend on the removed entry", async () => {
   for (const path of paths) {
     assert.doesNotMatch(await read(path), /@\/components\/WatchlistDrawer/);
   }
+});
+
+test("watchlist preload polling is owned by a React Query hook", async () => {
+  const polling = await read("hooks/useWatchlistPreloadPolling.ts");
+  const save = await read("hooks/useWatchlistSave.ts");
+  assert.match(polling, /useQuery/);
+  assert.match(polling, /queryKeys\.watchlist\.preloadJob/);
+  assert.match(polling, /queryPolicy\.watchlistPreload/);
+  assert.match(save, /useWatchlistPreloadPolling/);
+  assert.doesNotMatch(save, /setInterval|clearInterval/);
 });

@@ -1,6 +1,7 @@
 import { useEffect, type Dispatch, type SetStateAction } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import { queryKeys } from "@/lib/query-keys";
 import {
   buildAutoTransactionDraft,
   isSixDigitFundCode,
@@ -65,25 +66,25 @@ export function useWatchlistDrawerData({
     : (showTxTab && activeTab === "transactions" && txFormOpen ? txForm.tx_date : "");
 
   const txQuery = useQuery({
-    queryKey: ["watchlistTransactions", fundCodeForTx],
+    queryKey: queryKeys.watchlist.transactions(fundCodeForTx),
     queryFn: () => api.watchlistTransactions(fundCodeForTx),
     enabled: showTxTab,
   });
 
   const selectedNavQuery = useQuery({
-    queryKey: ["nav", currentFundCode, selectedNavDate],
+    queryKey: queryKeys.fund.nav(currentFundCode, selectedNavDate),
     queryFn: () => api.nav(currentFundCode, selectedNavDate),
     enabled: shouldLoadLatestNav,
   });
 
   const plansQuery = useQuery({
-    queryKey: ["investmentPlans", fundCodeForTx],
+    queryKey: queryKeys.watchlist.investmentPlans(fundCodeForTx),
     queryFn: () => api.investmentPlans(fundCodeForTx),
     enabled: showPlanTab && activeTab === "plans",
   });
 
   const pendingBuysQuery = useQuery({
-    queryKey: ["pendingBuys", fundCodeForTx],
+    queryKey: queryKeys.watchlist.pendingBuys(fundCodeForTx),
     queryFn: () => api.pendingBuys(fundCodeForTx),
     enabled: showPendingTab && activeTab === "pending",
   });

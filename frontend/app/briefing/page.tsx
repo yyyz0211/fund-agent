@@ -30,6 +30,8 @@ import { Button } from "@/components/ui/button";
 
 import { api } from "@/lib/api";
 import { flattenMarketEvidence } from "@/lib/market";
+import { queryKeys } from "@/lib/query-keys";
+import { queryPolicy } from "@/lib/query-policy";
 import type {
   Briefing,
   BriefingSection,
@@ -53,20 +55,20 @@ export default function BriefingPage() {
   const queryClient = useQueryClient();
 
   const latestQuery = useQuery({
-    queryKey: ["briefing", "latest"],
+    queryKey: queryKeys.briefing.latest,
     queryFn: () => api.briefingLatest(),
-    refetchInterval: 30_000,
+    ...queryPolicy.briefingLatest,
   });
 
   const listQuery = useQuery({
-    queryKey: ["briefing", "list", 30],
+    queryKey: queryKeys.briefing.list(30),
     queryFn: () => api.briefingList(30),
   });
 
   const runMutation = useMutation({
     mutationFn: () => api.briefingRun(),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["briefing"] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.briefing.all });
     },
   });
 
@@ -74,7 +76,7 @@ export default function BriefingPage() {
   const history = listQuery.data?.briefings ?? [];
 
   const evidenceQuery = useQuery({
-    queryKey: ["briefing", "evidence", briefing?.briefing_date ?? ""],
+    queryKey: queryKeys.briefing.evidence(briefing?.briefing_date ?? ""),
     queryFn: () => api.marketEvidence(briefing?.briefing_date ?? ""),
     enabled: !!briefing,
   });

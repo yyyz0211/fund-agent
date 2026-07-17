@@ -24,6 +24,7 @@ import { Input } from "@/components/ui/input";
 import { PageHeader, SectionHeader } from "@/components/PageHeader";
 import { StateBlock } from "@/components/StateBlock";
 import { api } from "@/lib/api";
+import { queryKeys } from "@/lib/query-keys";
 import { formatDate, formatNav, formatPct } from "@/lib/format";
 
 const SERIES_COLORS = ["#2563eb", "#dc2626", "#059669", "#d97706", "#7c3aed", "#0891b2"];
@@ -87,7 +88,7 @@ export default function ComparePage({
   }
 
   const query = useQuery({
-    queryKey: ["compare", codes],
+    queryKey: queryKeys.compare(codes),
     queryFn: () => api.portfolioCompare(codes),
     enabled: codes.length > 0,
   });

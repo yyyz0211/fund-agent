@@ -2,12 +2,13 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useState } from "react";
 import { ToastProvider } from "@/components/Toast";
+import { queryDefaults } from "@/lib/query-policy";
 
 export function Providers({ children }: { children: React.ReactNode }) {
   const [qc] = useState(
     () => new QueryClient({
       defaultOptions: {
-        queries: { staleTime: 60_000, refetchOnWindowFocus: false },
+        queries: queryDefaults,
       },
     }),
   );
