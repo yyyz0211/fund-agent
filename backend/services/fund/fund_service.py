@@ -4,7 +4,9 @@
 `session_scope()` 创建短事务。刷新接口先完成网络拉取,再开启短写事务。
 
 所有成功返回都是普通 dict 并带 `source` / `as_of`,失败返回
-`{"error": ..., "source": ...}`(沿用 collector 的契约)。
+`{"error": ..., "source": ...}`(沿用 collector 的契约)。失败 dict 可
+额外带 `error_kind`(`not_found` / `invalid_param` / `data_source`),供
+API 层稳定映射 HTTP 状态码,不再靠 error 文案子串猜测。LLM 侧忽略该键。
 """
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
@@ -121,6 +123,7 @@ def get_latest_nav(fund_code: str, session=None) -> dict:
                           .order_by(FundNav.nav_date.desc())).first()
     if row is None:
         return {"error": f"no nav data for {fund_code}; call refresh_fund first",
+                "error_kind": "not_found",
                 "source": dc.SOURCE}
     return {"fund_code": fund_code, "nav_date": row.nav_date,
             "accumulated_nav": row.accumulated_nav,
@@ -138,6 +141,7 @@ def get_nav_by_date(fund_code: str, nav_date: str, session=None) -> dict:
     if row is None:
         return {
             "error": f"no nav data for {fund_code} on date {nav_date}; call refresh_fund first",
+            "error_kind": "not_found",
             "source": dc.SOURCE,
         }
     return row
@@ -156,6 +160,7 @@ def get_metrics(fund_code: str, period: str = "1m", session=None) -> dict:
     navs = fund_repo.get_accumulated_navs(session, fund_code)
     if len(navs) < 2:
         return {"error": f"insufficient nav data for {fund_code}; call refresh_fund first",
+                "error_kind": "not_found",
                 "source": dc.SOURCE}
     try:
         period_ret = metrics.period_return(navs, period)
@@ -183,6 +188,7 @@ def get_basic_info(fund_code: str, session=None) -> dict:
     row = session.get(Fund, fund_code)
     if row is None:
         return {"error": f"本地无 {fund_code} 基础信息，请先 refresh_fund",
+                "error_kind": "not_found",
                 "source": dc.SOURCE}
     return {"fund_code": row.fund_code, "fund_name": row.fund_name,
             "fund_type": row.fund_type, "manager": row.manager,
@@ -214,6 +220,7 @@ def get_nav_history(fund_code: str, start_date: str = "", end_date: str = "",
     rows = session.scalars(stmt.order_by(FundNav.nav_date)).all()
     if not rows:
         return {"error": f"本地无 {fund_code} 净值数据，请先 refresh_fund",
+                "error_kind": "not_found",
                 "source": dc.SOURCE}
     navs = [{"nav_date": r.nav_date, "accumulated_nav": r.accumulated_nav,
              "daily_return": r.daily_return} for r in rows]
@@ -311,6 +318,7 @@ def lookup_fund_auto(
         return {
             "fund_code": fund_code,
             "error": f"unsupported refresh_policy: {refresh_policy}",
+            "error_kind": "invalid_param",
             "source": dc.SOURCE,
             "as_of": dc.today_str(),
         }

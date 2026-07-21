@@ -15,16 +15,27 @@ from backend.services.shared.metric_service import _PERIOD_ROWS  # noqa: PLC2701
 router = APIRouter(prefix="/api/funds", tags=["funds"])
 
 
+_ERROR_KIND_STATUS = {
+    "not_found": 404,
+    "invalid_param": 400,
+    "data_source": 502,
+}
+
+
 def _http_from_service(result: dict, default: int = 200) -> tuple[int, dict]:
     """若 service 返回 error，把 error 文案包装进 HTTPException。
 
-    区分 400 vs 404：404 用于「本地无数据」的语义；400 用于「参数无效」。
-    关键字符串：`本地无`、`no nav data`、`insufficient nav data` —— 都说明
-    "这条数据本地没有，请先 refresh"，归 404。其他错误（含用户传入坏参数）
-    归 400。
+    状态码优先由 service 显式标注的 `error_kind` 决定（`not_found`→404、
+    `invalid_param`→400、`data_source`→502），避免靠 error 文案子串猜测。
+
+    向后兼容：未标注 `error_kind` 的旧返回退回子串判断（`本地无`、
+    `no nav data`、`insufficient nav data` 归 404，其余归 400）。
     """
     if "error" in result:
         msg = result["error"]
+        kind = result.get("error_kind")
+        if kind in _ERROR_KIND_STATUS:
+            raise HTTPException(status_code=_ERROR_KIND_STATUS[kind], detail=msg)
         not_found_markers = ("本地无", "no nav data", "insufficient nav data")
         code = 404 if any(m in msg for m in not_found_markers) else 400
         raise HTTPException(status_code=code, detail=msg)

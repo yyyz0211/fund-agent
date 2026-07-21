@@ -77,6 +77,7 @@ def reset_session_factory(token: Token) -> None:
     """还原 `get_session()` 到默认 `SessionLocal`。"""
     _session_factory_override.reset(token)
 
+# set_session_factory和reset_session_factory，只有在测试中使用
 
 def get_session() -> Session:
     """返回一个新 Session。调用方负责关闭。

@@ -1,4 +1,4 @@
-"""PostgreSQL-specific SQLAlchemy compatibility types."""
+"""PostgreSQL 专用的 SQLAlchemy 兼容类型。"""
 from __future__ import annotations
 
 import json
@@ -8,11 +8,10 @@ from sqlalchemy.types import TypeDecorator
 
 
 class JsonText(TypeDecorator):
-    """Store JSON as JSONB while preserving the service-layer string contract.
-
-    Existing services intentionally exchange JSON text. PostgreSQL stores parsed
-    JSONB values for indexing; this adapter performs the conversion at the ORM
-    boundary so callers do not need dialect-specific branches.
+    """将 JSON 存储为 JSONB，同时保持服务层字符串的约定。
+    # 现有服务有意交换 JSON 文本。PostgreSQL 存储已解析的
+    # JSONB 值用于索引；此适配器在 ORM 边界执行转换
+    # 因此调用者无需特定于方言的分支。
     """
 
     impl = JSONB

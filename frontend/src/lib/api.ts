@@ -19,13 +19,32 @@ const BASE =
   process.env.NEXT_PUBLIC_API_BASE ??
   "http://localhost:8000";
 
+// 后端存在两种错误响应体:
+//   - 类型化异常处理器: {"error": {"code", "message", ...}}
+//   - FastAPI HTTPException: {"detail": "..."}(422 校验错误时 detail 可能是数组)
+// 统一在这里解析,优先 error.message,回退 detail 字符串,再回退状态行。
+async function parseError(r: Response, path: string): Promise<Error> {
+  let detail = `${r.status} ${r.statusText}`;
+  try {
+    const data = await r.json();
+    const msg =
+      (data?.error && typeof data.error.message === "string" && data.error.message) ||
+      (typeof data?.detail === "string" && data.detail) ||
+      null;
+    if (msg) detail = msg;
+  } catch {
+    // body 不是 JSON,保留默认 detail
+  }
+  return new Error(`${path} -> ${detail}`);
+}
+
 async function get<T>(path: string, params?: Record<string, string | number>): Promise<T> {
   const url = new URL(BASE + path);
   if (params) Object.entries(params).forEach(([k, v]) => {
     if (v !== "" && v !== undefined && v !== null) url.searchParams.set(k, String(v));
   });
   const r = await fetch(url, { cache: "no-store" });
-  if (!r.ok) throw new Error(`${path} -> ${r.status} ${r.statusText}`);
+  if (!r.ok) throw await parseError(r, path);
   return r.json() as Promise<T>;
 }
 
@@ -40,16 +59,7 @@ async function send<T>(
     body: body !== undefined ? JSON.stringify(body) : undefined,
     cache: "no-store",
   });
-  if (!r.ok) {
-    let detail = `${r.status} ${r.statusText}`;
-    try {
-      const data = await r.json();
-      if (data && typeof data.detail === "string") detail = data.detail;
-    } catch {
-      // body 不是 JSON,保留默认 detail
-    }
-    throw new Error(`${path} -> ${detail}`);
-  }
+  if (!r.ok) throw await parseError(r, path);
   if (r.status === 204) return undefined as T;
   return r.json() as Promise<T>;
 }

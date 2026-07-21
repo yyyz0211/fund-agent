@@ -1,4 +1,4 @@
-"""Default market-evidence adapter composition."""
+"""默认的市场证据适配器组合。"""
 from __future__ import annotations
 
 import logging
@@ -37,7 +37,7 @@ def build_default_adapters(
     brief_type: str = "post_market",
     sector_snapshot: dict | None = None,
 ) -> list:
-    """Build the configured production market-evidence adapter list."""
+    """默认的市场证据适配器组合。"""
     adapters: list = []
     if brief_type == "pre_market":
         adapters.extend(
