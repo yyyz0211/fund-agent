@@ -24,12 +24,9 @@ from __future__ import annotations
 import os
 import re
 from uuid import uuid4
-from pathlib import Path
 from urllib.parse import urlparse
 
 import pytest
-from alembic import command
-from alembic.config import Config
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker
 
@@ -122,15 +119,14 @@ def _quoted_identifier(value: str) -> str:
     return f'"{value}"'
 
 
-def run_alembic_upgrade(engine, schema: str) -> None:
-    """Upgrade an empty worker schema using an externally supplied connection."""
-    quoted_schema = _quoted_identifier(schema)
-    config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
-    with engine.begin() as connection:
-        connection.execute(text(f"SET LOCAL search_path TO {quoted_schema}, public"))
-        config.attributes["connection"] = connection
-        config.attributes["version_table_schema"] = schema
-        command.upgrade(config, "head")
+def create_worker_schema_tables(engine) -> None:
+    """在 worker schema 中用模型 metadata 建表。
+
+    engine 的 connect 监听器已把 search_path 指向目标 schema，create_all
+    因而在该 schema 内建表。pgvector 的 knowledge_embeddings 非模型定义
+    （见 init_db.ensure_pgvector_schema），由需要它的测试各自建。
+    """
+    Base.metadata.create_all(engine)
 
 
 @pytest.fixture(scope="session")
@@ -172,7 +168,7 @@ def postgres_engine(test_database_url, worker_schema, postgres_admin_engine):
         finally:
             cursor.close()
 
-    run_alembic_upgrade(engine, worker_schema)
+    create_worker_schema_tables(engine)
     try:
         yield engine
     finally:
@@ -259,7 +255,7 @@ def db_ddl_schema(test_database_url, postgres_admin_engine, worker_schema):
             cursor.close()
 
     try:
-        run_alembic_upgrade(engine, schema)
+        create_worker_schema_tables(engine)
         yield engine
     finally:
         engine.dispose()

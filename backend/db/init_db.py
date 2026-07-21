@@ -1,19 +1,14 @@
 """数据库初始化入口。
 
-PostgreSQL 单一化后，Alembic 是 schema 的唯一权威。
+PostgreSQL 单一化后，schema 直接由 SQLAlchemy 模型（`Base.metadata`）建立。
 本模块负责：
-1. 验证 Alembic migration 已完成
-2. 管理 pgvector schema（PostgreSQL 特有）
-3. 非破坏性健康校验
-
-不再使用 `create_all` 建表。
+1. 用 `create_all` 建表（数据可丢弃，无需迁移历史）
+2. 管理 pgvector schema（PostgreSQL 特有，非模型定义）
+3. 非破坏性健康校验与 watchlist 回填
 """
 from __future__ import annotations
 
 import logging
-import subprocess
-import sys
-from pathlib import Path
 from typing import Optional
 
 from sqlalchemy import text
@@ -23,6 +18,7 @@ from sqlalchemy.exc import SQLAlchemyError
 import backend.db.models  # noqa: F401
 from backend.config.settings import get_settings
 from backend.db.repositories.watchlist import backfill_watchlist_fund_names
+from backend.db.session import Base
 from backend.db.session import engine as default_engine
 from backend.db.session import get_session
 
@@ -65,64 +61,14 @@ class PgVectorUnavailableError(PgVectorSchemaError):
     """PostgreSQL could not initialize the pgvector extension/table."""
 
 
-class MigrationError(RuntimeError):
-    """Alembic migration is not up to date."""
-
-
-def verify_migrations_up_to_date(engine: Engine) -> None:
-    """验证 Alembic migration 已完成到 head。
-
-    Raises:
-        MigrationError: migration 未完成或失败
-    """
-    with engine.connect() as conn:
-        # 检查 alembic_version 表
-        result = conn.execute(text("SELECT COUNT(*) FROM alembic_version"))
-        version_count = result.scalar()
-        if version_count == 0:
-            raise MigrationError(
-                "No alembic version found. Run 'alembic upgrade head' first."
-            )
-
-        # 检查当前版本是否与 head 一致
-        result = conn.execute(text("SELECT version_num FROM alembic_version"))
-        current = result.scalar()
-        if current is None:
-            raise MigrationError("alembic_version table is empty.")
-
-        # 获取 head
-        alembic_cfg = Path(__file__).parent.parent.parent / "alembic.ini"
-        if not alembic_cfg.exists():
-            alembic_cfg = Path(__file__).parent.parent.parent / "backend" / "alembic.ini"
-
-        try:
-            result = subprocess.run(
-                [sys.executable, "-m", "alembic", "-c", str(alembic_cfg), "heads", "--verbose"],
-                capture_output=True,
-                text=True,
-                cwd=alembic_cfg.parent,
-            )
-            if result.returncode == 0:
-                heads = result.stdout.strip().split("\n")
-                if current not in heads:
-                    raise MigrationError(
-                        f"Migration not at head. Current: {current}, expected one of: {heads}"
-                    )
-        except FileNotFoundError:
-            logger.warning("Alembic not found in PATH, skipping head verification")
-        except subprocess.SubprocessError as exc:
-            logger.warning("Could not verify alembic head: %s", exc)
-
-
-def init_db(engine: Optional[Engine] = None, skip_migration_check: bool = False) -> None:
+def init_db(engine: Optional[Engine] = None) -> None:
     """初始化数据库。
 
-    Alembic 迁移必须在应用启动前完成。本函数验证迁移状态，
-    并管理 pgvector schema。
+    用 SQLAlchemy 模型建表并管理 pgvector schema。数据可丢弃，
+    改模型即 drop & recreate，不保留迁移历史。
 
     Args:
         engine: SQLAlchemy engine。默认为进程级 engine。
-        skip_migration_check: 跳过 migration 验证（仅用于测试）。
     """
     eng = engine or default_engine
 
@@ -130,15 +76,9 @@ def init_db(engine: Optional[Engine] = None, skip_migration_check: bool = False)
     if eng.dialect.name != "postgresql":
         raise ValueError(f"Only PostgreSQL is supported, got: {eng.dialect.name}")
 
-    # 验证 migration 状态
-    if not skip_migration_check:
-        try:
-            verify_migrations_up_to_date(eng)
-        except MigrationError as exc:
-            raise RuntimeError(
-                f"Database migration not up to date: {exc}. "
-                "Run 'alembic upgrade head' before starting the application."
-            ) from exc
+    # 建表（幂等：已存在的表跳过）。pgvector 的 knowledge_embeddings 非模型定义，
+    # 由下面的 ensure_pgvector_schema 单独建，依赖此处先建好 knowledge_documents。
+    Base.metadata.create_all(eng)
 
     # pgvector schema 管理
     settings = get_settings()

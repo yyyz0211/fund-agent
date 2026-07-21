@@ -18,7 +18,7 @@ from backend.db.models import (
 pytestmark = pytest.mark.db
 
 
-def test_alembic_creates_knowledge_tables(postgres_engine):
+def test_create_all_creates_knowledge_tables(postgres_engine):
     tables = set(inspect(postgres_engine).get_table_names())
     assert {
         "knowledge_documents",

@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -136,39 +135,23 @@ _register_exception_handlers(app)
 
 @app.on_event("startup")
 def _ensure_schema() -> None:
-    """进程启动时运行 Alembic 迁移。
+    """进程启动时建库并做非破坏性初始化。
 
-    Alembic 是 schema 的唯一权威。PostgreSQL 单一化后，不再使用 create_all。
+    schema 直接由 SQLAlchemy 模型（`Base.metadata`）建立，数据可丢弃，
+    不保留迁移历史；`init_db()` 同时管理 pgvector schema 与 watchlist 回填。
     """
-    import logging
-    import subprocess
-    import sys
-
     from backend import scheduler as app_scheduler
-    from backend.config.settings import get_settings
-    from backend.db.init_db import init_db, MigrationError
+    from backend.db.init_db import init_db
     from backend.services.knowledge import knowledge_reindex_jobs
 
-    logger = logging.getLogger(__name__)
-
-    # 运行 Alembic 迁移
-    # 项目根路径基于本文件位置解析
-    project_root = Path(__file__).resolve().parent.parent.parent
+    # 建库
     try:
-        result = subprocess.run(
-            [sys.executable, "-m", "alembic", "-c", "backend/alembic.ini", "upgrade", "head"],
-            capture_output=True,
-            text=True,
-            cwd=str(project_root),
-        )
-        if result.returncode == 0:
-            logger.info("[startup] Alembic migrations applied successfully")
-        else:
-            raise RuntimeError(f"Alembic failed: {result.stderr}")
-    except Exception as alembic_exc:
-        logger.error("[startup] Alembic migration failed: %s", alembic_exc)
+        init_db()
+        logger.info("[startup] database schema initialized")
+    except Exception as schema_exc:
+        logger.error("[startup] schema initialization failed: %s", schema_exc)
         logger.error("[startup] Application cannot start without valid schema.")
-        raise SystemExit(1) from alembic_exc
+        raise SystemExit(1) from schema_exc
 
     # 恢复中断的 jobs
     settings = get_settings()
