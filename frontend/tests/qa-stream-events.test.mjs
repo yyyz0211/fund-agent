@@ -55,3 +55,28 @@ test("stream events replace only the target assistant content", async () => {
   assert.equal(replaceAssistantContent(history, "other", "ignored"), history);
   assert.deepEqual(normalize(history), [{ ...history[0], content: "" }]);
 });
+
+test("parseStreamMessage picks last array element and rejects non-records", async () => {
+  const { parseStreamMessage } = await loadModule();
+  assert.deepEqual(
+    parseStreamMessage([{ type: "ai" }, { type: "tool", tool_call_id: "c1" }]),
+    { type: "tool", tool_call_id: "c1" },
+  );
+  assert.deepEqual(parseStreamMessage({ type: "ai" }), { type: "ai" });
+  assert.equal(parseStreamMessage([]), null);
+  assert.equal(parseStreamMessage("hi"), null);
+  assert.equal(parseStreamMessage(null), null);
+});
+
+test("stream message predicates match branch conditions", async () => {
+  const { isAssistantMessage, isToolMessage, readToolCalls } = await loadModule();
+  assert.equal(isAssistantMessage({ type: "ai" }), true);
+  assert.equal(isAssistantMessage({ role: "assistant" }), true);
+  assert.equal(isAssistantMessage({ type: "tool" }), false);
+  assert.equal(isToolMessage({ type: "tool", tool_call_id: "c1" }), true);
+  assert.equal(isToolMessage({ type: "tool" }), false);
+  assert.equal(isToolMessage({ type: "tool", tool_call_id: 1 }), false);
+  assert.equal(readToolCalls({ tool_calls: [{ id: "c1", name: "x" }] }).length, 1);
+  assert.equal(readToolCalls({ tool_calls: [] }), null);
+  assert.equal(readToolCalls({}), null);
+});

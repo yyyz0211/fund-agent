@@ -7,7 +7,11 @@ import {
 import {
   appendPendingToolCalls,
   completeToolStep,
+  isAssistantMessage,
+  isToolMessage,
+  parseStreamMessage,
   readAssistantContent,
+  readToolCalls,
   readToolResult,
   replaceAssistantContent,
 } from "../stream-events";
@@ -76,21 +80,19 @@ export function useQaStream({
       });
 
       for await (const event of stream) {
-        const data: any = event.data;
-        const message = Array.isArray(data) ? data[data.length - 1] : data;
+        const message = parseStreamMessage(event.data);
         if (!message) continue;
 
-        if (
-          (message.type === "ai" || message.role === "assistant") &&
-          Array.isArray(message.tool_calls) &&
-          message.tool_calls.length > 0
-        ) {
-          updateThreadHistory(activeId, (history) =>
-            appendPendingToolCalls(history, assistantId, message.tool_calls),
-          );
+        if (isAssistantMessage(message)) {
+          const toolCalls = readToolCalls(message);
+          if (toolCalls) {
+            updateThreadHistory(activeId, (history) =>
+              appendPendingToolCalls(history, assistantId, toolCalls),
+            );
+          }
         }
 
-        if (message.type === "tool" && message.tool_call_id) {
+        if (isToolMessage(message)) {
           const result = readToolResult(message.content);
           updateThreadHistory(activeId, (history) =>
             completeToolStep(
@@ -102,7 +104,7 @@ export function useQaStream({
           );
         }
 
-        if (message.type === "ai" || message.role === "assistant") {
+        if (isAssistantMessage(message)) {
           const chunk = readAssistantContent(message.content);
           if (chunk) {
             updateThreadHistory(activeId, (history) =>

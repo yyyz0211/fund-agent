@@ -1,6 +1,6 @@
 import type { QaUiMessage } from "./types";
 
-interface StreamToolCall {
+export interface StreamToolCall {
   id: string;
   name: string;
   args?: Record<string, unknown>;
@@ -8,6 +8,34 @@ interface StreamToolCall {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export interface StreamMessage {
+  type?: string;
+  role?: string;
+  content?: unknown;
+  tool_calls?: StreamToolCall[];
+  tool_call_id?: string;
+}
+
+export function parseStreamMessage(data: unknown): StreamMessage | null {
+  const raw = Array.isArray(data) ? data[data.length - 1] : data;
+  return isRecord(raw) ? (raw as StreamMessage) : null;
+}
+
+export function isAssistantMessage(message: StreamMessage): boolean {
+  return message.type === "ai" || message.role === "assistant";
+}
+
+export function isToolMessage(
+  message: StreamMessage,
+): message is StreamMessage & { tool_call_id: string } {
+  return message.type === "tool" && typeof message.tool_call_id === "string";
+}
+
+export function readToolCalls(message: StreamMessage): StreamToolCall[] | null {
+  const calls = message.tool_calls;
+  return Array.isArray(calls) && calls.length > 0 ? calls : null;
 }
 
 export function readAssistantContent(content: unknown): string {

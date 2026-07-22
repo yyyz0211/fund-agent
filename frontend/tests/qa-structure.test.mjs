@@ -93,3 +93,10 @@ test("production source does not import the removed qa store", async () => {
     }
   }
 });
+
+test("useQaStream is fully typed and consumes the stream parser", async () => {
+  const source = await read("hooks/useQaStream.ts");
+  assert.doesNotMatch(source, /:\s*any\b/);
+  assert.doesNotMatch(source, /\bas any\b/);
+  assert.match(source, /parseStreamMessage/);
+});
